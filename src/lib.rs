@@ -1,5 +1,6 @@
 pub mod event;
 pub mod exit_code;
+pub mod mint;
 pub mod provider;
 pub mod redaction;
 pub mod refresh;
