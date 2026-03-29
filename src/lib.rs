@@ -1,6 +1,6 @@
-mod config_path;
 pub mod cli_adapter;
 pub mod client;
+mod config_path;
 pub mod credential_set;
 pub mod error;
 pub mod event;
@@ -49,9 +49,44 @@ pub use exit_code::{NoscopeExitCode, ProviderExitCode};
 pub use mint::MintEnvelope;
 pub use token::ScopedToken;
 pub use token_convert::{
-    provider_output_to_scoped_token, provider_output_to_scoped_token_with_metadata,
-    scoped_token_to_mint_envelope, ConversionResult,
+    ConversionResult, provider_output_to_scoped_token,
+    provider_output_to_scoped_token_with_metadata, scoped_token_to_mint_envelope,
 };
+
+#[cfg(test)]
+mod formatting_gate_tests {
+    // =========================================================================
+    // noscope-bsq.1.6: Restore rustfmt cleanliness and keep it enforced.
+    //
+    // Acceptance criteria:
+    // 1. `cargo fmt --all -- --check` passes cleanly.
+    // 2. No functional behavior changes from formatting-only edits.
+    // =========================================================================
+
+    /// Verifies that `cargo fmt --all -- --check` exits with status 0.
+    ///
+    /// This test acts as a quality gate: any future commit that introduces
+    /// formatting drift will cause this test to fail, ensuring the codebase
+    /// stays formatted.
+    #[test]
+    fn cargo_fmt_check_passes_cleanly() {
+        let output = std::process::Command::new("cargo")
+            .args(["fmt", "--all", "--", "--check"])
+            .output()
+            .expect("failed to execute cargo fmt");
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            panic!(
+                "cargo fmt --all -- --check failed (exit {:?}):\nstdout:\n{}\nstderr:\n{}",
+                output.status.code(),
+                stdout,
+                stderr,
+            );
+        }
+    }
+}
 
 #[cfg(test)]
 mod convergence_tests {
@@ -312,15 +347,12 @@ mod convergence_tests {
     #[test]
     fn facade_security_error_exit_code_preserved() {
         // SecurityError → error::Error, security/usage exit code (64).
-        let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(
-            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "mock"),
-        );
+        let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "mock",
+        ));
         let err: crate::Error = sec_err.into();
-        assert_eq!(
-            err.exit_code(),
-            64,
-            "SecurityError must map to usage (64)"
-        );
+        assert_eq!(err.exit_code(), 64, "SecurityError must map to usage (64)");
     }
 
     #[test]

@@ -179,17 +179,11 @@ pub fn parse_profile_toml(content: &str) -> Result<Profile, ProfileError> {
             Some(v) => match v.as_str() {
                 Some(s) if !s.is_empty() => Some(s.to_string()),
                 Some(_) => {
-                    problems.push(format!(
-                        "credentials[{}]: provider must not be empty",
-                        i
-                    ));
+                    problems.push(format!("credentials[{}]: provider must not be empty", i));
                     None
                 }
                 None => {
-                    problems.push(format!(
-                        "credentials[{}]: provider must be a string",
-                        i
-                    ));
+                    problems.push(format!("credentials[{}]: provider must be a string", i));
                     None
                 }
             },
@@ -206,25 +200,16 @@ pub fn parse_profile_toml(content: &str) -> Result<Profile, ProfileError> {
             Some(v) => match v.as_str() {
                 Some(s) if !s.is_empty() => Some(s.to_string()),
                 Some(_) => {
-                    problems.push(format!(
-                        "credentials[{}]: role must not be empty",
-                        i
-                    ));
+                    problems.push(format!("credentials[{}]: role must not be empty", i));
                     None
                 }
                 None => {
-                    problems.push(format!(
-                        "credentials[{}]: role must be a string",
-                        i
-                    ));
+                    problems.push(format!("credentials[{}]: role must be a string", i));
                     None
                 }
             },
             None => {
-                problems.push(format!(
-                    "credentials[{}]: missing required field 'role'",
-                    i
-                ));
+                problems.push(format!("credentials[{}]: missing required field 'role'", i));
                 None
             }
         };
@@ -235,10 +220,7 @@ pub fn parse_profile_toml(content: &str) -> Result<Profile, ProfileError> {
             Some(v) => match v.as_str() {
                 Some(s) => Some(s.to_string()),
                 None => {
-                    problems.push(format!(
-                        "credentials[{}]: env_key must be a string",
-                        i
-                    ));
+                    problems.push(format!("credentials[{}]: env_key must be a string", i));
                     None
                 }
             },
@@ -1276,12 +1258,7 @@ ttl = 3600
 
     #[test]
     fn profile_cli_mutual_exclusion_error_includes_profile_name() {
-        let result = super::check_profile_flag_exclusion(
-            Some("staging"),
-            Some("aws"),
-            None,
-            None,
-        );
+        let result = super::check_profile_flag_exclusion(Some("staging"), Some("aws"), None, None);
         let err = result.unwrap_err();
         let msg = format!("{}", err);
         assert!(

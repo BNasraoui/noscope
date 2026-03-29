@@ -634,7 +634,9 @@ mod tests {
         assert!(
             result.expires_at >= expected_min && result.expires_at <= expected_max,
             "NS-034: computed expires_at should be now + requested_ttl, got: {:?}, expected between {:?} and {:?}",
-            result.expires_at, expected_min, expected_max
+            result.expires_at,
+            expected_min,
+            expected_max
         );
     }
 
