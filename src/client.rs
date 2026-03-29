@@ -86,11 +86,33 @@ pub struct Client {
 impl Client {
     /// Create a new Client with the given options.
     ///
-    /// NS-020: Disables core dumps immediately. If the platform does not
-    /// support core dump suppression, the failure is silently ignored
-    /// (the caller should log a warning separately if desired).
-    pub fn new(opts: ClientOptions) -> Self {
-        // NS-020: Best-effort core dump prevention.
+    /// NS-020: Disables core dumps immediately. Returns an error if the
+    /// platform does not support core dump suppression, allowing callers
+    /// to detect and handle hardening failures (e.g., log a warning,
+    /// abort the process, or proceed with degraded security).
+    ///
+    /// For callers that prefer the old best-effort behavior, use
+    /// [`Client::new_best_effort`] instead.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NoscopeError::Security`] if `setrlimit(RLIMIT_CORE, 0)`
+    /// fails (e.g., insufficient privileges on the platform).
+    pub fn new(opts: ClientOptions) -> Result<Self, NoscopeError> {
+        // NS-020: Fail-fast core dump prevention.
+        security::disable_core_dumps()?;
+        Ok(Self { opts })
+    }
+
+    /// Create a new Client with best-effort core dump hardening.
+    ///
+    /// NS-020: Attempts to disable core dumps but silently ignores
+    /// failures. This preserves the original `Client::new` behavior
+    /// for callers that cannot handle a fallible constructor.
+    ///
+    /// **Prefer [`Client::new`]** in new code — it surfaces hardening
+    /// failures so callers can make an informed decision.
+    pub fn new_best_effort(opts: ClientOptions) -> Self {
         let _ = security::disable_core_dumps();
         Self { opts }
     }
@@ -351,7 +373,7 @@ mod tests {
     #[test]
     fn facade_client_type_exists() {
         // The facade type `Client` must exist and be constructible.
-        let _client: super::Client = super::Client::new(super::ClientOptions::default());
+        let _client: super::Client = super::Client::new(super::ClientOptions::default()).unwrap();
     }
 
     #[test]
@@ -463,7 +485,7 @@ mod tests {
 
     #[test]
     fn facade_mint_request_validates_providers_required() {
-        let client = super::Client::new(super::ClientOptions::default());
+        let client = super::Client::new(super::ClientOptions::default()).unwrap();
         let req = super::MintRequest {
             providers: vec![],
             role: "admin".to_string(),
@@ -475,7 +497,7 @@ mod tests {
 
     #[test]
     fn facade_mint_request_validates_role_required() {
-        let client = super::Client::new(super::ClientOptions::default());
+        let client = super::Client::new(super::ClientOptions::default()).unwrap();
         let req = super::MintRequest {
             providers: vec!["aws".to_string()],
             role: "".to_string(),
@@ -487,7 +509,7 @@ mod tests {
 
     #[test]
     fn facade_mint_request_validates_ttl_required() {
-        let client = super::Client::new(super::ClientOptions::default());
+        let client = super::Client::new(super::ClientOptions::default()).unwrap();
         let req = super::MintRequest {
             providers: vec!["aws".to_string()],
             role: "admin".to_string(),
@@ -500,7 +522,7 @@ mod tests {
     #[test]
     fn facade_mint_request_validates_role_safe_characters() {
         // NS-033: Role must be validated for safe characters.
-        let client = super::Client::new(super::ClientOptions::default());
+        let client = super::Client::new(super::ClientOptions::default()).unwrap();
         let req = super::MintRequest {
             providers: vec!["aws".to_string()],
             role: "admin; rm -rf /".to_string(),
@@ -515,7 +537,7 @@ mod tests {
 
     #[test]
     fn facade_mint_request_valid_passes() {
-        let client = super::Client::new(super::ClientOptions::default());
+        let client = super::Client::new(super::ClientOptions::default()).unwrap();
         let req = super::MintRequest {
             providers: vec!["aws".to_string()],
             role: "admin".to_string(),
@@ -556,7 +578,7 @@ mod tests {
     #[test]
     fn facade_client_disables_core_dumps() {
         // After Client construction, core dumps must be disabled.
-        let _client = super::Client::new(super::ClientOptions::default());
+        let _client = super::Client::new(super::ClientOptions::default()).unwrap();
         unsafe {
             let mut rlim = libc::rlimit {
                 rlim_cur: 1,
@@ -604,7 +626,7 @@ mod tests {
     // NS-065: Terminal detection for mint stdout.
     #[test]
     fn facade_check_stdout_terminal_rejects_tty() {
-        let client = super::Client::new(super::ClientOptions::default());
+        let client = super::Client::new(super::ClientOptions::default()).unwrap();
         let result = client.check_stdout_not_terminal(true);
         assert!(
             result.is_err(),
@@ -614,7 +636,7 @@ mod tests {
 
     #[test]
     fn facade_check_stdout_terminal_allows_pipe() {
-        let client = super::Client::new(super::ClientOptions::default());
+        let client = super::Client::new(super::ClientOptions::default()).unwrap();
         let result = client.check_stdout_not_terminal(false);
         assert!(result.is_ok(), "NS-065: Pipe stdout must be allowed");
     }
@@ -624,7 +646,8 @@ mod tests {
         let client = super::Client::new(super::ClientOptions {
             force_terminal: true,
             ..super::ClientOptions::default()
-        });
+        })
+        .unwrap();
         let result = client.check_stdout_not_terminal(true);
         assert!(
             result.is_ok(),
@@ -688,7 +711,7 @@ mod tests {
     fn facade_resolve_provider_delegates_to_provider_module() {
         // Client exposes provider resolution without requiring the consumer
         // to manually import provider module types.
-        let client = super::Client::new(super::ClientOptions::default());
+        let client = super::Client::new(super::ClientOptions::default()).unwrap();
         let result = client.resolve_provider("nonexistent", &super::ProviderOverrides::default());
         assert!(result.is_err(), "Nonexistent provider must return an error");
         // Error message must enumerate checked locations (NS-044)
@@ -726,7 +749,7 @@ mod tests {
     fn facade_dry_run_produces_output() {
         // Dry-run mode must work through the facade without requiring
         // the consumer to construct ResolvedProvider manually.
-        let client = super::Client::new(super::ClientOptions::default());
+        let client = super::Client::new(super::ClientOptions::default()).unwrap();
         let overrides = super::ProviderOverrides {
             mint_cmd: Some("/usr/bin/mint".to_string()),
             ..super::ProviderOverrides::default()
@@ -834,7 +857,8 @@ mod tests {
                 revoke_cmd: None,
             }),
             ..super::ClientOptions::default()
-        });
+        })
+        .unwrap();
         let resolved = client
             .resolve_provider("test-provider", &super::ProviderOverrides::default())
             .expect("NOSCOPE_MINT_CMD should satisfy provider resolution");
@@ -860,7 +884,8 @@ mod tests {
                 revoke_cmd: None,
             }),
             ..super::ClientOptions::default()
-        });
+        })
+        .unwrap();
         let resolved = client
             .resolve_provider("test-provider", &super::ProviderOverrides::default())
             .unwrap();
@@ -882,7 +907,8 @@ mod tests {
                 revoke_cmd: Some("/env/revoke".to_string()),
             }),
             ..super::ClientOptions::default()
-        });
+        })
+        .unwrap();
         let resolved = client
             .resolve_provider("test-provider", &super::ProviderOverrides::default())
             .unwrap();
@@ -904,7 +930,8 @@ mod tests {
                 revoke_cmd: None,
             }),
             ..super::ClientOptions::default()
-        });
+        })
+        .unwrap();
         let overrides = super::ProviderOverrides {
             mint_cmd: Some("/from/flags/mint".to_string()),
             refresh_cmd: None,
@@ -955,7 +982,8 @@ refresh = "/from/file/refresh"
                 revoke_cmd: None,
             }),
             ..super::ClientOptions::default()
-        });
+        })
+        .unwrap();
         let resolved = client
             .resolve_provider("mycloud", &super::ProviderOverrides::default())
             .unwrap();
@@ -1000,7 +1028,8 @@ mint = "/from/file/mint"
             // provider_env = None → uses process env (which won't have
             // NOSCOPE_* set in normal test environment)
             ..super::ClientOptions::default()
-        });
+        })
+        .unwrap();
         let resolved = client
             .resolve_provider("mycloud", &super::ProviderOverrides::default())
             .unwrap();
@@ -1026,7 +1055,8 @@ mint = "/from/file/mint"
                 revoke_cmd: Some("/env/revoke".to_string()),
             }),
             ..super::ClientOptions::default()
-        });
+        })
+        .unwrap();
         let resolved = client
             .resolve_provider("test-provider", &super::ProviderOverrides::default())
             .unwrap();
@@ -1050,6 +1080,193 @@ mint = "/from/file/mint"
             opts.provider_env.is_none(),
             "default ClientOptions must not override provider_env (reads from process env)"
         );
+    }
+
+    // =========================================================================
+    // noscope-bsq.1.4: Surface core-dump hardening failures from Client
+    // construction.
+    //
+    // Rules tested:
+    // 1. Client::new returns Result, exposing hardening failure to callers.
+    // 2. Backwards-compatible constructor (new_best_effort) still available.
+    // 3. Success path: Client::new succeeds on Linux (where setrlimit works).
+    // 4. Failure detection: callers can match on the error variant.
+    // 5. Documentation: public API docs describe the behavior.
+    // =========================================================================
+
+    // Rule 1: Client::new must return Result<Client, NoscopeError>.
+    #[test]
+    fn hardening_client_new_returns_result() {
+        // Client::new must be fallible — returns Result, not bare Client.
+        let result: Result<super::Client, super::NoscopeError> =
+            super::Client::new(super::ClientOptions::default());
+        // On Linux, hardening should succeed.
+        assert!(result.is_ok(), "Client::new must succeed on Linux");
+    }
+
+    // Rule 1: Client::new success produces a usable Client.
+    #[test]
+    fn hardening_client_new_success_produces_usable_client() {
+        let client = super::Client::new(super::ClientOptions::default())
+            .expect("Client::new should succeed on Linux");
+        // The client must be fully functional.
+        let req = super::MintRequest {
+            providers: vec!["aws".to_string()],
+            role: "admin".to_string(),
+            ttl_secs: 3600,
+        };
+        let result = client.validate_mint(&req);
+        assert!(result.is_ok(), "Client from new() must be fully functional");
+    }
+
+    // Rule 1: Client::new error is a NoscopeError::Security variant.
+    #[test]
+    fn hardening_failure_is_security_error() {
+        // A hardening failure must surface as NoscopeError::Security.
+        // We can't easily force setrlimit to fail, so we verify the error
+        // type conversion: SecurityError::CoreDumpDisableFailed → NoscopeError::Security.
+        let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "mock failure",
+        ));
+        let noscope_err: super::NoscopeError = sec_err.into();
+        match &noscope_err {
+            super::NoscopeError::Security { message } => {
+                assert!(
+                    message.contains("core dump"),
+                    "Security error message must mention core dumps: {}",
+                    message
+                );
+            }
+            other => panic!(
+                "CoreDumpDisableFailed must map to NoscopeError::Security, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    // Rule 1: Hardening error has a non-zero exit code.
+    #[test]
+    fn hardening_failure_has_nonzero_exit_code() {
+        let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "mock",
+        ));
+        let noscope_err: super::NoscopeError = sec_err.into();
+        assert_ne!(
+            noscope_err.exit_code(),
+            0,
+            "Hardening failure exit code must be non-zero"
+        );
+    }
+
+    // Rule 2: Backwards-compatible best-effort constructor exists.
+    #[test]
+    fn hardening_best_effort_constructor_exists() {
+        // new_best_effort must return Client (infallible), preserving old behavior.
+        let _client: super::Client =
+            super::Client::new_best_effort(super::ClientOptions::default());
+    }
+
+    // Rule 2: Best-effort constructor produces a usable client.
+    #[test]
+    fn hardening_best_effort_client_is_functional() {
+        let client = super::Client::new_best_effort(super::ClientOptions::default());
+        let req = super::MintRequest {
+            providers: vec!["aws".to_string()],
+            role: "admin".to_string(),
+            ttl_secs: 3600,
+        };
+        let result = client.validate_mint(&req);
+        assert!(
+            result.is_ok(),
+            "Best-effort client must be fully functional"
+        );
+    }
+
+    // Rule 2: Best-effort constructor still calls disable_core_dumps.
+    #[test]
+    fn hardening_best_effort_still_disables_core_dumps() {
+        let _client = super::Client::new_best_effort(super::ClientOptions::default());
+        unsafe {
+            let mut rlim = libc::rlimit {
+                rlim_cur: 1,
+                rlim_max: 1,
+            };
+            let ret = libc::getrlimit(libc::RLIMIT_CORE, &mut rlim);
+            assert_eq!(ret, 0);
+            assert_eq!(
+                rlim.rlim_cur, 0,
+                "Best-effort constructor must still disable core dumps"
+            );
+        }
+    }
+
+    // Rule 3: On Linux, Client::new succeeds (setrlimit works).
+    #[test]
+    fn hardening_succeeds_on_linux() {
+        let result = super::Client::new(super::ClientOptions::default());
+        assert!(
+            result.is_ok(),
+            "On Linux, Client::new must succeed (setrlimit works)"
+        );
+    }
+
+    // Rule 4: Callers can programmatically detect hardening failure.
+    #[test]
+    fn hardening_failure_is_detectable_via_pattern_match() {
+        // Prove that callers can match on NoscopeError::Security to detect
+        // hardening failures specifically.
+        let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(std::io::Error::other(
+            "simulated",
+        ));
+        let err: super::NoscopeError = sec_err.into();
+        let detected = matches!(&err, super::NoscopeError::Security { message } if message.contains("core dump"));
+        assert!(
+            detected,
+            "Callers must be able to detect hardening failure via pattern match"
+        );
+    }
+
+    // Rule 4: Hardening failure Display message is human-readable.
+    #[test]
+    fn hardening_failure_display_is_informative() {
+        let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "permission denied",
+        ));
+        let err: super::NoscopeError = sec_err.into();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("core dump"),
+            "Display must mention 'core dump': {}",
+            msg
+        );
+        assert!(
+            msg.contains("security"),
+            "Display must indicate security category: {}",
+            msg
+        );
+    }
+
+    // Edge case: Client::new on Linux should leave core dumps disabled.
+    #[test]
+    fn hardening_client_new_leaves_core_dumps_disabled() {
+        let _client =
+            super::Client::new(super::ClientOptions::default()).expect("should succeed on Linux");
+        unsafe {
+            let mut rlim = libc::rlimit {
+                rlim_cur: 1,
+                rlim_max: 1,
+            };
+            let ret = libc::getrlimit(libc::RLIMIT_CORE, &mut rlim);
+            assert_eq!(ret, 0);
+            assert_eq!(
+                rlim.rlim_cur, 0,
+                "After Client::new, core dumps must be disabled"
+            );
+            assert_eq!(rlim.rlim_max, 0);
+        }
     }
 
     // Edge case: explicit empty ProviderEnv should not activate env layer.
@@ -1077,7 +1294,8 @@ mint = "/from/file/mint"
             // Explicit empty env — should fall through to file layer.
             provider_env: Some(crate::provider::ProviderEnv::empty()),
             ..super::ClientOptions::default()
-        });
+        })
+        .unwrap();
         let resolved = client
             .resolve_provider("mycloud", &super::ProviderOverrides::default())
             .unwrap();

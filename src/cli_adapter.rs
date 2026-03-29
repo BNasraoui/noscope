@@ -295,7 +295,7 @@ mod tests {
         // Client should NOT have a validate_revoke_args method that takes
         // raw argv. The function lives in cli_adapter instead.
         // We verify by checking that Client still validates MintRequest (domain type).
-        let client = crate::Client::new(crate::ClientOptions::default());
+        let client = crate::Client::new(crate::ClientOptions::default()).unwrap();
         let req = crate::MintRequest {
             providers: vec!["aws".to_string()],
             role: "admin".to_string(),
@@ -343,7 +343,7 @@ mod tests {
         );
         let req = result.unwrap();
         // Must be the same MintRequest type the Client accepts.
-        let client = crate::Client::new(crate::ClientOptions::default());
+        let client = crate::Client::new(crate::ClientOptions::default()).unwrap();
         let validation = client.validate_mint(&req);
         assert!(validation.is_ok());
     }
