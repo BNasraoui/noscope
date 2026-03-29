@@ -4,6 +4,7 @@ pub mod exit_code;
 pub mod mint;
 pub mod profile;
 pub mod provider;
+pub mod provider_exec;
 pub mod redaction;
 pub mod refresh;
 pub mod security;
