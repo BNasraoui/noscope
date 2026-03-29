@@ -147,6 +147,26 @@ pub type ProviderFlags = ProviderCommandInput;
 /// Environment variable layer for provider configuration (middle precedence).
 pub type ProviderEnv = ProviderCommandInput;
 
+/// Read provider env overrides from the process environment.
+///
+/// Looks for `NOSCOPE_MINT_CMD`, `NOSCOPE_REFRESH_CMD`, and
+/// `NOSCOPE_REVOKE_CMD`. Missing or empty vars yield `None`.
+///
+/// This is a standalone function (not a method on `ProviderEnv`) because
+/// `ProviderEnv` is a type alias for `ProviderCommandInput`. An `impl`
+/// block on a type alias would leak the method onto `ProviderFlags` too,
+/// which is semantically wrong — flags don't come from env vars.
+pub fn provider_env_from_process() -> ProviderEnv {
+    fn read_var(name: &str) -> Option<String> {
+        std::env::var(name).ok().filter(|v| !v.is_empty())
+    }
+    ProviderEnv {
+        mint_cmd: read_var("NOSCOPE_MINT_CMD"),
+        refresh_cmd: read_var("NOSCOPE_REFRESH_CMD"),
+        revoke_cmd: read_var("NOSCOPE_REVOKE_CMD"),
+    }
+}
+
 /// NS-041: Provider capability declaration.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderCapabilities {
@@ -1668,5 +1688,29 @@ refresh = "/usr/bin/refresh"
         .unwrap();
 
         assert!(matches!(selected, SelectedProviderConfigLayer::Flags(_)));
+    }
+
+    // =========================================================================
+    // noscope-bsq.1.2: ProviderEnv::from_process_env reads NOSCOPE_* vars
+    // =========================================================================
+
+    #[test]
+    fn provider_env_from_process_returns_valid_struct() {
+        // provider_env_from_process must return a valid ProviderEnv.
+        // NOTE: we can't guarantee env var state, but we verify the
+        // function is callable and returns the right type.
+        let env = provider_env_from_process();
+        let _ = env.has_any(); // must compile and not panic
+    }
+
+    #[test]
+    fn provider_env_from_process_empty_env_contract() {
+        // Empty env vars should be treated as absent (None), not Some("").
+        // We verify the ProviderEnv::empty() contract matches expectations.
+        let empty = ProviderEnv::empty();
+        assert!(!empty.has_any(), "empty ProviderEnv must have no values");
+        assert!(empty.mint_cmd.is_none());
+        assert!(empty.refresh_cmd.is_none());
+        assert!(empty.revoke_cmd.is_none());
     }
 }

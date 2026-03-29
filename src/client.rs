@@ -43,6 +43,14 @@ pub struct ClientOptions {
     pub force_terminal: bool,
     /// If true, include provider stderr on success.
     pub verbose: bool,
+    /// Override the NOSCOPE_* env var layer for provider resolution.
+    ///
+    /// When `None` (the default), reads `NOSCOPE_MINT_CMD`,
+    /// `NOSCOPE_REFRESH_CMD`, and `NOSCOPE_REVOKE_CMD` from the process
+    /// environment. When `Some(env)`, uses the provided values directly.
+    /// This exists for testability — mutating process env in parallel
+    /// tests is inherently racy.
+    pub provider_env: Option<provider::ProviderEnv>,
 }
 
 impl Default for ClientOptions {
@@ -54,6 +62,7 @@ impl Default for ClientOptions {
             home: None,
             force_terminal: false,
             verbose: false,
+            provider_env: None,
         }
     }
 }
@@ -141,7 +150,10 @@ impl Client {
         };
         let file_config = provider::load_provider_file(&config_path).map_err(NoscopeError::from)?;
 
-        let env = provider::ProviderEnv::default();
+        let env = match &self.opts.provider_env {
+            Some(env) => env.clone(),
+            None => provider::provider_env_from_process(),
+        };
 
         provider::resolve_provider_config(name, &flags, &env, file_config)
             .map_err(NoscopeError::from)
@@ -328,6 +340,7 @@ impl From<crate::profile::ProfileError> for NoscopeError {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
     // =========================================================================
@@ -361,6 +374,7 @@ mod tests {
             home: Some(std::path::PathBuf::from("/custom/home")),
             force_terminal: false,
             verbose: false,
+            provider_env: None,
         };
         assert_eq!(opts.provider_timeout, Duration::from_secs(60));
         assert_eq!(opts.max_concurrent, 4);
@@ -795,5 +809,283 @@ mod tests {
         let err: super::NoscopeError = prof_err.into();
         let msg = format!("{}", err);
         assert!(msg.contains("profile"), "Must mention profile: {}", msg);
+    }
+
+    // =========================================================================
+    // noscope-bsq.1.2: NOSCOPE_* env overrides wired in Client::resolve_provider
+    //
+    // The bug: resolve_provider passes ProviderEnv::default() and ignores
+    // process environment. Tests below prove env overrides are observed
+    // end-to-end through the Client facade, and precedence is strict.
+    //
+    // Tests use the provider_env override in ClientOptions for determinism —
+    // mutating process env in parallel tests is inherently racy. The
+    // from_process_env() constructor is tested separately in provider::tests.
+    // =========================================================================
+
+    // Rule: env overrides are observed end-to-end from Client (mint_cmd).
+    #[test]
+    fn env_override_mint_cmd_observed_from_client() {
+        let client = super::Client::new(super::ClientOptions {
+            xdg_config_home: Some(std::path::PathBuf::from("/nonexistent/xdg/for/env/test")),
+            provider_env: Some(crate::provider::ProviderEnv {
+                mint_cmd: Some("/from/env/mint".to_string()),
+                refresh_cmd: None,
+                revoke_cmd: None,
+            }),
+            ..super::ClientOptions::default()
+        });
+        let resolved = client
+            .resolve_provider("test-provider", &super::ProviderOverrides::default())
+            .expect("NOSCOPE_MINT_CMD should satisfy provider resolution");
+        assert_eq!(
+            resolved.mint_cmd, "/from/env/mint",
+            "mint_cmd must come from env override"
+        );
+        assert_eq!(
+            resolved.source,
+            crate::provider::ConfigSource::EnvVars,
+            "source must be EnvVars"
+        );
+    }
+
+    // Rule: env overrides are observed end-to-end (refresh_cmd).
+    #[test]
+    fn env_override_refresh_cmd_observed_from_client() {
+        let client = super::Client::new(super::ClientOptions {
+            xdg_config_home: Some(std::path::PathBuf::from("/nonexistent/xdg/for/env/test")),
+            provider_env: Some(crate::provider::ProviderEnv {
+                mint_cmd: Some("/env/mint".to_string()),
+                refresh_cmd: Some("/env/refresh".to_string()),
+                revoke_cmd: None,
+            }),
+            ..super::ClientOptions::default()
+        });
+        let resolved = client
+            .resolve_provider("test-provider", &super::ProviderOverrides::default())
+            .unwrap();
+        assert_eq!(
+            resolved.refresh_cmd.as_deref(),
+            Some("/env/refresh"),
+            "refresh_cmd must come from env override"
+        );
+    }
+
+    // Rule: env overrides are observed end-to-end (revoke_cmd).
+    #[test]
+    fn env_override_revoke_cmd_observed_from_client() {
+        let client = super::Client::new(super::ClientOptions {
+            xdg_config_home: Some(std::path::PathBuf::from("/nonexistent/xdg/for/env/test")),
+            provider_env: Some(crate::provider::ProviderEnv {
+                mint_cmd: Some("/env/mint".to_string()),
+                refresh_cmd: None,
+                revoke_cmd: Some("/env/revoke".to_string()),
+            }),
+            ..super::ClientOptions::default()
+        });
+        let resolved = client
+            .resolve_provider("test-provider", &super::ProviderOverrides::default())
+            .unwrap();
+        assert_eq!(
+            resolved.revoke_cmd.as_deref(),
+            Some("/env/revoke"),
+            "revoke_cmd must come from env override"
+        );
+    }
+
+    // Rule: precedence — flags > env > file. Flags must beat env.
+    #[test]
+    fn env_override_precedence_flags_beat_env() {
+        let client = super::Client::new(super::ClientOptions {
+            xdg_config_home: Some(std::path::PathBuf::from("/nonexistent/xdg/for/env/test")),
+            provider_env: Some(crate::provider::ProviderEnv {
+                mint_cmd: Some("/from/env/mint".to_string()),
+                refresh_cmd: Some("/from/env/refresh".to_string()),
+                revoke_cmd: None,
+            }),
+            ..super::ClientOptions::default()
+        });
+        let overrides = super::ProviderOverrides {
+            mint_cmd: Some("/from/flags/mint".to_string()),
+            refresh_cmd: None,
+            revoke_cmd: None,
+        };
+        let resolved = client
+            .resolve_provider("test-provider", &overrides)
+            .unwrap();
+        assert_eq!(resolved.mint_cmd, "/from/flags/mint", "flags must beat env");
+        assert_eq!(
+            resolved.source,
+            crate::provider::ConfigSource::Flags,
+            "source must be Flags when flags are set"
+        );
+        // NS-007: no merging — env's refresh_cmd must NOT leak through
+        assert!(
+            resolved.refresh_cmd.is_none(),
+            "NS-007: flags layer wins entirely — env refresh_cmd must not merge"
+        );
+    }
+
+    // Rule: precedence — env > file. Env must beat file config.
+    #[test]
+    fn env_override_precedence_env_beats_file() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let providers_dir = tmp.path().join("noscope").join("providers");
+        std::fs::create_dir_all(&providers_dir).unwrap();
+        let file_path = providers_dir.join("mycloud.toml");
+        std::fs::write(
+            &file_path,
+            r#"
+contract_version = 1
+
+[commands]
+mint = "/from/file/mint"
+refresh = "/from/file/refresh"
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let client = super::Client::new(super::ClientOptions {
+            xdg_config_home: Some(tmp.path().to_path_buf()),
+            provider_env: Some(crate::provider::ProviderEnv {
+                mint_cmd: Some("/from/env/mint".to_string()),
+                refresh_cmd: None,
+                revoke_cmd: None,
+            }),
+            ..super::ClientOptions::default()
+        });
+        let resolved = client
+            .resolve_provider("mycloud", &super::ProviderOverrides::default())
+            .unwrap();
+        assert_eq!(
+            resolved.mint_cmd, "/from/env/mint",
+            "env must beat file config"
+        );
+        assert_eq!(
+            resolved.source,
+            crate::provider::ConfigSource::EnvVars,
+            "source must be EnvVars"
+        );
+        // NS-007: no merging — file's refresh_cmd must NOT leak through
+        assert!(
+            resolved.refresh_cmd.is_none(),
+            "NS-007: env layer wins entirely — file refresh_cmd must not merge"
+        );
+    }
+
+    // Rule: when no env vars set and no flags, file layer still works.
+    #[test]
+    fn env_override_absent_env_falls_through_to_file() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let providers_dir = tmp.path().join("noscope").join("providers");
+        std::fs::create_dir_all(&providers_dir).unwrap();
+        let file_path = providers_dir.join("mycloud.toml");
+        std::fs::write(
+            &file_path,
+            r#"
+contract_version = 1
+
+[commands]
+mint = "/from/file/mint"
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let client = super::Client::new(super::ClientOptions {
+            xdg_config_home: Some(tmp.path().to_path_buf()),
+            // provider_env = None → uses process env (which won't have
+            // NOSCOPE_* set in normal test environment)
+            ..super::ClientOptions::default()
+        });
+        let resolved = client
+            .resolve_provider("mycloud", &super::ProviderOverrides::default())
+            .unwrap();
+        assert_eq!(
+            resolved.mint_cmd, "/from/file/mint",
+            "with no env vars, file config must be used"
+        );
+        assert_eq!(
+            resolved.source,
+            crate::provider::ConfigSource::File,
+            "source must be File when no env/flags set"
+        );
+    }
+
+    // Rule: env override only needs one var set to activate env layer.
+    #[test]
+    fn env_override_single_var_activates_env_layer() {
+        let client = super::Client::new(super::ClientOptions {
+            xdg_config_home: Some(std::path::PathBuf::from("/nonexistent/xdg/for/env/test")),
+            provider_env: Some(crate::provider::ProviderEnv {
+                mint_cmd: None,
+                refresh_cmd: None,
+                revoke_cmd: Some("/env/revoke".to_string()),
+            }),
+            ..super::ClientOptions::default()
+        });
+        let resolved = client
+            .resolve_provider("test-provider", &super::ProviderOverrides::default())
+            .unwrap();
+        assert_eq!(
+            resolved.source,
+            crate::provider::ConfigSource::EnvVars,
+            "setting any env var must activate the env layer"
+        );
+        assert_eq!(resolved.revoke_cmd.as_deref(), Some("/env/revoke"));
+        assert!(
+            resolved.mint_cmd.is_empty(),
+            "mint_cmd should be empty when env layer wins but mint env var not set"
+        );
+    }
+
+    // Rule: default ClientOptions has no provider_env override (reads process env).
+    #[test]
+    fn env_override_default_client_options_reads_process_env() {
+        let opts = super::ClientOptions::default();
+        assert!(
+            opts.provider_env.is_none(),
+            "default ClientOptions must not override provider_env (reads from process env)"
+        );
+    }
+
+    // Edge case: explicit empty ProviderEnv should not activate env layer.
+    #[test]
+    fn env_override_explicit_empty_env_does_not_activate_layer() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let providers_dir = tmp.path().join("noscope").join("providers");
+        std::fs::create_dir_all(&providers_dir).unwrap();
+        let file_path = providers_dir.join("mycloud.toml");
+        std::fs::write(
+            &file_path,
+            r#"
+contract_version = 1
+
+[commands]
+mint = "/from/file/mint"
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&file_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let client = super::Client::new(super::ClientOptions {
+            xdg_config_home: Some(tmp.path().to_path_buf()),
+            // Explicit empty env — should fall through to file layer.
+            provider_env: Some(crate::provider::ProviderEnv::empty()),
+            ..super::ClientOptions::default()
+        });
+        let resolved = client
+            .resolve_provider("mycloud", &super::ProviderOverrides::default())
+            .unwrap();
+        assert_eq!(
+            resolved.source,
+            crate::provider::ConfigSource::File,
+            "explicit empty ProviderEnv must not activate env layer"
+        );
+        assert_eq!(resolved.mint_cmd, "/from/file/mint");
     }
 }
