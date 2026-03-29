@@ -4,6 +4,7 @@
 // NS-044: Provider not found enumerates checked locations
 // NS-069: Config file permission enforcement
 // NS-071: Dry-run mode
+// NS-072: Provider contract version
 // NS-073: Provider validation command
 
 use std::collections::HashMap;
@@ -11,6 +12,37 @@ use std::fmt;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+
+/// NS-072: The current provider contract version.
+///
+/// When mint output format, exit code protocol, or input contracts change,
+/// this version increments. noscope must support the current version and the
+/// immediately previous version for backward compatibility.
+pub const CURRENT_CONTRACT_VERSION: u32 = 1;
+
+/// NS-072: Return the list of supported contract versions.
+///
+/// Always includes the current version and the previous version (if one exists).
+/// Since version 1 is the first, there is no version 0 — only [1] is returned.
+pub fn supported_contract_versions() -> Vec<u32> {
+    let mut versions = vec![CURRENT_CONTRACT_VERSION];
+    if CURRENT_CONTRACT_VERSION > 1 {
+        versions.push(CURRENT_CONTRACT_VERSION - 1);
+    }
+    versions
+}
+
+/// NS-072: Validate that a contract version is supported.
+///
+/// Rejects versions not in the supported set.
+pub fn validate_contract_version(version: u32) -> Result<(), ProviderConfigError> {
+    let supported = supported_contract_versions();
+    if supported.contains(&version) {
+        Ok(())
+    } else {
+        Err(ProviderConfigError::UnsupportedContractVersion { version, supported })
+    }
+}
 
 /// Error type for provider configuration failures.
 #[derive(Debug)]
@@ -24,6 +56,8 @@ pub enum ProviderConfigError {
     },
     /// NS-069: Config file has insecure permissions.
     InsecurePermissions { path: PathBuf, mode: u32 },
+    /// NS-072: Unsupported provider contract version.
+    UnsupportedContractVersion { version: u32, supported: Vec<u32> },
     /// NS-073: Provider validation found problems.
     ValidationFailed { problems: Vec<String> },
 }
@@ -53,6 +87,13 @@ impl fmt::Display for ProviderConfigError {
                     "config file {:?} has insecure permissions {:04o}; \
                      world-accessible bits must be 0 (e.g. 0600, 0640)",
                     path, mode
+                )
+            }
+            Self::UnsupportedContractVersion { version, supported } => {
+                write!(
+                    f,
+                    "unsupported provider contract_version {}; supported versions: {:?}",
+                    version, supported
                 )
             }
             Self::ValidationFailed { problems } => {
@@ -120,6 +161,8 @@ impl ProviderEnv {
 /// Parsed provider config from a TOML file (lowest precedence).
 #[derive(Debug)]
 pub struct FileProviderConfig {
+    /// NS-072: Provider contract version from the config file.
+    pub contract_version: u32,
     pub mint_cmd: String,
     pub refresh_cmd: Option<String>,
     pub revoke_cmd: Option<String>,
@@ -130,6 +173,10 @@ pub struct FileProviderConfig {
 #[derive(Debug)]
 pub struct ResolvedProvider {
     pub name: String,
+    /// NS-072: Contract version from the file config layer.
+    /// `None` when the config came from flags or env (which don't carry
+    /// a contract version — they're overrides, not full configs).
+    pub contract_version: Option<u32>,
     pub mint_cmd: String,
     pub refresh_cmd: Option<String>,
     pub revoke_cmd: Option<String>,
@@ -174,9 +221,10 @@ pub fn provider_config_path_with_home(
     }
 }
 
-/// NS-043: Parse provider TOML content into a FileProviderConfig.
+/// NS-043 + NS-072: Parse provider TOML content into a FileProviderConfig.
 ///
 /// Returns MalformedConfig error for syntax errors or missing required fields.
+/// Returns UnsupportedContractVersion for versions outside the supported set.
 pub fn parse_provider_toml(content: &str) -> Result<FileProviderConfig, ProviderConfigError> {
     let table: toml::Table =
         content
@@ -184,6 +232,32 @@ pub fn parse_provider_toml(content: &str) -> Result<FileProviderConfig, Provider
             .map_err(|e: toml::de::Error| ProviderConfigError::MalformedConfig {
                 message: e.to_string(),
             })?;
+
+    // NS-072: Parse and validate contract_version (required).
+    let contract_version = match table.get("contract_version") {
+        Some(v) => match v.as_integer() {
+            Some(n) if n > 0 => {
+                let version = n as u32;
+                validate_contract_version(version)?;
+                version
+            }
+            Some(_) => {
+                return Err(ProviderConfigError::MalformedConfig {
+                    message: "contract_version must be a positive integer".to_string(),
+                });
+            }
+            None => {
+                return Err(ProviderConfigError::MalformedConfig {
+                    message: "contract_version must be an integer".to_string(),
+                });
+            }
+        },
+        None => {
+            return Err(ProviderConfigError::MalformedConfig {
+                message: "missing required field: contract_version".to_string(),
+            });
+        }
+    };
 
     let commands = table.get("commands").and_then(|v| v.as_table()).ok_or(
         ProviderConfigError::MalformedConfig {
@@ -223,6 +297,7 @@ pub fn parse_provider_toml(content: &str) -> Result<FileProviderConfig, Provider
         .unwrap_or_default();
 
     Ok(FileProviderConfig {
+        contract_version,
         mint_cmd: mint_cmd.to_string(),
         refresh_cmd,
         revoke_cmd,
@@ -292,6 +367,7 @@ pub fn resolve_provider_config(
         let mint_cmd = flags.mint_cmd.clone().unwrap_or_default();
         return Ok(ResolvedProvider {
             name: name.to_string(),
+            contract_version: None,
             mint_cmd,
             refresh_cmd: flags.refresh_cmd.clone(),
             revoke_cmd: flags.revoke_cmd.clone(),
@@ -305,6 +381,7 @@ pub fn resolve_provider_config(
         let mint_cmd = env.mint_cmd.clone().unwrap_or_default();
         return Ok(ResolvedProvider {
             name: name.to_string(),
+            contract_version: None,
             mint_cmd,
             refresh_cmd: env.refresh_cmd.clone(),
             revoke_cmd: env.revoke_cmd.clone(),
@@ -317,6 +394,7 @@ pub fn resolve_provider_config(
     if let Some(fc) = file_config {
         return Ok(ResolvedProvider {
             name: name.to_string(),
+            contract_version: Some(fc.contract_version),
             mint_cmd: fc.mint_cmd,
             refresh_cmd: fc.refresh_cmd,
             revoke_cmd: fc.revoke_cmd,
@@ -445,6 +523,8 @@ mod tests {
     /// Helper: minimal valid provider TOML content.
     fn valid_provider_toml() -> &'static str {
         r#"
+contract_version = 1
+
 [commands]
 mint = "/usr/bin/vault-mint"
 
@@ -498,6 +578,7 @@ VAULT_ADDR = "https://vault.example.com"
             revoke_cmd: None,
         };
         let file_config = FileProviderConfig {
+            contract_version: 1,
             mint_cmd: "/from/file/mint".to_string(),
             refresh_cmd: Some("/from/file/refresh".to_string()),
             revoke_cmd: None,
@@ -517,6 +598,7 @@ VAULT_ADDR = "https://vault.example.com"
     #[test]
     fn strict_config_precedence_file_used_when_no_flags_or_env() {
         let file_config = FileProviderConfig {
+            contract_version: 1,
             mint_cmd: "/from/file/mint".to_string(),
             refresh_cmd: Some("/from/file/refresh".to_string()),
             revoke_cmd: None,
@@ -544,6 +626,7 @@ VAULT_ADDR = "https://vault.example.com"
             revoke_cmd: Some("/from/env/revoke".to_string()),
         };
         let file_config = FileProviderConfig {
+            contract_version: 1,
             mint_cmd: "/from/file/mint".to_string(),
             refresh_cmd: Some("/from/file/refresh".to_string()),
             revoke_cmd: Some("/from/file/revoke".to_string()),
@@ -646,6 +729,8 @@ refresh = "/usr/bin/refresh"
     #[test]
     fn malformed_config_empty_mint_cmd_is_error() {
         let toml_with_empty_mint = r#"
+contract_version = 1
+
 [commands]
 mint = ""
 "#;
@@ -804,6 +889,7 @@ mint = ""
     fn dry_run_mode_produces_output() {
         let config = ResolvedProvider {
             name: "aws".to_string(),
+            contract_version: Some(1),
             mint_cmd: "/usr/bin/aws-mint".to_string(),
             refresh_cmd: None,
             revoke_cmd: Some("/usr/bin/aws-revoke".to_string()),
@@ -819,6 +905,7 @@ mint = ""
     fn dry_run_mode_shows_mint_command() {
         let config = ResolvedProvider {
             name: "aws".to_string(),
+            contract_version: Some(1),
             mint_cmd: "/usr/bin/aws-mint".to_string(),
             refresh_cmd: None,
             revoke_cmd: None,
@@ -838,6 +925,7 @@ mint = ""
     fn dry_run_mode_shows_role_and_ttl() {
         let config = ResolvedProvider {
             name: "vault".to_string(),
+            contract_version: Some(1),
             mint_cmd: "/usr/bin/vault-mint".to_string(),
             refresh_cmd: None,
             revoke_cmd: None,
@@ -858,6 +946,7 @@ mint = ""
     fn dry_run_mode_shows_config_source() {
         let config = ResolvedProvider {
             name: "aws".to_string(),
+            contract_version: None,
             mint_cmd: "/usr/bin/aws-mint".to_string(),
             refresh_cmd: None,
             revoke_cmd: None,
@@ -881,6 +970,7 @@ mint = ""
     fn validate_provider_checks_mint_cmd_exists() {
         let config = ResolvedProvider {
             name: "test".to_string(),
+            contract_version: Some(1),
             mint_cmd: "/nonexistent/path/to/mint".to_string(),
             refresh_cmd: None,
             revoke_cmd: None,
@@ -910,6 +1000,7 @@ mint = ""
 
         let config = ResolvedProvider {
             name: "test".to_string(),
+            contract_version: Some(1),
             mint_cmd: mint_path.to_str().unwrap().to_string(),
             refresh_cmd: None,
             revoke_cmd: None,
@@ -933,6 +1024,7 @@ mint = ""
 
         let config = ResolvedProvider {
             name: "test".to_string(),
+            contract_version: Some(1),
             mint_cmd: mint_path.to_str().unwrap().to_string(),
             refresh_cmd: None,
             revoke_cmd: None,
@@ -958,6 +1050,7 @@ mint = ""
 
         let config = ResolvedProvider {
             name: "test".to_string(),
+            contract_version: Some(1),
             mint_cmd: mint_path.to_str().unwrap().to_string(),
             refresh_cmd: None,
             revoke_cmd: None,
@@ -981,6 +1074,7 @@ mint = ""
 
         let config = ResolvedProvider {
             name: "test".to_string(),
+            contract_version: Some(1),
             mint_cmd: mint_path.to_str().unwrap().to_string(),
             refresh_cmd: Some("/nonexistent/refresh".to_string()),
             revoke_cmd: None,
@@ -1001,6 +1095,7 @@ mint = ""
 
         let config = ResolvedProvider {
             name: "test".to_string(),
+            contract_version: Some(1),
             mint_cmd: mint_path.to_str().unwrap().to_string(),
             refresh_cmd: None,
             revoke_cmd: Some("/nonexistent/revoke".to_string()),
@@ -1046,6 +1141,8 @@ mint = ""
     fn parse_provider_toml_rejects_non_string_mint() {
         // commands.mint is an integer, not a string
         let toml = r#"
+contract_version = 1
+
 [commands]
 mint = 42
 "#;
@@ -1056,6 +1153,8 @@ mint = 42
     #[test]
     fn parse_provider_toml_valid_with_all_commands() {
         let toml = r#"
+contract_version = 1
+
 [commands]
 mint = "/usr/bin/mint"
 refresh = "/usr/bin/refresh"
@@ -1115,6 +1214,287 @@ API_KEY_FILE = "/etc/secrets/key"
             msg.contains("my-cloud"),
             "Display must contain provider name: {}",
             msg
+        );
+    }
+
+    // =========================================================================
+    // NS-072: Provider contract version — config must include
+    // contract_version=1, reject unsupported versions, support current
+    // and previous version.
+    // =========================================================================
+
+    #[test]
+    fn provider_contract_version_must_be_present_in_config() {
+        // NS-072: A provider TOML config MUST include contract_version.
+        // Omitting it is a hard error.
+        let toml_without_version = r#"
+[commands]
+mint = "/usr/bin/mint"
+"#;
+        let result = parse_provider_toml(toml_without_version);
+        assert!(
+            result.is_err(),
+            "NS-072: config without contract_version must be rejected"
+        );
+        let err = result.unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.to_lowercase().contains("contract_version"),
+            "NS-072: error must mention contract_version, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn provider_contract_version_accepts_current_version() {
+        // NS-072: contract_version = 1 (the current version) must be accepted.
+        let toml = r#"
+contract_version = 1
+
+[commands]
+mint = "/usr/bin/mint"
+"#;
+        let config = parse_provider_toml(toml).unwrap();
+        assert_eq!(
+            config.contract_version, 1,
+            "NS-072: current version (1) must be accepted"
+        );
+    }
+
+    #[test]
+    fn provider_contract_version_rejects_unsupported_future_version() {
+        // NS-072: A version far beyond current must be rejected.
+        let toml = r#"
+contract_version = 99
+
+[commands]
+mint = "/usr/bin/mint"
+"#;
+        let result = parse_provider_toml(toml);
+        assert!(
+            result.is_err(),
+            "NS-072: unsupported future version must be rejected"
+        );
+        let err = result.unwrap_err();
+        match err {
+            ProviderConfigError::UnsupportedContractVersion { version, .. } => {
+                assert_eq!(version, 99);
+            }
+            other => panic!(
+                "NS-072: expected UnsupportedContractVersion, got: {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn provider_contract_version_rejects_version_zero() {
+        // NS-072: Version 0 is not a valid contract version.
+        let toml = r#"
+contract_version = 0
+
+[commands]
+mint = "/usr/bin/mint"
+"#;
+        let result = parse_provider_toml(toml);
+        assert!(result.is_err(), "NS-072: version 0 must be rejected");
+    }
+
+    #[test]
+    fn provider_contract_version_rejects_negative_version() {
+        // NS-072: Negative versions are not valid.
+        let toml = r#"
+contract_version = -1
+
+[commands]
+mint = "/usr/bin/mint"
+"#;
+        let result = parse_provider_toml(toml);
+        assert!(result.is_err(), "NS-072: negative version must be rejected");
+    }
+
+    #[test]
+    fn provider_contract_version_rejects_non_integer_type() {
+        // NS-072: contract_version must be an integer, not a string.
+        let toml = r#"
+contract_version = "1"
+
+[commands]
+mint = "/usr/bin/mint"
+"#;
+        let result = parse_provider_toml(toml);
+        assert!(
+            result.is_err(),
+            "NS-072: non-integer contract_version must be rejected"
+        );
+        let err = result.unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.to_lowercase().contains("integer"),
+            "NS-072: error must mention expected type, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn provider_contract_version_stored_in_file_provider_config() {
+        // NS-072: The parsed FileProviderConfig must expose the contract_version.
+        let toml = r#"
+contract_version = 1
+
+[commands]
+mint = "/usr/bin/mint"
+"#;
+        let config = parse_provider_toml(toml).unwrap();
+        assert_eq!(config.contract_version, 1);
+    }
+
+    #[test]
+    fn provider_contract_version_propagated_to_resolved_provider() {
+        // NS-072: The resolved provider must carry the contract_version
+        // from the file config layer.
+        let file_config = FileProviderConfig {
+            contract_version: 1,
+            mint_cmd: "/usr/bin/mint".to_string(),
+            refresh_cmd: None,
+            revoke_cmd: None,
+            env: Default::default(),
+        };
+
+        let resolved = resolve_provider_config(
+            "test",
+            &ProviderFlags::empty(),
+            &ProviderEnv::empty(),
+            Some(file_config),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved.contract_version,
+            Some(1),
+            "NS-072: resolved provider must carry contract_version from file layer"
+        );
+    }
+
+    #[test]
+    fn provider_contract_version_none_for_flags_and_env_layers() {
+        // NS-072: Flags and env layers don't specify contract_version
+        // (they're overrides, not full configs). contract_version is None.
+        let flags = flags_with_mint_cmd("/from/flags/mint");
+        let resolved =
+            resolve_provider_config("test", &flags, &ProviderEnv::empty(), None).unwrap();
+        assert_eq!(
+            resolved.contract_version, None,
+            "NS-072: flags layer should not have contract_version"
+        );
+    }
+
+    #[test]
+    fn provider_contract_version_unsupported_error_display() {
+        // NS-072: Error message for unsupported version must be actionable.
+        let err = ProviderConfigError::UnsupportedContractVersion {
+            version: 42,
+            supported: vec![1],
+        };
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("42"),
+            "NS-072: error must mention the unsupported version, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("1"),
+            "NS-072: error must mention supported versions, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn provider_contract_version_current_version_constant_is_one() {
+        // NS-072: The current contract version must be 1.
+        assert_eq!(
+            CURRENT_CONTRACT_VERSION, 1,
+            "NS-072: current contract version must be 1"
+        );
+    }
+
+    #[test]
+    fn provider_contract_version_supported_versions_includes_current() {
+        // NS-072: The supported versions list must include the current version.
+        let supported = supported_contract_versions();
+        assert!(
+            supported.contains(&CURRENT_CONTRACT_VERSION),
+            "NS-072: supported versions must include current version {}",
+            CURRENT_CONTRACT_VERSION
+        );
+    }
+
+    #[test]
+    fn provider_contract_version_backward_compat_supports_previous() {
+        // NS-072: Must support current and previous version.
+        // Since current = 1 and there's no version 0, only version 1 is valid now.
+        // But the mechanism must be in place: when version 2 becomes current,
+        // version 1 must remain supported.
+        let supported = supported_contract_versions();
+        // For now, at version 1, only 1 is supported (no version 0 existed).
+        assert_eq!(
+            supported,
+            vec![1],
+            "NS-072: at version 1, only version 1 should be supported (no v0 existed)"
+        );
+    }
+
+    #[test]
+    fn provider_contract_version_validate_version_rejects_unsupported() {
+        // NS-072: validate_contract_version must reject unsupported versions.
+        let result = validate_contract_version(99);
+        assert!(
+            result.is_err(),
+            "NS-072: validate_contract_version must reject unsupported versions"
+        );
+    }
+
+    #[test]
+    fn provider_contract_version_validate_version_accepts_current() {
+        // NS-072: validate_contract_version must accept the current version.
+        let result = validate_contract_version(CURRENT_CONTRACT_VERSION);
+        assert!(
+            result.is_ok(),
+            "NS-072: validate_contract_version must accept current version"
+        );
+    }
+
+    #[test]
+    fn provider_contract_version_rejects_float_type() {
+        // NS-072: contract_version must be an integer; TOML floats are rejected.
+        let toml = r#"
+contract_version = 1.0
+
+[commands]
+mint = "/usr/bin/mint"
+"#;
+        let result = parse_provider_toml(toml);
+        assert!(
+            result.is_err(),
+            "NS-072: float contract_version must be rejected"
+        );
+        let err = result.unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.to_lowercase().contains("integer"),
+            "NS-072: error must mention expected type, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn provider_contract_version_validate_rejects_zero_directly() {
+        // NS-072: validate_contract_version(0) must reject — version 0 never existed.
+        // In practice the parser catches this first, but the public API must be safe.
+        let result = validate_contract_version(0);
+        assert!(
+            result.is_err(),
+            "NS-072: validate_contract_version(0) must reject"
         );
     }
 
