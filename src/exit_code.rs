@@ -91,6 +91,8 @@ pub enum NoscopeExitCode {
     Permission,
     /// 78 — Configuration error (malformed config).
     ConfigError,
+    /// 79 — Profile validation failed (NS-052).
+    ProfileValidation,
     /// Child process ran — pass through its exit code directly.
     ChildExit(i32),
 }
@@ -107,6 +109,7 @@ impl NoscopeExitCode {
             Self::Internal => 70,
             Self::Permission => 77,
             Self::ConfigError => 78,
+            Self::ProfileValidation => 79,
             Self::ChildExit(code) => code,
         }
     }
@@ -123,6 +126,7 @@ impl fmt::Display for NoscopeExitCode {
             Self::Internal => write!(f, "exit 70: internal error"),
             Self::Permission => write!(f, "exit 77: permission denied"),
             Self::ConfigError => write!(f, "exit 78: configuration error"),
+            Self::ProfileValidation => write!(f, "exit 79: profile validation failed"),
             Self::ChildExit(code) => write!(f, "child process exited with code {}", code),
         }
     }
@@ -477,7 +481,7 @@ mod tests {
     #[test]
     fn noscope_exit_codes_do_not_overlap_with_provider_codes() {
         // sysexits start at 64, provider codes are 0-4 -- no overlap
-        let noscope_codes = [0, 64, 65, 66, 69, 70, 77, 78];
+        let noscope_codes = [0, 64, 65, 66, 69, 70, 77, 78, 79];
         let provider_error_codes = [1, 2, 3, 4]; // exclude 0 (both mean success)
         for nc in &noscope_codes {
             if *nc == 0 {
