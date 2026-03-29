@@ -93,7 +93,7 @@ impl fmt::Display for ProfileError {
                 write!(
                     f,
                     "profile {:?} has insecure permissions {:04o}; \
-                     world-accessible bits must be 0 (e.g. 0600, 0640)",
+                     group-writable and world-accessible bits must be 0 (e.g. 0600, 0640)",
                     path, mode
                 )
             }
@@ -1020,6 +1020,113 @@ ttl = 3600
 
         let profile = super::load_profile(&file_path).unwrap();
         assert_eq!(profile.credentials.len(), 1);
+    }
+
+    // =========================================================================
+    // noscope-bsq.1.3: Profile permission checks must match provider policy —
+    // group-writable and world-accessible bits both rejected.
+    // =========================================================================
+
+    fn valid_profile_toml() -> &'static str {
+        r#"
+[[credentials]]
+provider = "aws"
+role = "admin"
+ttl = 3600
+"#
+    }
+
+    #[test]
+    fn profile_permissions_rejects_group_writable_0660() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("profile.toml");
+        std::fs::write(&file_path, valid_profile_toml()).unwrap();
+        std::fs::set_permissions(
+            &file_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o660),
+        )
+        .unwrap();
+
+        let result = super::load_profile(&file_path);
+        assert!(
+            result.is_err(),
+            "Profile with 0660 (group-writable) must be rejected"
+        );
+    }
+
+    #[test]
+    fn profile_permissions_rejects_group_writable_0620() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("profile.toml");
+        std::fs::write(&file_path, valid_profile_toml()).unwrap();
+        std::fs::set_permissions(
+            &file_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o620),
+        )
+        .unwrap();
+
+        let result = super::load_profile(&file_path);
+        assert!(
+            result.is_err(),
+            "Profile with 0620 (group-write-only) must be rejected"
+        );
+    }
+
+    #[test]
+    fn profile_permissions_allows_0640() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("profile.toml");
+        std::fs::write(&file_path, valid_profile_toml()).unwrap();
+        std::fs::set_permissions(
+            &file_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o640),
+        )
+        .unwrap();
+
+        let result = super::load_profile(&file_path);
+        assert!(
+            result.is_ok(),
+            "Profile with 0640 (owner rw, group read) should be allowed"
+        );
+    }
+
+    #[test]
+    fn profile_permissions_allows_0400() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("profile.toml");
+        std::fs::write(&file_path, valid_profile_toml()).unwrap();
+        std::fs::set_permissions(
+            &file_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o400),
+        )
+        .unwrap();
+
+        let result = super::load_profile(&file_path);
+        assert!(
+            result.is_ok(),
+            "Profile with 0400 (owner read-only) should be allowed"
+        );
+    }
+
+    #[test]
+    fn profile_permissions_error_message_mentions_group_writable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("profile.toml");
+        std::fs::write(&file_path, valid_profile_toml()).unwrap();
+        std::fs::set_permissions(
+            &file_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o660),
+        )
+        .unwrap();
+
+        let result = super::load_profile(&file_path);
+        let err = result.unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("0660"),
+            "Error must show the actual mode: {}",
+            msg
+        );
     }
 
     // =========================================================================

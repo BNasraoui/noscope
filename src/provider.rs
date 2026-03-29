@@ -87,7 +87,7 @@ impl fmt::Display for ProviderConfigError {
                 write!(
                     f,
                     "config file {:?} has insecure permissions {:04o}; \
-                     world-accessible bits must be 0 (e.g. 0600, 0640)",
+                     group-writable and world-accessible bits must be 0 (e.g. 0600, 0640)",
                     path, mode
                 )
             }
@@ -374,20 +374,27 @@ pub fn load_provider_file(path: &Path) -> Result<Option<FileProviderConfig>, Pro
     parse_provider_toml(&content).map(Some)
 }
 
+/// Bitmask of permission bits that are insecure for secret-bearing config files.
+///
+/// - `0o020`: group-write — another user in the same group could modify secrets.
+/// - `0o007`: world (other) read/write/execute — anyone on the system could access.
+///
+/// Allowed: owner-only (0600, 0700, 0400) or owner+group-read (0640, 0750, 0440).
+/// Rejected: group-writable (0660, 0620) or world-accessible (0644, 0666, 0604).
+const INSECURE_MODE_BITS: u32 = 0o020 | 0o007;
+
 /// NS-069: Check that a config file has secure permissions.
 ///
-/// Rejects world-readable files. The "other" permission bits (lowest 3 bits
-/// of the mode) must be zero. This allows 0600, 0640, 0400, etc. but
-/// rejects 0644, 0604, 0666, etc.
+/// Secret-bearing config files must not be group-writable or world-accessible.
+/// See [`INSECURE_MODE_BITS`] for the exact policy.
 pub fn check_config_permissions(path: &Path) -> Result<(), ProviderConfigError> {
     let metadata = fs::metadata(path).map_err(|e| ProviderConfigError::MalformedConfig {
         message: format!("cannot stat {}: {}", path.display(), e),
     })?;
 
     let mode = metadata.permissions().mode();
-    let other_bits = mode & 0o007;
 
-    if other_bits != 0 {
+    if mode & INSECURE_MODE_BITS != 0 {
         return Err(ProviderConfigError::InsecurePermissions {
             path: path.to_path_buf(),
             mode: mode & 0o777,
@@ -937,6 +944,168 @@ mint = ""
 
         let result = check_config_permissions(&file_path);
         assert!(result.is_ok(), "0400 (owner-read-only) should be allowed");
+    }
+
+    // =========================================================================
+    // noscope-bsq.1.3: Tighten Unix config permission checks — group-writable
+    // and world-accessible bits must both be rejected for secret-bearing configs.
+    // =========================================================================
+
+    #[test]
+    fn config_permissions_rejects_group_writable_0660() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("provider.toml");
+        fs::write(&file_path, valid_provider_toml()).unwrap();
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o660)).unwrap();
+
+        let result = check_config_permissions(&file_path);
+        assert!(
+            result.is_err(),
+            "0660 (group-writable) must be rejected for secret-bearing config"
+        );
+    }
+
+    #[test]
+    fn config_permissions_rejects_group_writable_0620() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("provider.toml");
+        fs::write(&file_path, valid_provider_toml()).unwrap();
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o620)).unwrap();
+
+        let result = check_config_permissions(&file_path);
+        assert!(
+            result.is_err(),
+            "0620 (group-write-only) must be rejected for secret-bearing config"
+        );
+    }
+
+    #[test]
+    fn config_permissions_rejects_group_writable_0670() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("provider.toml");
+        fs::write(&file_path, valid_provider_toml()).unwrap();
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o670)).unwrap();
+
+        let result = check_config_permissions(&file_path);
+        assert!(
+            result.is_err(),
+            "0670 (group-rwx) must be rejected for secret-bearing config"
+        );
+    }
+
+    #[test]
+    fn config_permissions_rejects_world_writable_0602() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("provider.toml");
+        fs::write(&file_path, valid_provider_toml()).unwrap();
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o602)).unwrap();
+
+        let result = check_config_permissions(&file_path);
+        assert!(result.is_err(), "0602 (world-writable) must be rejected");
+    }
+
+    #[test]
+    fn config_permissions_rejects_group_and_world_writable_0662() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("provider.toml");
+        fs::write(&file_path, valid_provider_toml()).unwrap();
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o662)).unwrap();
+
+        let result = check_config_permissions(&file_path);
+        assert!(
+            result.is_err(),
+            "0662 (group+world writable) must be rejected"
+        );
+    }
+
+    #[test]
+    fn config_permissions_allows_0700() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("provider.toml");
+        fs::write(&file_path, valid_provider_toml()).unwrap();
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let result = check_config_permissions(&file_path);
+        assert!(result.is_ok(), "0700 (owner-only rwx) should be allowed");
+    }
+
+    #[test]
+    fn config_permissions_allows_0500() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("provider.toml");
+        fs::write(&file_path, valid_provider_toml()).unwrap();
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o500)).unwrap();
+
+        let result = check_config_permissions(&file_path);
+        assert!(result.is_ok(), "0500 (owner rx) should be allowed");
+    }
+
+    #[test]
+    fn config_permissions_allows_0440() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("provider.toml");
+        fs::write(&file_path, valid_provider_toml()).unwrap();
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o440)).unwrap();
+
+        let result = check_config_permissions(&file_path);
+        assert!(
+            result.is_ok(),
+            "0440 (owner+group read-only) should be allowed"
+        );
+    }
+
+    #[test]
+    fn config_permissions_allows_0750() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("provider.toml");
+        fs::write(&file_path, valid_provider_toml()).unwrap();
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o750)).unwrap();
+
+        let result = check_config_permissions(&file_path);
+        assert!(
+            result.is_ok(),
+            "0750 (owner rwx, group rx) should be allowed"
+        );
+    }
+
+    #[test]
+    fn config_permissions_error_message_is_actionable() {
+        // The error message must mention the rejected mode, suggest acceptable
+        // modes, and reference group-writable rejection (not just world bits).
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("provider.toml");
+        fs::write(&file_path, valid_provider_toml()).unwrap();
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o660)).unwrap();
+
+        let result = check_config_permissions(&file_path);
+        let err = result.unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("0660"),
+            "Error must show the actual mode: {}",
+            msg
+        );
+        assert!(
+            msg.contains("group") || msg.contains("writable"),
+            "Error must mention group-writable rejection, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn config_permissions_load_provider_file_rejects_group_writable() {
+        // Integration: load_provider_file must reject group-writable files too,
+        // not just world-accessible.
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("provider.toml");
+        fs::write(&file_path, valid_provider_toml()).unwrap();
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o660)).unwrap();
+
+        let result = load_provider_file(&file_path);
+        assert!(
+            result.is_err(),
+            "load_provider_file must reject group-writable config"
+        );
     }
 
     // =========================================================================
