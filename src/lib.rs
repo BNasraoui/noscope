@@ -1,6 +1,7 @@
 mod config_path;
 pub mod client;
 pub mod credential_set;
+pub mod error;
 pub mod event;
 pub mod exit_code;
 pub mod mint;
@@ -20,6 +21,7 @@ pub mod token;
 // ---------------------------------------------------------------------------
 
 pub use client::{Client, ClientOptions, MintRequest, NoscopeError, ProviderOverrides, RevokeRequest};
+pub use error::{Error, ErrorKind};
 pub use event::{Event, EventType, LogFormat};
 pub use exit_code::{NoscopeExitCode, ProviderExitCode};
 pub use mint::MintEnvelope;
