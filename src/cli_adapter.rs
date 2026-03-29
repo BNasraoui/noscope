@@ -17,7 +17,8 @@
 // The underlying mint::validate_mint_args and profile::check_profile_flag_exclusion
 // functions remain available for callers who already have parsed values.
 
-use crate::client::{MintRequest, NoscopeError};
+use crate::client::MintRequest;
+use crate::error::Error;
 use crate::mint;
 use crate::profile;
 
@@ -30,8 +31,9 @@ use crate::profile;
 ///
 /// This is a CLI concern: library consumers use `RevokeRequest::from_token_id`
 /// or `RevokeRequest::from_mint_json` instead, which accept domain types.
-pub fn validate_revoke_argv(args: &[String]) -> Result<(), NoscopeError> {
-    mint::validate_revoke_args(args).map_err(NoscopeError::from)
+pub fn validate_revoke_argv(args: &[String]) -> Result<(), Error> {
+    mint::validate_revoke_args(args)?;
+    Ok(())
 }
 
 /// NS-062: Validate CLI mint flags and produce a domain `MintRequest`.
@@ -46,9 +48,8 @@ pub fn validate_mint_flags(
     ttl_secs: Option<u64>,
     providers: &[String],
     role: &str,
-) -> Result<MintRequest, NoscopeError> {
-    let validated_ttl =
-        mint::validate_mint_args(ttl_secs, providers, role).map_err(NoscopeError::from)?;
+) -> Result<MintRequest, Error> {
+    let validated_ttl = mint::validate_mint_args(ttl_secs, providers, role)?;
 
     Ok(MintRequest {
         providers: providers.to_vec(),
@@ -64,14 +65,15 @@ pub fn validate_mint_flags(
 /// directly, never both simultaneously.
 ///
 /// Delegates to `profile::check_profile_flag_exclusion` and converts the
-/// error to `NoscopeError` for uniform CLI error handling.
+/// error to `Error` for uniform CLI error handling.
 pub fn check_profile_flag_exclusion(
     profile: Option<&str>,
     provider: Option<&str>,
     role: Option<&str>,
     ttl: Option<u64>,
-) -> Result<(), NoscopeError> {
-    profile::check_profile_flag_exclusion(profile, provider, role, ttl).map_err(NoscopeError::from)
+) -> Result<(), Error> {
+    profile::check_profile_flag_exclusion(profile, provider, role, ttl)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -307,9 +309,8 @@ mod tests {
     }
 
     #[test]
-    fn backward_compatible_migration_adapter_error_maps_to_noscope_error() {
-        // Errors from the CLI adapter must convert to NoscopeError for
-        // backward compatibility with existing CLI error handling.
+    fn backward_compatible_migration_adapter_error_maps_to_error() {
+        // Errors from the CLI adapter must be error::Error (the canonical type).
         let args = vec![
             "noscope".to_string(),
             "revoke".to_string(),
@@ -318,7 +319,6 @@ mod tests {
         ];
         let result = super::validate_revoke_argv(&args);
         assert!(result.is_err());
-        // The error type must be convertible to NoscopeError or be NoscopeError.
         let err = result.unwrap_err();
         let _msg = format!("{}", err); // Must implement Display
     }
@@ -376,15 +376,14 @@ mod tests {
 
     #[test]
     fn edge_case_profile_flag_exclusion_error_has_exit_code() {
-        // NS-054: Profile flag conflict maps through NoscopeError::Profile.
-        // The From<ProfileError> conversion wraps all profile errors under
-        // the Profile variant (exit 66), even FlagConflict which the underlying
-        // ProfileError maps to Usage (64). The adapter preserves the existing
-        // NoscopeError mapping behavior for backward compatibility.
+        // NS-054: Profile flag conflict maps through error::Error with
+        // ErrorKind::Profile. The From<ProfileError> conversion wraps all
+        // profile errors under Profile (exit 66), even FlagConflict which
+        // the underlying ProfileError maps to Usage (64).
         let err =
             super::check_profile_flag_exclusion(Some("dev"), Some("aws"), None, None).unwrap_err();
         let code = err.exit_code();
-        // NoscopeError::Profile maps to exit 66 (ConfigNotFound) per existing behavior.
+        // ErrorKind::Profile maps to exit 66 (ConfigNotFound).
         assert_ne!(code, 0, "Profile flag conflict must not be success");
     }
 }

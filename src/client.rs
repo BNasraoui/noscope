@@ -11,12 +11,16 @@
 // - NS-020: Core dump prevention at construction
 // - NS-033: Template variable injection prevention (role validation)
 // - NS-058: Redaction at all log levels
+//
+// noscope-bsq.1.5: This module uses crate::error::Error as the single
+// canonical error type. The old NoscopeError enum has been replaced by a
+// type alias (pub type NoscopeError = crate::error::Error) in lib.rs for
+// backward compatibility.
 
-use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::exit_code::NoscopeExitCode;
+use crate::error::Error;
 use crate::mint;
 use crate::provider;
 use crate::provider_exec;
@@ -96,9 +100,9 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns [`NoscopeError::Security`] if `setrlimit(RLIMIT_CORE, 0)`
-    /// fails (e.g., insufficient privileges on the platform).
-    pub fn new(opts: ClientOptions) -> Result<Self, NoscopeError> {
+    /// Returns [`Error`] with [`ErrorKind::Security`] if
+    /// `setrlimit(RLIMIT_CORE, 0)` fails (e.g., insufficient privileges).
+    pub fn new(opts: ClientOptions) -> Result<Self, Error> {
         // NS-020: Fail-fast core dump prevention.
         security::disable_core_dumps()?;
         Ok(Self { opts })
@@ -121,7 +125,7 @@ impl Client {
     ///
     /// Checks: providers non-empty, role non-empty and safe (NS-033),
     /// TTL > 0 (NS-062).
-    pub fn validate_mint(&self, req: &MintRequest) -> Result<(), NoscopeError> {
+    pub fn validate_mint(&self, req: &MintRequest) -> Result<(), Error> {
         // Delegate to existing mint validation.
         // Pass Some(ttl_secs) directly — validate_mint_args handles zero
         // TTL with a clear error message, and None for the missing-flag case.
@@ -130,12 +134,10 @@ impl Client {
         } else {
             Some(req.ttl_secs)
         };
-        mint::validate_mint_args(ttl_opt, &req.providers, &req.role).map_err(NoscopeError::from)?;
+        mint::validate_mint_args(ttl_opt, &req.providers, &req.role)?;
 
         // NS-033: Validate role for safe characters.
-        provider_exec::validate_role(&req.role).map_err(|e| NoscopeError::Usage {
-            message: format!("{}", e),
-        })?;
+        provider_exec::validate_role(&req.role).map_err(|e| Error::usage(&format!("{}", e)))?;
 
         Ok(())
     }
@@ -143,9 +145,9 @@ impl Client {
     /// NS-065: Check that stdout is not a terminal before mint output.
     ///
     /// Respects `force_terminal` from [`ClientOptions`].
-    pub fn check_stdout_not_terminal(&self, is_tty: bool) -> Result<(), NoscopeError> {
-        mint::check_stdout_not_terminal(is_tty, self.opts.force_terminal)
-            .map_err(NoscopeError::from)
+    pub fn check_stdout_not_terminal(&self, is_tty: bool) -> Result<(), Error> {
+        mint::check_stdout_not_terminal(is_tty, self.opts.force_terminal)?;
+        Ok(())
     }
 
     /// Resolve a provider configuration by name, with optional overrides.
@@ -156,7 +158,7 @@ impl Client {
         &self,
         name: &str,
         overrides: &ProviderOverrides,
-    ) -> Result<provider::ResolvedProvider, NoscopeError> {
+    ) -> Result<provider::ResolvedProvider, Error> {
         // Convert ProviderOverrides to the internal types.
         let flags = provider::ProviderFlags {
             mint_cmd: overrides.mint_cmd.clone(),
@@ -170,15 +172,19 @@ impl Client {
             (None, Some(home)) => provider::provider_config_path_with_home(name, None, home),
             (None, None) => provider::provider_config_path(name, None),
         };
-        let file_config = provider::load_provider_file(&config_path).map_err(NoscopeError::from)?;
+        let file_config = provider::load_provider_file(&config_path)?;
 
         let env = match &self.opts.provider_env {
             Some(env) => env.clone(),
             None => provider::provider_env_from_process(),
         };
 
-        provider::resolve_provider_config(name, &flags, &env, file_config)
-            .map_err(NoscopeError::from)
+        Ok(provider::resolve_provider_config(
+            name,
+            &flags,
+            &env,
+            file_config,
+        )?)
     }
 
     /// NS-071: Generate dry-run output for a resolved provider.
@@ -233,8 +239,8 @@ impl RevokeRequest {
     ///
     /// Extracts only token_id and provider. The raw token field is read
     /// but never stored (NS-012).
-    pub fn from_mint_json(json_str: &str) -> Result<Self, NoscopeError> {
-        let inner = mint::RevokeInput::from_mint_json(json_str).map_err(NoscopeError::from)?;
+    pub fn from_mint_json(json_str: &str) -> Result<Self, Error> {
+        let inner = mint::RevokeInput::from_mint_json(json_str)?;
         Ok(Self { inner })
     }
 
@@ -272,93 +278,19 @@ impl ProviderOverrides {
 }
 
 // ---------------------------------------------------------------------------
-// NoscopeError
+// NoscopeError type alias (noscope-bsq.1.5)
 // ---------------------------------------------------------------------------
-
-/// Unified error type for the noscope facade API.
-///
-/// Covers all failure modes a consumer may encounter: usage errors,
-/// configuration errors, mint failures, and security violations.
-/// Each variant maps to a noscope exit code (NS-054).
-#[derive(Debug)]
-pub enum NoscopeError {
-    /// Command-line usage error (bad flags, missing args).
-    Usage { message: String },
-    /// Configuration error (malformed config, missing provider).
-    Config { message: String },
-    /// Credential minting failed.
-    MintFailed { message: String },
-    /// Security invariant violated (token in args, etc.).
-    Security { message: String },
-    /// Profile error (not found, validation failed, etc.).
-    Profile { message: String },
-}
-
-impl NoscopeError {
-    /// Map this error to a process exit code (NS-054).
-    pub fn exit_code(&self) -> i32 {
-        match self {
-            Self::Usage { .. } => NoscopeExitCode::Usage.as_raw(),
-            Self::Config { .. } => NoscopeExitCode::ConfigError.as_raw(),
-            Self::MintFailed { .. } => NoscopeExitCode::MintFailure.as_raw(),
-            Self::Security { .. } => NoscopeExitCode::Usage.as_raw(),
-            Self::Profile { .. } => NoscopeExitCode::ConfigNotFound.as_raw(),
-        }
-    }
-}
-
-impl fmt::Display for NoscopeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Usage { message } => write!(f, "usage error: {}", message),
-            Self::Config { message } => write!(f, "config error: {}", message),
-            Self::MintFailed { message } => write!(f, "mint failed: {}", message),
-            Self::Security { message } => write!(f, "security error: {}", message),
-            Self::Profile { message } => write!(f, "profile error: {}", message),
-        }
-    }
-}
-
-impl std::error::Error for NoscopeError {}
-
+// The old NoscopeError enum has been replaced by a type alias pointing to
+// the canonical error::Error type. This preserves backward compatibility
+// for existing consumers while converging on a single public error surface.
+//
+// Migration for existing code:
+// - Old: match err { NoscopeError::Usage { message } => ... }
+//   New: match err.kind() { ErrorKind::Usage => ...; use err.message() }
+// - Old: NoscopeError::Usage { message: "bad".to_string() }
+//   New: Error::usage("bad")
+// - exit_code() and Display still work unchanged.
 // ---------------------------------------------------------------------------
-// From conversions for internal error types
-// ---------------------------------------------------------------------------
-
-impl From<mint::MintError> for NoscopeError {
-    fn from(e: mint::MintError) -> Self {
-        match e {
-            mint::MintError::InvalidInput { message } => Self::Usage { message },
-            mint::MintError::TerminalDetected => Self::Usage {
-                message: format!("{}", e),
-            },
-        }
-    }
-}
-
-impl From<provider::ProviderConfigError> for NoscopeError {
-    fn from(e: provider::ProviderConfigError) -> Self {
-        Self::Config {
-            message: format!("{}", e),
-        }
-    }
-}
-
-impl From<security::SecurityError> for NoscopeError {
-    fn from(e: security::SecurityError) -> Self {
-        Self::Security {
-            message: format!("{}", e),
-        }
-    }
-}
-
-impl From<crate::profile::ProfileError> for NoscopeError {
-    fn from(e: crate::profile::ProfileError) -> Self {
-        Self::Profile {
-            message: format!("{}", e),
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -410,15 +342,13 @@ mod tests {
     #[test]
     fn facade_error_type_exists_and_is_std_error() {
         fn assert_error<T: std::error::Error>() {}
-        assert_error::<super::NoscopeError>();
+        assert_error::<crate::Error>();
     }
 
     #[test]
     fn facade_error_has_exit_code() {
-        // Every error variant must map to an exit code for automation.
-        let err = super::NoscopeError::Usage {
-            message: "bad flag".to_string(),
-        };
+        // Every error kind must map to an exit code for automation.
+        let err = crate::Error::usage("bad flag");
         let code = err.exit_code();
         assert_eq!(code, 64);
     }
@@ -426,36 +356,26 @@ mod tests {
     #[test]
     fn facade_error_variants_cover_core_failure_modes() {
         // Usage errors
-        let usage = super::NoscopeError::Usage {
-            message: "missing --ttl".to_string(),
-        };
+        let usage = crate::Error::usage("missing --ttl");
         assert_eq!(usage.exit_code(), 64);
 
         // Provider config errors
-        let config = super::NoscopeError::Config {
-            message: "malformed TOML".to_string(),
-        };
+        let config = crate::Error::config("malformed TOML");
         assert_eq!(config.exit_code(), 78);
 
-        // Mint failure
-        let mint = super::NoscopeError::MintFailed {
-            message: "aws auth expired".to_string(),
-        };
-        assert_eq!(mint.exit_code(), 65);
+        // Provider failure (replaces MintFailed)
+        let provider = crate::Error::provider("aws", "auth expired");
+        assert_eq!(provider.exit_code(), 65);
 
         // Security violation
-        let sec = super::NoscopeError::Security {
-            message: "token in args".to_string(),
-        };
-        // Security violations are internal/usage errors — must not be 0
+        let sec = crate::Error::security("token in args");
+        // Security violations are usage errors — must not be 0
         assert_ne!(sec.exit_code(), 0);
     }
 
     #[test]
     fn facade_error_display_is_informative() {
-        let err = super::NoscopeError::Usage {
-            message: "missing --ttl flag".to_string(),
-        };
+        let err = crate::Error::usage("missing --ttl flag");
         let msg = format!("{}", err);
         assert!(
             msg.contains("missing --ttl flag"),
@@ -467,9 +387,7 @@ mod tests {
     #[test]
     fn facade_error_debug_does_not_contain_secrets() {
         // Error type must not carry or leak secret values in Debug.
-        let err = super::NoscopeError::MintFailed {
-            message: "provider failed".to_string(),
-        };
+        let err = crate::Error::provider("aws", "provider failed");
         let debug = format!("{:?}", err);
         assert!(
             !debug.contains("secret"),
@@ -676,20 +594,20 @@ mod tests {
     }
 
     #[test]
-    fn facade_noscopeerror_is_send() {
-        static_assertions::assert_impl_all!(super::NoscopeError: Send);
+    fn facade_error_is_send() {
+        static_assertions::assert_impl_all!(crate::Error: Send);
     }
 
     #[test]
-    fn facade_noscopeerror_is_sync() {
-        static_assertions::assert_impl_all!(super::NoscopeError: Sync);
+    fn facade_error_is_sync() {
+        static_assertions::assert_impl_all!(crate::Error: Sync);
     }
 
     #[test]
-    fn facade_noscopeerror_is_not_clone() {
+    fn facade_error_is_not_clone() {
         // Error types should not be Clone — they may carry heap-allocated
         // context and cloning errors is rarely the right pattern.
-        static_assertions::assert_not_impl_any!(super::NoscopeError: Clone);
+        static_assertions::assert_not_impl_any!(crate::Error: Clone);
     }
 
     #[test]
@@ -790,7 +708,7 @@ mod tests {
     }
 
     // =========================================================================
-    // NoscopeError conversion from internal error types.
+    // Error conversion from internal error types (via error::Error From impls).
     // =========================================================================
 
     #[test]
@@ -798,7 +716,7 @@ mod tests {
         let mint_err = crate::mint::MintError::InvalidInput {
             message: "bad input".to_string(),
         };
-        let err: super::NoscopeError = mint_err.into();
+        let err: crate::Error = mint_err.into();
         let msg = format!("{}", err);
         assert!(msg.contains("bad input"), "Must carry the message: {}", msg);
     }
@@ -808,7 +726,7 @@ mod tests {
         let prov_err = crate::provider::ProviderConfigError::MalformedConfig {
             message: "syntax error".to_string(),
         };
-        let err: super::NoscopeError = prov_err.into();
+        let err: crate::Error = prov_err.into();
         let msg = format!("{}", err);
         assert!(
             msg.contains("syntax error"),
@@ -820,7 +738,7 @@ mod tests {
     #[test]
     fn facade_error_from_security_error() {
         let sec_err = crate::security::SecurityError::TokenInArgs { arg_index: 2 };
-        let err: super::NoscopeError = sec_err.into();
+        let err: crate::Error = sec_err.into();
         assert_ne!(err.exit_code(), 0, "Security error must not be success");
     }
 
@@ -829,7 +747,7 @@ mod tests {
         let prof_err = crate::profile::ProfileError::NotFound {
             path: std::path::PathBuf::from("/missing/profile.toml"),
         };
-        let err: super::NoscopeError = prof_err.into();
+        let err: crate::Error = prof_err.into();
         let msg = format!("{}", err);
         assert!(msg.contains("profile"), "Must mention profile: {}", msg);
     }
@@ -1094,11 +1012,11 @@ mint = "/from/file/mint"
     // 5. Documentation: public API docs describe the behavior.
     // =========================================================================
 
-    // Rule 1: Client::new must return Result<Client, NoscopeError>.
+    // Rule 1: Client::new must return Result<Client, Error>.
     #[test]
     fn hardening_client_new_returns_result() {
         // Client::new must be fallible — returns Result, not bare Client.
-        let result: Result<super::Client, super::NoscopeError> =
+        let result: Result<super::Client, crate::Error> =
             super::Client::new(super::ClientOptions::default());
         // On Linux, hardening should succeed.
         assert!(result.is_ok(), "Client::new must succeed on Linux");
@@ -1119,30 +1037,27 @@ mint = "/from/file/mint"
         assert!(result.is_ok(), "Client from new() must be fully functional");
     }
 
-    // Rule 1: Client::new error is a NoscopeError::Security variant.
+    // Rule 1: Client::new error is an Error with SecurityKind.
     #[test]
     fn hardening_failure_is_security_error() {
-        // A hardening failure must surface as NoscopeError::Security.
+        // A hardening failure must surface as Error with ErrorKind::Security.
         // We can't easily force setrlimit to fail, so we verify the error
-        // type conversion: SecurityError::CoreDumpDisableFailed → NoscopeError::Security.
+        // type conversion: SecurityError::CoreDumpDisableFailed → Error::Security.
         let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "mock failure",
         ));
-        let noscope_err: super::NoscopeError = sec_err.into();
-        match &noscope_err {
-            super::NoscopeError::Security { message } => {
-                assert!(
-                    message.contains("core dump"),
-                    "Security error message must mention core dumps: {}",
-                    message
-                );
-            }
-            other => panic!(
-                "CoreDumpDisableFailed must map to NoscopeError::Security, got: {:?}",
-                other
-            ),
-        }
+        let err: crate::Error = sec_err.into();
+        assert_eq!(
+            err.kind(),
+            crate::ErrorKind::Security,
+            "CoreDumpDisableFailed must map to ErrorKind::Security"
+        );
+        assert!(
+            err.message().contains("core dump"),
+            "Security error message must mention core dumps: {}",
+            err.message()
+        );
     }
 
     // Rule 1: Hardening error has a non-zero exit code.
@@ -1152,9 +1067,9 @@ mint = "/from/file/mint"
             std::io::ErrorKind::PermissionDenied,
             "mock",
         ));
-        let noscope_err: super::NoscopeError = sec_err.into();
+        let err: crate::Error = sec_err.into();
         assert_ne!(
-            noscope_err.exit_code(),
+            err.exit_code(),
             0,
             "Hardening failure exit code must be non-zero"
         );
@@ -1215,16 +1130,17 @@ mint = "/from/file/mint"
     // Rule 4: Callers can programmatically detect hardening failure.
     #[test]
     fn hardening_failure_is_detectable_via_pattern_match() {
-        // Prove that callers can match on NoscopeError::Security to detect
+        // Prove that callers can match on ErrorKind::Security to detect
         // hardening failures specifically.
         let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(std::io::Error::other(
             "simulated",
         ));
-        let err: super::NoscopeError = sec_err.into();
-        let detected = matches!(&err, super::NoscopeError::Security { message } if message.contains("core dump"));
+        let err: crate::Error = sec_err.into();
+        let detected =
+            err.kind() == crate::ErrorKind::Security && err.message().contains("core dump");
         assert!(
             detected,
-            "Callers must be able to detect hardening failure via pattern match"
+            "Callers must be able to detect hardening failure via kind + message"
         );
     }
 
@@ -1235,7 +1151,7 @@ mint = "/from/file/mint"
             std::io::ErrorKind::PermissionDenied,
             "permission denied",
         ));
-        let err: super::NoscopeError = sec_err.into();
+        let err: crate::Error = sec_err.into();
         let msg = format!("{}", err);
         assert!(
             msg.contains("core dump"),
