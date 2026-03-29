@@ -1,3 +1,4 @@
+mod config_path;
 pub mod credential_set;
 pub mod event;
 pub mod exit_code;

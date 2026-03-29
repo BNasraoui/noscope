@@ -128,14 +128,9 @@ impl Default for ExecConfig {
 
 /// NS-041: Provider capability declaration.
 ///
-/// Parsed from the provider config file. Defaults to no refresh, no revoke.
-#[derive(Debug, Default)]
-pub struct ProviderCapabilities {
-    /// Whether this provider supports token refresh.
-    pub supports_refresh: bool,
-    /// Whether this provider supports token revocation.
-    pub supports_revoke: bool,
-}
+/// Owned by crate::provider so capability parsing/validation shares the same
+/// parsing flow as provider config.
+pub type ProviderCapabilities = crate::provider::ProviderCapabilities;
 
 /// NS-040: Policy for handling provider stderr.
 pub struct StderrPolicy {
@@ -353,27 +348,12 @@ pub fn redact_stderr(stderr: &str, known_tokens: &[&str]) -> String {
 pub fn parse_capabilities_from_toml(
     content: &str,
 ) -> Result<ProviderCapabilities, ProviderExecError> {
-    let table: toml::Table =
-        content
-            .parse()
-            .map_err(|e: toml::de::Error| ProviderExecError::ConfigParse {
-                message: format!("invalid TOML: {}", e),
-            })?;
-
-    let supports_refresh = table
-        .get("supports_refresh")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let supports_revoke = table
-        .get("supports_revoke")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    Ok(ProviderCapabilities {
-        supports_refresh,
-        supports_revoke,
-    })
+    let parsed = crate::provider::parse_provider_toml(content).map_err(|e| {
+        ProviderExecError::ConfigParse {
+            message: e.to_string(),
+        }
+    })?;
+    Ok(parsed.capabilities)
 }
 
 /// NS-041: Validate that capability declarations are consistent with
@@ -386,17 +366,11 @@ pub fn validate_capabilities(
     has_refresh_cmd: bool,
     has_revoke_cmd: bool,
 ) -> Result<(), ProviderExecError> {
-    if caps.supports_refresh && !has_refresh_cmd {
-        return Err(ProviderExecError::CapabilityMismatch {
-            message: "supports_refresh=true but no refresh command configured".to_string(),
-        });
-    }
-    if caps.supports_revoke && !has_revoke_cmd {
-        return Err(ProviderExecError::CapabilityMismatch {
-            message: "supports_revoke=true but no revoke command configured".to_string(),
-        });
-    }
-    Ok(())
+    crate::provider::validate_declared_capabilities(caps, has_refresh_cmd, has_revoke_cmd).map_err(
+        |e| ProviderExecError::CapabilityMismatch {
+            message: e.to_string(),
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------

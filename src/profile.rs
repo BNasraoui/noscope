@@ -8,6 +8,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::config_path::named_config_toml_path;
 use crate::exit_code::NoscopeExitCode;
 use crate::provider::check_config_permissions;
 
@@ -102,25 +103,12 @@ impl fmt::Display for ProfileError {
 
 impl std::error::Error for ProfileError {}
 
-/// Build the profile TOML path under a given config base directory.
-fn profile_toml_under(base: &Path, name: &str) -> PathBuf {
-    base.join("noscope")
-        .join("profiles")
-        .join(format!("{}.toml", name))
-}
-
 /// Compute the config file path for a named profile.
 ///
 /// Uses XDG_CONFIG_HOME if provided, otherwise falls back to
 /// `$HOME/.config`.
 pub fn profile_config_path(name: &str, xdg_config_home: Option<&Path>) -> PathBuf {
-    match xdg_config_home {
-        Some(base) => profile_toml_under(base, name),
-        None => {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-            profile_toml_under(&PathBuf::from(home).join(".config"), name)
-        }
-    }
+    named_config_toml_path(xdg_config_home, None, "profiles", name)
 }
 
 /// Same as `profile_config_path` but with explicit HOME fallback.
@@ -129,10 +117,7 @@ pub fn profile_config_path_with_home(
     xdg_config_home: Option<&Path>,
     home: &Path,
 ) -> PathBuf {
-    match xdg_config_home {
-        Some(base) => profile_toml_under(base, name),
-        None => profile_toml_under(&home.join(".config"), name),
-    }
+    named_config_toml_path(xdg_config_home, Some(home), "profiles", name)
 }
 
 /// NS-051: Parse profile TOML content into a Profile.
@@ -714,7 +699,7 @@ env_key = "TOKEN"
         );
         let all_msgs: String = errors
             .iter()
-            .map(|e| format!("{}", e))
+            .map(|e| e.to_string())
             .collect::<Vec<_>>()
             .join("; ");
         assert!(
@@ -742,7 +727,7 @@ ttl = 3600
         );
         let all_msgs: String = errors
             .iter()
-            .map(|e| format!("{}", e))
+            .map(|e| e.to_string())
             .collect::<Vec<_>>()
             .join("; ");
         assert!(
@@ -798,7 +783,7 @@ env_key = "DUPE"
         assert_ne!(raw, 78, "Must not be ConfigError (78)");
         // Should be some distinct sysexits-adjacent code
         assert!(
-            raw >= 64 && raw <= 113,
+            (64..=113).contains(&raw),
             "Exit code should be in sysexits range, got: {}",
             raw
         );

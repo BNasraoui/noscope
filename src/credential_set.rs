@@ -909,7 +909,7 @@ mod tests {
 
     #[test]
     fn single_credential_expiry_preserves_child() {
-        let policy = ExpiryPolicy::default();
+        let policy = ExpiryPolicy;
         let action = policy.on_credential_expired("aws", "tok-aws-123");
         assert!(
             !matches!(action, ExpiryAction::TerminateChild),
@@ -919,7 +919,7 @@ mod tests {
 
     #[test]
     fn single_credential_expiry_logs_warning() {
-        let policy = ExpiryPolicy::default();
+        let policy = ExpiryPolicy;
         let action = policy.on_credential_expired("aws", "tok-aws-123");
         assert!(
             matches!(action, ExpiryAction::LogWarning { .. }),
@@ -930,7 +930,7 @@ mod tests {
 
     #[test]
     fn single_credential_expiry_does_not_re_mint() {
-        let policy = ExpiryPolicy::default();
+        let policy = ExpiryPolicy;
         let action = policy.on_credential_expired("aws", "tok-aws-123");
         assert!(
             !matches!(action, ExpiryAction::ReMint { .. }),
@@ -940,7 +940,7 @@ mod tests {
 
     #[test]
     fn single_credential_expiry_warning_contains_provider_and_token_id() {
-        let policy = ExpiryPolicy::default();
+        let policy = ExpiryPolicy;
         let action = policy.on_credential_expired("aws", "tok-aws-123");
         match action {
             ExpiryAction::LogWarning { message } => {
@@ -962,7 +962,7 @@ mod tests {
     #[test]
     fn single_credential_expiry_multiple_independent() {
         // Expiring one credential does not affect the action for another.
-        let policy = ExpiryPolicy::default();
+        let policy = ExpiryPolicy;
         let action_a = policy.on_credential_expired("aws", "tok-aws");
         let action_b = policy.on_credential_expired("gcp", "tok-gcp");
         // Both should independently produce warnings, not termination.

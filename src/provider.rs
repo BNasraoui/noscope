@@ -13,6 +13,8 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use crate::config_path::named_config_toml_path;
+
 /// NS-072: The current provider contract version.
 ///
 /// When mint output format, exit code protocol, or input contracts change,
@@ -120,15 +122,15 @@ pub enum ConfigSource {
     File,
 }
 
-/// CLI flags for provider configuration (highest precedence).
-#[derive(Debug, Default)]
-pub struct ProviderFlags {
+/// Shared command override input used by flags/env layers.
+#[derive(Debug, Default, Clone)]
+pub struct ProviderCommandInput {
     pub mint_cmd: Option<String>,
     pub refresh_cmd: Option<String>,
     pub revoke_cmd: Option<String>,
 }
 
-impl ProviderFlags {
+impl ProviderCommandInput {
     pub fn empty() -> Self {
         Self::default()
     }
@@ -139,23 +141,19 @@ impl ProviderFlags {
     }
 }
 
+/// CLI flags for provider configuration (highest precedence).
+pub type ProviderFlags = ProviderCommandInput;
+
 /// Environment variable layer for provider configuration (middle precedence).
-#[derive(Debug, Default)]
-pub struct ProviderEnv {
-    pub mint_cmd: Option<String>,
-    pub refresh_cmd: Option<String>,
-    pub revoke_cmd: Option<String>,
-}
+pub type ProviderEnv = ProviderCommandInput;
 
-impl ProviderEnv {
-    pub fn empty() -> Self {
-        Self::default()
-    }
-
-    /// Returns true if any env var is set.
-    pub fn has_any(&self) -> bool {
-        self.mint_cmd.is_some() || self.refresh_cmd.is_some() || self.revoke_cmd.is_some()
-    }
+/// NS-041: Provider capability declaration.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderCapabilities {
+    /// Whether this provider supports token refresh.
+    pub supports_refresh: bool,
+    /// Whether this provider supports token revocation.
+    pub supports_revoke: bool,
 }
 
 /// Parsed provider config from a TOML file (lowest precedence).
@@ -167,6 +165,15 @@ pub struct FileProviderConfig {
     pub refresh_cmd: Option<String>,
     pub revoke_cmd: Option<String>,
     pub env: HashMap<String, String>,
+    pub capabilities: ProviderCapabilities,
+}
+
+/// Typed intermediate state for precedence selection.
+#[derive(Debug)]
+pub enum SelectedProviderConfigLayer {
+    Flags(ProviderCommandInput),
+    EnvVars(ProviderCommandInput),
+    File(FileProviderConfig),
 }
 
 /// Fully resolved provider configuration after precedence resolution.
@@ -184,28 +191,12 @@ pub struct ResolvedProvider {
     pub source: ConfigSource,
 }
 
-/// Build the provider TOML path under a given config base directory.
-fn provider_toml_under(base: &Path, name: &str) -> PathBuf {
-    base.join("noscope")
-        .join("providers")
-        .join(format!("{}.toml", name))
-}
-
 /// NS-042: Compute the config file path for a named provider.
 ///
 /// Uses XDG_CONFIG_HOME if provided, otherwise falls back to
 /// `$HOME/.config`.
 pub fn provider_config_path(name: &str, xdg_config_home: Option<&Path>) -> PathBuf {
-    match xdg_config_home {
-        Some(base) => provider_toml_under(base, name),
-        None => {
-            // Fall back to $HOME/.config when XDG_CONFIG_HOME is absent.
-            // In production, HOME comes from the environment; tests use
-            // provider_config_path_with_home() to control it explicitly.
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-            provider_toml_under(&PathBuf::from(home).join(".config"), name)
-        }
-    }
+    named_config_toml_path(xdg_config_home, None, "providers", name)
 }
 
 /// NS-042: Same as `provider_config_path` but with explicit HOME fallback.
@@ -215,10 +206,7 @@ pub fn provider_config_path_with_home(
     xdg_config_home: Option<&Path>,
     home: &Path,
 ) -> PathBuf {
-    match xdg_config_home {
-        Some(base) => provider_toml_under(base, name),
-        None => provider_toml_under(&home.join(".config"), name),
-    }
+    named_config_toml_path(xdg_config_home, Some(home), "providers", name)
 }
 
 /// NS-043 + NS-072: Parse provider TOML content into a FileProviderConfig.
@@ -296,13 +284,56 @@ pub fn parse_provider_toml(content: &str) -> Result<FileProviderConfig, Provider
         })
         .unwrap_or_default();
 
+    let supports_refresh = parse_optional_bool(&table, "supports_refresh")?;
+    let supports_revoke = parse_optional_bool(&table, "supports_revoke")?;
+
+    let capabilities = ProviderCapabilities {
+        supports_refresh,
+        supports_revoke,
+    };
+
+    validate_declared_capabilities(&capabilities, refresh_cmd.is_some(), revoke_cmd.is_some())?;
+
     Ok(FileProviderConfig {
         contract_version,
         mint_cmd: mint_cmd.to_string(),
         refresh_cmd,
         revoke_cmd,
         env,
+        capabilities,
     })
+}
+
+fn parse_optional_bool(table: &toml::Table, key: &str) -> Result<bool, ProviderConfigError> {
+    match table.get(key) {
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| ProviderConfigError::MalformedConfig {
+                message: format!("{} must be a boolean", key),
+            }),
+        None => Ok(false),
+    }
+}
+
+/// NS-041: Validate capability declarations against configured commands.
+pub fn validate_declared_capabilities(
+    caps: &ProviderCapabilities,
+    has_refresh_cmd: bool,
+    has_revoke_cmd: bool,
+) -> Result<(), ProviderConfigError> {
+    if caps.supports_refresh && !has_refresh_cmd {
+        return Err(ProviderConfigError::MalformedConfig {
+            message: "supports_refresh=true but no refresh command configured".to_string(),
+        });
+    }
+
+    if caps.supports_revoke && !has_revoke_cmd {
+        return Err(ProviderConfigError::MalformedConfig {
+            message: "supports_revoke=true but no revoke command configured".to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 /// NS-043 + NS-069: Load a provider config file from disk.
@@ -358,48 +389,35 @@ pub fn resolve_provider_config(
     env: &ProviderEnv,
     file_config: Option<FileProviderConfig>,
 ) -> Result<ResolvedProvider, ProviderConfigError> {
-    // NS-007: Strict precedence — highest layer with ANY value wins entirely.
-    // No merging across layers.
-
-    // Layer 1 (highest): CLI flags
-    if flags.has_any() {
-        // Flags must provide mint_cmd to be a valid layer.
-        let mint_cmd = flags.mint_cmd.clone().unwrap_or_default();
-        return Ok(ResolvedProvider {
-            name: name.to_string(),
-            contract_version: None,
-            mint_cmd,
-            refresh_cmd: flags.refresh_cmd.clone(),
-            revoke_cmd: flags.revoke_cmd.clone(),
-            env: HashMap::new(),
-            source: ConfigSource::Flags,
-        });
-    }
-
-    // Layer 2: Environment variables
-    if env.has_any() {
-        let mint_cmd = env.mint_cmd.clone().unwrap_or_default();
-        return Ok(ResolvedProvider {
-            name: name.to_string(),
-            contract_version: None,
-            mint_cmd,
-            refresh_cmd: env.refresh_cmd.clone(),
-            revoke_cmd: env.revoke_cmd.clone(),
-            env: HashMap::new(),
-            source: ConfigSource::EnvVars,
-        });
-    }
-
-    // Layer 3 (lowest): Config file
-    if let Some(fc) = file_config {
-        return Ok(ResolvedProvider {
-            name: name.to_string(),
-            contract_version: Some(fc.contract_version),
-            mint_cmd: fc.mint_cmd,
-            refresh_cmd: fc.refresh_cmd,
-            revoke_cmd: fc.revoke_cmd,
-            env: fc.env,
-            source: ConfigSource::File,
+    if let Some(selected) = select_provider_config_layer(flags, env, file_config) {
+        return Ok(match selected {
+            SelectedProviderConfigLayer::Flags(input) => ResolvedProvider {
+                name: name.to_string(),
+                contract_version: None,
+                mint_cmd: input.mint_cmd.unwrap_or_default(),
+                refresh_cmd: input.refresh_cmd,
+                revoke_cmd: input.revoke_cmd,
+                env: HashMap::new(),
+                source: ConfigSource::Flags,
+            },
+            SelectedProviderConfigLayer::EnvVars(input) => ResolvedProvider {
+                name: name.to_string(),
+                contract_version: None,
+                mint_cmd: input.mint_cmd.unwrap_or_default(),
+                refresh_cmd: input.refresh_cmd,
+                revoke_cmd: input.revoke_cmd,
+                env: HashMap::new(),
+                source: ConfigSource::EnvVars,
+            },
+            SelectedProviderConfigLayer::File(fc) => ResolvedProvider {
+                name: name.to_string(),
+                contract_version: Some(fc.contract_version),
+                mint_cmd: fc.mint_cmd,
+                refresh_cmd: fc.refresh_cmd,
+                revoke_cmd: fc.revoke_cmd,
+                env: fc.env,
+                source: ConfigSource::File,
+            },
         });
     }
 
@@ -413,6 +431,23 @@ pub fn resolve_provider_config(
             format!("file {} (not found)", config_path.display()),
         ],
     })
+}
+
+/// Select the highest-precedence provider config layer with any values.
+pub fn select_provider_config_layer(
+    flags: &ProviderFlags,
+    env: &ProviderEnv,
+    file_config: Option<FileProviderConfig>,
+) -> Option<SelectedProviderConfigLayer> {
+    if flags.has_any() {
+        return Some(SelectedProviderConfigLayer::Flags(flags.clone()));
+    }
+
+    if env.has_any() {
+        return Some(SelectedProviderConfigLayer::EnvVars(env.clone()));
+    }
+
+    file_config.map(SelectedProviderConfigLayer::File)
 }
 
 /// NS-071: Generate dry-run output for a resolved provider.
@@ -583,6 +618,7 @@ VAULT_ADDR = "https://vault.example.com"
             refresh_cmd: Some("/from/file/refresh".to_string()),
             revoke_cmd: None,
             env: Default::default(),
+            capabilities: ProviderCapabilities::default(),
         };
 
         let resolved = resolve_provider_config("mycloud", &flags, &env, Some(file_config)).unwrap();
@@ -603,6 +639,7 @@ VAULT_ADDR = "https://vault.example.com"
             refresh_cmd: Some("/from/file/refresh".to_string()),
             revoke_cmd: None,
             env: Default::default(),
+            capabilities: ProviderCapabilities::default(),
         };
 
         let resolved = resolve_provider_config(
@@ -631,6 +668,7 @@ VAULT_ADDR = "https://vault.example.com"
             refresh_cmd: Some("/from/file/refresh".to_string()),
             revoke_cmd: Some("/from/file/revoke".to_string()),
             env: Default::default(),
+            capabilities: ProviderCapabilities::default(),
         };
 
         let resolved = resolve_provider_config("test", &flags, &env, Some(file_config)).unwrap();
@@ -1359,6 +1397,7 @@ mint = "/usr/bin/mint"
             refresh_cmd: None,
             revoke_cmd: None,
             env: Default::default(),
+            capabilities: ProviderCapabilities::default(),
         };
 
         let resolved = resolve_provider_config(
@@ -1527,5 +1566,107 @@ mint = "/usr/bin/mint"
         let msg = format!("{}", err);
         assert!(msg.contains("mint"), "Must list mint problem: {}", msg);
         assert!(msg.contains("revoke"), "Must list revoke problem: {}", msg);
+    }
+
+    // =========================================================================
+    // noscope-cg8.5: Consolidate provider config and capability parsing
+    // =========================================================================
+
+    #[test]
+    fn consolidate_provider_config_single_authoritative_domain_model() {
+        let toml = r#"
+contract_version = 1
+supports_refresh = true
+supports_revoke = false
+
+[commands]
+mint = "/usr/bin/mint"
+refresh = "/usr/bin/refresh"
+"#;
+
+        let parsed = parse_provider_toml(toml).unwrap();
+        assert_eq!(parsed.mint_cmd, "/usr/bin/mint");
+        assert_eq!(parsed.refresh_cmd.as_deref(), Some("/usr/bin/refresh"));
+        assert!(parsed.capabilities.supports_refresh);
+        assert!(!parsed.capabilities.supports_revoke);
+    }
+
+    #[test]
+    fn consolidate_provider_config_capability_validation_owned_by_provider_parser() {
+        let toml = r#"
+contract_version = 1
+supports_refresh = true
+
+[commands]
+mint = "/usr/bin/mint"
+"#;
+
+        let parsed = parse_provider_toml(toml);
+        assert!(
+            parsed.is_err(),
+            "supports_refresh=true without commands.refresh must be rejected during provider parse"
+        );
+    }
+
+    #[test]
+    fn consolidate_provider_config_capability_validation_revoke_requires_command() {
+        let toml = r#"
+contract_version = 1
+supports_revoke = true
+
+[commands]
+mint = "/usr/bin/mint"
+"#;
+
+        let parsed = parse_provider_toml(toml);
+        assert!(
+            parsed.is_err(),
+            "supports_revoke=true without commands.revoke must be rejected during provider parse"
+        );
+    }
+
+    #[test]
+    fn consolidate_provider_config_capability_fields_require_bool_values() {
+        let toml = r#"
+contract_version = 1
+supports_refresh = "yes"
+
+[commands]
+mint = "/usr/bin/mint"
+refresh = "/usr/bin/refresh"
+"#;
+
+        let parsed = parse_provider_toml(toml);
+        assert!(
+            parsed.is_err(),
+            "non-boolean supports_refresh must be rejected"
+        );
+    }
+
+    #[test]
+    fn consolidate_provider_config_typed_precedence_pipeline() {
+        let selected = select_provider_config_layer(
+            &ProviderFlags {
+                mint_cmd: Some("/flags/mint".to_string()),
+                refresh_cmd: None,
+                revoke_cmd: None,
+            },
+            &ProviderEnv {
+                mint_cmd: Some("/env/mint".to_string()),
+                refresh_cmd: None,
+                revoke_cmd: None,
+            },
+            Some(FileProviderConfig {
+                contract_version: 1,
+                mint_cmd: "/file/mint".to_string(),
+                refresh_cmd: None,
+                revoke_cmd: None,
+                env: Default::default(),
+                capabilities: ProviderCapabilities::default(),
+            }),
+        )
+        .unwrap();
+
+        assert!(matches!(selected, SelectedProviderConfigLayer::Flags(_)));
     }
 }
