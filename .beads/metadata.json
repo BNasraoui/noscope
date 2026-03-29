@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "noscope",
+  "project_id": "eba6a9b0-0991-4cd9-a8e4-743bcf359b06"
+}
