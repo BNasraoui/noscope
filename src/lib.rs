@@ -1,3 +1,4 @@
+pub mod credential_set;
 pub mod event;
 pub mod exit_code;
 pub mod mint;
