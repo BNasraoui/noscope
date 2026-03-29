@@ -109,11 +109,6 @@ impl Client {
         Ok(())
     }
 
-    /// NS-012: Validate that revoke CLI arguments do not contain --token.
-    pub fn validate_revoke_args(&self, args: &[String]) -> Result<(), NoscopeError> {
-        mint::validate_revoke_args(args).map_err(NoscopeError::from)
-    }
-
     /// NS-065: Check that stdout is not a terminal before mint output.
     ///
     /// Respects `force_terminal` from [`ClientOptions`].
@@ -170,6 +165,7 @@ impl Client {
 /// Input for a mint operation.
 ///
 /// Contains everything needed to validate and execute a multi-provider mint.
+#[derive(Debug)]
 pub struct MintRequest {
     /// One or more provider names.
     pub providers: Vec<String>,
@@ -562,33 +558,32 @@ mod tests {
         }
     }
 
-    // NS-012: validate_revoke_args rejects --token in CLI args.
+    // NS-012: validate_revoke_argv lives in cli_adapter (noscope-cg8.2).
+    // See cli_adapter::tests for argv-level validation tests.
     #[test]
-    fn facade_validate_revoke_args_rejects_raw_token_flag() {
-        let client = super::Client::new(super::ClientOptions::default());
+    fn facade_revoke_args_validation_moved_to_cli_adapter() {
+        // noscope-cg8.2: argv validation moved to cli_adapter module.
+        // Client no longer exposes validate_revoke_args(&[String]).
+        // Verify cli_adapter::validate_revoke_argv works.
         let args = vec![
             "noscope".to_string(),
             "revoke".to_string(),
             "--token".to_string(),
             "secret-value".to_string(),
         ];
-        let result = client.validate_revoke_args(&args);
+        let result = crate::cli_adapter::validate_revoke_argv(&args);
         assert!(
             result.is_err(),
-            "NS-012: --token flag must be rejected in revoke args"
+            "NS-012: --token flag must be rejected via cli_adapter"
         );
-    }
 
-    #[test]
-    fn facade_validate_revoke_args_allows_token_id() {
-        let client = super::Client::new(super::ClientOptions::default());
-        let args = vec![
+        let safe_args = vec![
             "noscope".to_string(),
             "revoke".to_string(),
             "--token-id".to_string(),
             "tok-123".to_string(),
         ];
-        let result = client.validate_revoke_args(&args);
+        let result = crate::cli_adapter::validate_revoke_argv(&safe_args);
         assert!(result.is_ok(), "--token-id is safe and must be allowed");
     }
 

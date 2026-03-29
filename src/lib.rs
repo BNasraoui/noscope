@@ -1,4 +1,5 @@
 mod config_path;
+pub mod cli_adapter;
 pub mod client;
 pub mod credential_set;
 pub mod error;
