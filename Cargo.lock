@@ -96,6 +96,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -472,6 +473,7 @@ dependencies = [
  "libc",
  "secrecy",
  "serde",
+ "serde_json",
  "sha2",
  "static_assertions",
  "tempfile",
