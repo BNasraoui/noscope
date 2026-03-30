@@ -4,12 +4,19 @@
 // All parsing, dispatch, and error handling logic lives in noscope::cli
 // (NS-075: CLI parsing in adapter layer).
 
+use std::future::Future;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use noscope::cli::{self, Command};
 use noscope::credential_set::{CredentialSpec, MintConfig, MintResult};
+use noscope::run_signal_wiring::{
+    parent_signal_from_raw, RunSignalWiring, SignalProcess, SignalRevoker,
+};
+use noscope::signal_policy::{
+    ActiveCredential, RevocationBudget, RevocationResultKind, SignalHandlingPolicy,
+};
 use noscope::{Client, ClientOptions, ProviderOverrides};
 
 fn main() -> ExitCode {
@@ -69,7 +76,7 @@ fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, noscope::Error> {
 
     let config = MintConfig::new(Duration::from_secs(30), 8)?;
     let resolved_for_mint = std::sync::Arc::clone(&resolved_by_name);
-    let cred_set = runtime.block_on(async {
+    let mint_result = runtime.block_on(async {
         noscope::orchestrator::mint_all(&specs, &config, move |spec| {
             let provider = resolved_for_mint
                 .get(&spec.provider)
@@ -135,7 +142,25 @@ fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, noscope::Error> {
             }
         })
         .await
-    })?;
+    });
+
+    let cred_set = match mint_result {
+        Ok(cred_set) => cred_set,
+        Err(noscope::credential_set::CredentialSetError::MintFailed {
+            failed_providers,
+            succeeded_tokens,
+        }) => {
+            runtime.block_on(revoke_run_credentials(
+                resolved_by_name.as_ref(),
+                &succeeded_tokens,
+                noscope::credential_set::RollbackBudget::default(),
+            ));
+            return Err(noscope::Error::config(&format_mint_failed_providers(
+                &failed_providers,
+            )));
+        }
+        Err(other) => return Err(other.into()),
+    };
 
     let env = cred_set
         .env_map()
@@ -144,21 +169,236 @@ fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, noscope::Error> {
         .collect();
     let child_command = args.child_args[0].clone();
     let child_argv = args.child_args[1..].to_vec();
-    let child_exit = match noscope::integration_runtime::run_child_and_pass_exit(
-        &child_command,
-        &child_argv,
-        env,
+    let child_exit = run_child_with_os_signals(&child_command, &child_argv, env, || {
+        revoke_on_shutdown_signal(&runtime, resolved_by_name.as_ref(), &cred_set);
+        Ok(())
+    })?;
+
+    Ok(child_exit)
+}
+
+fn format_mint_failed_providers(failures: &[noscope::credential_set::MintFailure]) -> String {
+    let details = failures
+        .iter()
+        .map(|failure| format!("provider '{}': {}", failure.provider, failure.error))
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("credential minting failed: {}", details)
+}
+
+fn rollback_backoff_for_retry(retry: u32) -> Duration {
+    const ROLLBACK_BASE_BACKOFF: Duration = Duration::from_millis(100);
+    let factor = 2u32.saturating_pow(retry);
+    ROLLBACK_BASE_BACKOFF.saturating_mul(factor)
+}
+
+async fn revoke_token_with_budget<RevokeFn, RevokeFut, SleepFn, SleepFut, LogFn>(
+    token: &noscope::token::ScopedToken,
+    budget: &noscope::credential_set::RollbackBudget,
+    mut revoke_once: RevokeFn,
+    mut sleep_fn: SleepFn,
+    mut log_line: LogFn,
+) where
+    RevokeFn: FnMut() -> RevokeFut,
+    RevokeFut: Future<Output = Result<(), String>>,
+    SleepFn: FnMut(Duration) -> SleepFut,
+    SleepFut: Future<Output = ()>,
+    LogFn: FnMut(String),
+{
+    if budget.revoke_timeout.is_zero() {
+        return;
+    }
+
+    let started = Instant::now();
+    let provider = token.provider();
+    let credential_id = token.token_id().unwrap_or("unknown");
+    let expires_at = token.expires_at();
+
+    for attempt in 0..=budget.max_retries {
+        let elapsed = started.elapsed();
+        if elapsed >= budget.revoke_timeout {
+            return;
+        }
+
+        let remaining = budget.revoke_timeout.saturating_sub(elapsed);
+
+        match tokio::time::timeout(remaining, revoke_once()).await {
+            Err(_) => {
+                let entry = noscope::credential_set::RollbackLogEntry::revocation_failed(
+                    credential_id,
+                    provider,
+                    expires_at,
+                    "rollback revocation attempt timed out",
+                );
+                log_line(format!("{} attempt={}", entry.format_log(), attempt + 1));
+                return;
+            }
+            Ok(Ok(())) => {
+                let entry = noscope::credential_set::RollbackLogEntry::new(
+                    credential_id,
+                    provider,
+                    expires_at,
+                );
+                log_line(format!("{} attempt={}", entry.format_log(), attempt + 1));
+                return;
+            }
+            Ok(Err(err)) => {
+                let entry = noscope::credential_set::RollbackLogEntry::revocation_failed(
+                    credential_id,
+                    provider,
+                    expires_at,
+                    &err,
+                );
+                log_line(format!("{} attempt={}", entry.format_log(), attempt + 1));
+            }
+        }
+
+        if attempt == budget.max_retries {
+            return;
+        }
+
+        let backoff = rollback_backoff_for_retry(attempt);
+        if started.elapsed().saturating_add(backoff) >= budget.revoke_timeout {
+            return;
+        }
+        sleep_fn(backoff).await;
+    }
+}
+
+async fn revoke_run_credentials(
+    resolved_by_name: &std::collections::HashMap<String, noscope::provider::ResolvedProvider>,
+    succeeded_tokens: &[noscope::token::ScopedToken],
+    budget: noscope::credential_set::RollbackBudget,
+) {
+    for token in succeeded_tokens {
+        let provider = token.provider().to_string();
+        let credential_id = token.token_id().unwrap_or("unknown").to_string();
+
+        let Some(resolved) = resolved_by_name.get(provider.as_str()) else {
+            let entry = noscope::credential_set::RollbackLogEntry::revocation_failed(
+                &credential_id,
+                &provider,
+                token.expires_at(),
+                "provider missing during rollback",
+            );
+            eprintln!("{} attempt=1", entry.format_log());
+            continue;
+        };
+
+        revoke_token_with_budget(
+            token,
+            &budget,
+            || {
+                let input = noscope::mint::RevokeInput::from_token_id_and_provider(
+                    &credential_id,
+                    &provider,
+                );
+                async move {
+                    execute_revoke(resolved, &input)
+                        .await
+                        .map_err(|err| err.to_string())
+                }
+            },
+            |delay| async move {
+                tokio::time::sleep(delay).await;
+            },
+            |line| eprintln!("{}", line),
+        )
+        .await;
+    }
+}
+
+fn run_child_with_os_signals<F>(
+    command: &str,
+    args: &[String],
+    env: std::collections::HashMap<String, String>,
+    mut revoke_all: F,
+) -> Result<i32, noscope::Error>
+where
+    F: FnMut() -> Result<(), noscope::Error>,
+{
+    let mut process = match noscope::agent_process::AgentProcess::spawn(
+        noscope::agent_process::AgentProcessConfig {
+            command: command.to_string(),
+            args: args.to_vec(),
+            mode: noscope::agent_process::AgentMode::Run,
+            injected_env: env,
+            force_env: true,
+            timeout: None,
+        },
     ) {
-        Ok(code) => code,
-        Err(err) => {
-            revoke_run_credentials(&runtime, resolved_by_name.as_ref(), &cred_set);
-            return Err(err);
+        Ok(process) => process,
+        Err(e) => {
+            let _ = revoke_all();
+            return Err(noscope::Error::internal(&format!("{}", e)));
         }
     };
 
-    revoke_run_credentials(&runtime, resolved_by_name.as_ref(), &cred_set);
+    let mut signals =
+        signal_hook::iterator::Signals::new([libc::SIGTERM, libc::SIGINT, libc::SIGHUP]).map_err(
+            |e| noscope::Error::internal(&format!("failed to register signal handlers: {}", e)),
+        )?;
 
-    Ok(child_exit)
+    let mut wiring = RunSignalWiring::default();
+
+    loop {
+        for raw in signals.pending() {
+            if let Some(parent_signal) = parent_signal_from_raw(raw) {
+                let mut process_adapter = AgentProcessSignalAdapter {
+                    inner: &mut process,
+                };
+                let mut revoker = ClosureRevoker {
+                    revoke_all: &mut revoke_all,
+                };
+
+                wiring
+                    .on_parent_signal(parent_signal, &mut process_adapter, &mut revoker)
+                    .map_err(|e| {
+                        noscope::Error::internal(&format!("failed during signal handling: {}", e))
+                    })?;
+            }
+        }
+
+        if let Some(exit_code) = process
+            .try_wait_exit_code()
+            .map_err(|e| noscope::Error::internal(&format!("{}", e)))?
+        {
+            if !wiring.revoke_attempted() {
+                revoke_all()?;
+            }
+            return Ok(exit_code);
+        }
+
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+struct AgentProcessSignalAdapter<'a> {
+    inner: &'a mut noscope::agent_process::AgentProcess,
+}
+
+impl SignalProcess for AgentProcessSignalAdapter<'_> {
+    fn forward_signal(&mut self, sig: i32) -> Result<(), std::io::Error> {
+        self.inner
+            .forward_signal(sig)
+            .map_err(|e| std::io::Error::other(format!("{}", e)))
+    }
+}
+
+struct ClosureRevoker<'a, F>
+where
+    F: FnMut() -> Result<(), noscope::Error>,
+{
+    revoke_all: &'a mut F,
+}
+
+impl<F> SignalRevoker for ClosureRevoker<'_, F>
+where
+    F: FnMut() -> Result<(), noscope::Error>,
+{
+    fn revoke_all(&mut self) -> Result<(), std::io::Error> {
+        (self.revoke_all)().map_err(|e| std::io::Error::other(e.to_string()))
+    }
 }
 
 fn resolve_run_specs_and_providers(
@@ -232,23 +472,57 @@ fn resolve_profile_run_specs_and_providers(
     Ok((specs, resolved_by_name))
 }
 
-fn revoke_run_credentials(
+fn revoke_on_shutdown_signal(
     runtime: &tokio::runtime::Runtime,
     resolved_by_name: &std::collections::HashMap<String, noscope::provider::ResolvedProvider>,
     cred_set: &noscope::credential_set::CredentialSet,
 ) {
-    runtime.block_on(async {
-        for token in cred_set.tokens() {
+    let credentials: Vec<ActiveCredential> = cred_set
+        .tokens()
+        .map(|token| {
             let provider = token.provider();
-            let token_id = token
+            let credential_id = token
                 .token_id()
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("tok-{}", provider));
-            let input = noscope::mint::RevokeInput::from_token_id_and_provider(&token_id, provider);
-            if let Some(resolved) = resolved_by_name.get(provider) {
-                if let Err(err) = execute_revoke(resolved, &input).await {
-                    eprintln!("noscope: revoke failed for provider {}: {}", provider, err);
+            ActiveCredential::new(&credential_id, provider)
+        })
+        .collect();
+
+    let resolved_by_name = resolved_by_name.clone();
+
+    runtime.block_on(async {
+        let policy = SignalHandlingPolicy::default();
+        let results = policy
+            .revoke_all_on_signal(credentials, RevocationBudget::default(), move |cred| {
+                let resolved_by_name = resolved_by_name.clone();
+                async move {
+                    let Some(resolved) = resolved_by_name.get(&cred.provider) else {
+                        return RevocationResultKind::Failed(format!(
+                            "provider '{}' missing during signal revocation",
+                            cred.provider
+                        ));
+                    };
+
+                    let input = noscope::mint::RevokeInput::from_token_id_and_provider(
+                        &cred.credential_id,
+                        &cred.provider,
+                    );
+
+                    match execute_revoke(resolved, &input).await {
+                        Ok(()) => RevocationResultKind::Revoked,
+                        Err(err) => RevocationResultKind::Failed(err.to_string()),
+                    }
                 }
+            })
+            .await;
+
+        for result in results {
+            if let RevocationResultKind::Failed(err) = result.kind {
+                eprintln!(
+                    "noscope: revoke failed for provider {}: {}",
+                    result.provider, err
+                );
             }
         }
     });
@@ -998,6 +1272,255 @@ mod run_wiring_tests {
         assert!(
             revoked.contains("tok-aws"),
             "cmd_run must revoke minted credential when child spawn fails"
+        );
+    }
+}
+
+#[cfg(test)]
+mod rollback_budget_wiring_tests {
+    use super::*;
+    use chrono::Utc;
+    use secrecy::SecretString;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    fn make_token(provider: &str, token_id: &str) -> noscope::token::ScopedToken {
+        noscope::token::ScopedToken::new(
+            SecretString::from("rollback-secret".to_string()),
+            "admin",
+            Utc::now() + chrono::Duration::minutes(5),
+            Some(token_id.to_string()),
+            provider,
+        )
+    }
+
+    #[tokio::test]
+    async fn atomic_rollback_follows_revocation_budget_retries_failed_revocations() {
+        let token = make_token("aws", "tok-aws");
+        let budget = noscope::credential_set::RollbackBudget::default();
+        let attempts = Arc::new(AtomicUsize::new(0));
+
+        let attempts_for_revoke = Arc::clone(&attempts);
+        let mut noop_logs = Vec::new();
+        revoke_token_with_budget(
+            &token,
+            &budget,
+            move || {
+                let attempts_for_revoke = Arc::clone(&attempts_for_revoke);
+                async move {
+                    let current = attempts_for_revoke.fetch_add(1, Ordering::SeqCst) + 1;
+                    if current < 3 {
+                        Err("transient revoke failure".to_string())
+                    } else {
+                        Ok(())
+                    }
+                }
+            },
+            |_delay| async {},
+            |line| noop_logs.push(line),
+        )
+        .await;
+
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            3,
+            "NS-047: failed revokes must retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn atomic_rollback_follows_revocation_budget_enforces_wall_clock_budget() {
+        let token = make_token("aws", "tok-aws");
+        let budget = noscope::credential_set::RollbackBudget {
+            revoke_timeout: Duration::from_millis(15),
+            max_retries: 8,
+        };
+        let attempts = Arc::new(AtomicUsize::new(0));
+
+        let attempts_for_revoke = Arc::clone(&attempts);
+        let mut noop_logs = Vec::new();
+        revoke_token_with_budget(
+            &token,
+            &budget,
+            move || {
+                let attempts_for_revoke = Arc::clone(&attempts_for_revoke);
+                async move {
+                    attempts_for_revoke.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Err("slow revoke failure".to_string())
+                }
+            },
+            |_delay| async {},
+            |line| noop_logs.push(line),
+        )
+        .await;
+
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "NS-047: wall clock budget must cap total retry attempts"
+        );
+    }
+
+    #[tokio::test]
+    async fn atomic_rollback_follows_revocation_budget_applies_exponential_backoff() {
+        let token = make_token("aws", "tok-aws");
+        let budget = noscope::credential_set::RollbackBudget {
+            revoke_timeout: Duration::from_secs(2),
+            max_retries: 3,
+        };
+
+        let sleeps = Arc::new(Mutex::new(Vec::new()));
+        let sleeps_for_sleep = Arc::clone(&sleeps);
+
+        let mut noop_logs = Vec::new();
+        revoke_token_with_budget(
+            &token,
+            &budget,
+            || async { Err("always fails".to_string()) },
+            move |delay| {
+                let sleeps_for_sleep = Arc::clone(&sleeps_for_sleep);
+                async move {
+                    sleeps_for_sleep.lock().unwrap().push(delay);
+                }
+            },
+            |line| noop_logs.push(line),
+        )
+        .await;
+
+        let delays = sleeps.lock().unwrap().clone();
+        assert_eq!(
+            delays,
+            vec![
+                Duration::from_millis(100),
+                Duration::from_millis(200),
+                Duration::from_millis(400)
+            ],
+            "NS-047: rollback retries must use exponential backoff"
+        );
+    }
+
+    #[tokio::test]
+    async fn atomic_rollback_follows_revocation_budget_logs_each_attempt() {
+        let token = make_token("aws", "tok-aws");
+        let budget = noscope::credential_set::RollbackBudget::default();
+
+        let logs = Arc::new(Mutex::new(Vec::new()));
+        let logs_for_log = Arc::clone(&logs);
+        let attempts = Arc::new(AtomicUsize::new(0));
+
+        let attempts_for_revoke = Arc::clone(&attempts);
+        revoke_token_with_budget(
+            &token,
+            &budget,
+            move || {
+                let attempts_for_revoke = Arc::clone(&attempts_for_revoke);
+                async move {
+                    let current = attempts_for_revoke.fetch_add(1, Ordering::SeqCst) + 1;
+                    if current == 1 {
+                        Err("first failure".to_string())
+                    } else {
+                        Ok(())
+                    }
+                }
+            },
+            |_delay| async {},
+            move |line| {
+                logs_for_log.lock().unwrap().push(line);
+            },
+        )
+        .await;
+
+        let lines = logs.lock().unwrap().clone();
+        assert_eq!(
+            lines.len(),
+            2,
+            "NS-047: every rollback attempt must emit a rollback log entry"
+        );
+        assert!(
+            lines.iter().all(|line| {
+                line.contains("rollback:")
+                    && line.contains("provider=aws")
+                    && line.contains("credential_id=tok-aws")
+            }),
+            "NS-047: logs must use RollbackLogEntry format"
+        );
+    }
+
+    #[tokio::test]
+    async fn atomic_rollback_follows_revocation_budget_zero_disables_retries() {
+        let token = make_token("aws", "tok-aws");
+        let budget = noscope::credential_set::RollbackBudget {
+            revoke_timeout: Duration::ZERO,
+            max_retries: 3,
+        };
+        let attempts = Arc::new(AtomicUsize::new(0));
+
+        let attempts_for_revoke = Arc::clone(&attempts);
+        let mut noop_logs = Vec::new();
+        revoke_token_with_budget(
+            &token,
+            &budget,
+            move || {
+                let attempts_for_revoke = Arc::clone(&attempts_for_revoke);
+                async move {
+                    attempts_for_revoke.fetch_add(1, Ordering::SeqCst);
+                    Err("should not run when budget=0".to_string())
+                }
+            },
+            |_delay| async {},
+            |line| noop_logs.push(line),
+        )
+        .await;
+
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            0,
+            "NS-047: budget=0 must disable rollback retries"
+        );
+    }
+
+    #[tokio::test]
+    async fn atomic_rollback_follows_revocation_budget_attempt_timeout_logs_failure() {
+        let token = make_token("aws", "tok-aws");
+        let budget = noscope::credential_set::RollbackBudget {
+            revoke_timeout: Duration::from_millis(10),
+            max_retries: 3,
+        };
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let logs = Arc::new(Mutex::new(Vec::new()));
+
+        let attempts_for_revoke = Arc::clone(&attempts);
+        let logs_for_log = Arc::clone(&logs);
+
+        revoke_token_with_budget(
+            &token,
+            &budget,
+            move || {
+                let attempts_for_revoke = Arc::clone(&attempts_for_revoke);
+                async move {
+                    attempts_for_revoke.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    Ok(())
+                }
+            },
+            |_delay| async {},
+            move |line| logs_for_log.lock().unwrap().push(line),
+        )
+        .await;
+
+        assert_eq!(
+            attempts.load(Ordering::SeqCst),
+            1,
+            "NS-047: a timed-out attempt should consume budget and stop further retries"
+        );
+        let lines = logs.lock().unwrap().clone();
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].contains("timed out"),
+            "NS-047: timed-out rollback attempts should be logged as failures"
         );
     }
 }
