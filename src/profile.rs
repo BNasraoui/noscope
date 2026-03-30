@@ -296,10 +296,10 @@ pub fn validate_profile(profile: &Profile, provider_exists: &dyn Fn(&str) -> boo
     // Check env_key uniqueness.
     let mut seen_env_keys = HashSet::new();
     for cred in &profile.credentials {
-        if let Some(ref key) = cred.env_key
-            && !seen_env_keys.insert(key.clone())
-        {
-            errors.push(format!("duplicate env_key '{}'", key));
+        if let Some(ref key) = cred.env_key {
+            if !seen_env_keys.insert(key.clone()) {
+                errors.push(format!("duplicate env_key '{}'", key));
+            }
         }
     }
 
