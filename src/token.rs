@@ -3,6 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use secrecy::{ExposeSecret, SecretString};
+use std::collections::HashMap;
 use std::fmt;
 use zeroize::Zeroize;
 
@@ -24,10 +25,8 @@ pub struct ScopedToken {
     role: String,
     /// Mandatory expiry time. Construction without this is a compile-time error.
     expires_at: DateTime<Utc>,
-    /// Provider-supplied or noscope-generated token identifier.
-    token_id: Option<String>,
-    /// The provider that minted this token.
-    provider: String,
+    /// Additional token metadata (provider, token_id, and future extensions).
+    metadata: HashMap<String, String>,
 }
 
 // NS-019: Zeroize metadata fields on drop.
@@ -36,10 +35,10 @@ pub struct ScopedToken {
 impl Drop for ScopedToken {
     fn drop(&mut self) {
         self.role.zeroize();
-        if let Some(ref mut id) = self.token_id {
-            id.zeroize();
+        for value in self.metadata.values_mut() {
+            value.zeroize();
         }
-        self.provider.zeroize();
+        self.metadata.clear();
         // SecretString handles its own zeroization on drop
     }
 }
@@ -60,16 +59,35 @@ impl ScopedToken {
         token_id: Option<String>,
         provider: &str,
     ) -> Self {
+        let mut metadata = HashMap::new();
+        metadata.insert("provider".to_string(), provider.to_string());
+        if let Some(token_id) = token_id {
+            metadata.insert("token_id".to_string(), token_id);
+        }
+
+        Self::new_with_metadata(value, role, expires_at, metadata)
+    }
+
+    /// Create a new ScopedToken from an already-constructed `SecretString`
+    /// and explicit metadata.
+    pub fn new_with_metadata(
+        value: SecretString,
+        role: &str,
+        expires_at: DateTime<Utc>,
+        metadata: HashMap<String, String>,
+    ) -> Self {
         // Pre-compute redacted form once at construction.
         // This is the only time we call expose_secret() for display purposes.
-        let redacted = RedactedToken::new(value.expose_secret(), token_id.as_deref());
+        let redacted = RedactedToken::new(
+            value.expose_secret(),
+            metadata.get("token_id").map(String::as_str),
+        );
         Self {
             value,
             redacted,
             role: role.to_string(),
             expires_at,
-            token_id,
-            provider: provider.to_string(),
+            metadata,
         }
     }
 
@@ -85,12 +103,20 @@ impl ScopedToken {
 
     /// Get the provider name.
     pub fn provider(&self) -> &str {
-        &self.provider
+        self.metadata
+            .get("provider")
+            .map(String::as_str)
+            .unwrap_or("")
     }
 
     /// Get the token ID (if available).
     pub fn token_id(&self) -> Option<&str> {
-        self.token_id.as_deref()
+        self.metadata.get("token_id").map(String::as_str)
+    }
+
+    /// Get immutable metadata.
+    pub fn metadata(&self) -> &HashMap<String, String> {
+        &self.metadata
     }
 
     /// Get the pre-computed RedactedToken for safe display/logging.
@@ -117,7 +143,9 @@ impl fmt::Display for ScopedToken {
         write!(
             f,
             "ScopedToken(provider={}, role={}, token={})",
-            self.provider, self.role, self.redacted
+            self.provider(),
+            self.role,
+            self.redacted
         )
     }
 }
@@ -126,10 +154,11 @@ impl fmt::Display for ScopedToken {
 impl fmt::Debug for ScopedToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ScopedToken")
-            .field("provider", &self.provider)
+            .field("provider", &self.provider())
             .field("role", &self.role)
             .field("expires_at", &self.expires_at)
-            .field("token_id", &self.token_id)
+            .field("token_id", &self.token_id())
+            .field("metadata", &self.metadata)
             .field("value", &self.redacted)
             .finish()
     }

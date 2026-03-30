@@ -21,6 +21,7 @@ pub mod security;
 pub mod signal_policy;
 pub mod token;
 pub mod token_convert;
+pub mod token_provider;
 
 // ---------------------------------------------------------------------------
 // Re-exports: stable, ergonomic types from crate root (noscope-cg8.1).
@@ -58,6 +59,9 @@ pub use token::ScopedToken;
 pub use token_convert::{
     ConversionResult, provider_output_to_scoped_token,
     provider_output_to_scoped_token_with_metadata, scoped_token_to_mint_envelope,
+};
+pub use token_provider::{
+    CleanupOnDropFuture, TokenProvider, TokenProviderError, TokenProviderFuture, with_mint_cleanup,
 };
 
 #[cfg(test)]
