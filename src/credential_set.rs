@@ -304,6 +304,15 @@ impl CredentialSet {
             .collect()
     }
 
+    /// Iterate over the tokens in this credential set.
+    ///
+    /// Returns references to the `ScopedToken` values only (not the specs).
+    /// Used by the orchestrator to convert tokens to mint envelopes for
+    /// JSON output (NS-063).
+    pub fn tokens(&self) -> impl Iterator<Item = &ScopedToken> {
+        self.entries.iter().map(|(_, token)| token)
+    }
+
     /// NS-048: Compute independent refresh schedules for all credentials.
     ///
     /// Each credential gets its own schedule based on its own expires_at.
