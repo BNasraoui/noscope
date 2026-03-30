@@ -8,6 +8,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use noscope::cli::{self, Command};
+use noscope::credential_set::{CredentialSpec, MintConfig, MintResult};
 use noscope::{Client, ClientOptions, ProviderOverrides};
 
 fn main() -> ExitCode {
@@ -70,6 +71,8 @@ fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, noscope::Error> {
 }
 
 fn cmd_mint(args: cli::MintArgs, verbose: bool) -> Result<i32, noscope::Error> {
+    use std::io::IsTerminal;
+
     let client = Client::new(ClientOptions {
         verbose,
         force_terminal: args.force_terminal,
@@ -83,10 +86,101 @@ fn cmd_mint(args: cli::MintArgs, verbose: bool) -> Result<i32, noscope::Error> {
     };
     client.validate_mint(&req)?;
 
-    // TODO(noscope-lgb): Actually execute minting.
-    eprintln!(
-        "noscope: mint is not yet fully implemented (providers: {:?})",
-        req.providers
+    client.check_stdout_not_terminal(std::io::stdout().is_terminal())?;
+
+    let mut resolved_by_name = std::collections::HashMap::new();
+    let mut specs = Vec::with_capacity(req.providers.len());
+    for provider_name in &req.providers {
+        let resolved = client.resolve_provider(provider_name, &ProviderOverrides::default())?;
+        specs.push(CredentialSpec::new(
+            provider_name,
+            &req.role,
+            req.ttl_secs,
+            &format!("{}_TOKEN", provider_name.to_uppercase()),
+        ));
+        resolved_by_name.insert(provider_name.clone(), resolved);
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| noscope::Error::internal(&format!("failed creating async runtime: {}", e)))?;
+
+    let role = req.role.clone();
+    let ttl_secs = req.ttl_secs;
+    let cred_set = runtime.block_on(async {
+        let config = MintConfig::new(Duration::from_secs(30), 8)?;
+        noscope::orchestrator::mint_all(&specs, &config, move |spec| {
+            let provider = resolved_by_name
+                .get(&spec.provider)
+                .expect("resolved provider must exist for every credential spec");
+            let provider_name = provider.name.clone();
+            let mint_cmd = provider.mint_cmd.clone();
+            let provider_env = provider.env.clone();
+            let role = role.clone();
+            let spec_provider = spec.provider.clone();
+            let spec_role = spec.role.clone();
+            let spec_ttl = spec.ttl_secs;
+            let spec_env_key = spec.env_key.clone();
+            async move {
+                let spec_for_result =
+                    CredentialSpec::new(&spec_provider, &spec_role, spec_ttl, &spec_env_key);
+                let argv = parse_command(&mint_cmd);
+                if argv.is_empty() {
+                    return MintResult::Failure {
+                        spec: spec_for_result,
+                        error: "empty mint command".to_string(),
+                    };
+                }
+
+                let mut env = provider_env;
+                env.insert("NOSCOPE_PROVIDER".to_string(), provider_name.clone());
+                env.insert("NOSCOPE_ROLE".to_string(), role.clone());
+                let rendered_argv =
+                    noscope::provider_exec::substitute_template_vars(&argv, &role, ttl_secs);
+
+                match noscope::provider_exec::execute_provider_command(
+                    &rendered_argv,
+                    &env,
+                    &noscope::provider_exec::ExecConfig {
+                        timeout: Duration::from_secs(30),
+                        kill_grace_period: Duration::from_secs(5),
+                    },
+                    ttl_secs,
+                )
+                .await
+                {
+                    Ok(exec_result) => match exec_result.parsed_output {
+                        Ok(output) => {
+                            let token = noscope::token_convert::provider_output_to_scoped_token(
+                                output,
+                                &role,
+                                Some(format!("tok-{}", provider_name)),
+                                &provider_name,
+                            );
+                            MintResult::Success {
+                                spec: spec_for_result,
+                                token,
+                            }
+                        }
+                        Err(err) => MintResult::Failure {
+                            spec: spec_for_result,
+                            error: err.to_string(),
+                        },
+                    },
+                    Err(err) => MintResult::Failure {
+                        spec: spec_for_result,
+                        error: format!("spawn failed: {}", err),
+                    },
+                }
+            }
+        })
+        .await
+    })?;
+
+    println!(
+        "{}",
+        noscope::orchestrator::format_orchestrator_output(&cred_set)
     );
     Ok(cli::SUCCESS_EXIT_CODE)
 }
