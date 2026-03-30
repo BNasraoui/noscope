@@ -1,3 +1,4 @@
+pub mod agent_process;
 pub mod ci_checks;
 pub mod cli;
 pub mod cli_adapter;
