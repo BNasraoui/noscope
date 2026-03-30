@@ -15,6 +15,7 @@ pub mod provider_exec;
 pub mod redaction;
 pub mod refresh;
 pub mod security;
+pub mod signal_policy;
 pub mod token;
 pub mod token_convert;
 

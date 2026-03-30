@@ -12,6 +12,7 @@ use zeroize::Zeroize;
 
 use crate::exit_code::NoscopeExitCode;
 use crate::redaction::RedactedToken;
+use crate::signal_policy::{SignalHandlingPolicy, TtlBounds};
 use crate::token::ScopedToken;
 
 /// NS-060: Mint output envelope for stdout.
@@ -215,15 +216,16 @@ pub fn validate_mint_args(
     providers: &[String],
     role: &str,
 ) -> Result<u64, MintError> {
-    let ttl = ttl_secs.ok_or(MintError::InvalidInput {
-        message: "--ttl is required for mint mode (NS-062)".to_string(),
+    let ttl = SignalHandlingPolicy::validate_ttl(ttl_secs, &TtlBounds::default()).map_err(|e| {
+        MintError::InvalidInput {
+            message: match e {
+                crate::signal_policy::TtlError::Missing => {
+                    "--ttl is required for mint mode (NS-062)".to_string()
+                }
+                other => other.to_string(),
+            },
+        }
     })?;
-
-    if ttl == 0 {
-        return Err(MintError::InvalidInput {
-            message: "--ttl must be greater than zero".to_string(),
-        });
-    }
 
     if providers.is_empty() {
         return Err(MintError::InvalidInput {
