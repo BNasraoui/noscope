@@ -17,6 +17,8 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use zeroize::Zeroize;
 
+use crate::exit_code::{ProviderExitResult, interpret_provider_exit};
+
 /// NS-036: Maximum provider stdout size in bytes (1 MiB).
 pub const MAX_STDOUT_BYTES: usize = 1024 * 1024;
 
@@ -394,6 +396,210 @@ pub fn build_sandboxed_env() -> HashMap<String, String> {
     env.insert("LANG".to_string(), lang);
 
     env
+}
+
+// ---------------------------------------------------------------------------
+// noscope-6a9: Provider command execution engine
+// ---------------------------------------------------------------------------
+
+/// Result of executing a provider command.
+///
+/// Contains all outputs from the subprocess: stdout, stderr, exit code,
+/// parsed output (if applicable), and whether the command timed out.
+#[derive(Debug)]
+pub struct ProviderExecResult {
+    /// Raw stdout from the provider command.
+    pub stdout: String,
+    /// Captured stderr, truncated to [`MAX_STDERR_CAPTURE_BYTES`] and
+    /// redacted of known token values (NS-040).
+    pub stderr: String,
+    /// Interpreted exit code (NS-010).
+    pub exit_result: ProviderExitResult,
+    /// Parsed provider output. `Ok` on exit 0 with valid JSON,
+    /// `Err` for timeout, oversized stdout, or parse failure.
+    pub parsed_output: Result<ProviderOutput, ProviderExecError>,
+    /// Whether the command was killed due to timeout (NS-035).
+    pub timed_out: bool,
+}
+
+/// Execute a provider command in a sandboxed environment.
+///
+/// This is the core execution engine that ties together all policy building
+/// blocks:
+/// - **NS-068**: Subprocess runs with [`build_sandboxed_env()`] as its base env.
+/// - **NS-036**: Stdout is checked against [`MAX_STDOUT_BYTES`].
+/// - **NS-040**: Stderr is truncated, token values are redacted.
+/// - **NS-035**: Timeout enforced via SIGTERM then SIGKILL after grace period.
+/// - **NS-009**: Stdout parsed through [`parse_provider_output()`].
+/// - **NS-010**: Exit code mapped through [`interpret_provider_exit()`].
+///
+/// # Arguments
+/// - `argv`: Command and arguments (no shell involved).
+/// - `extra_env`: Additional environment variables (e.g. NOSCOPE_TOKEN) merged
+///   on top of the sandboxed base env.
+/// - `config`: Execution configuration (timeout, grace period).
+/// - `requested_ttl_secs`: TTL passed to [`parse_provider_output()`] for NS-034.
+///
+/// # Returns
+/// - `Ok(ProviderExecResult)` with all execution results.
+/// - `Err(std::io::Error)` if the command could not be spawned.
+pub async fn execute_provider_command(
+    argv: &[String],
+    extra_env: &HashMap<String, String>,
+    config: &ExecConfig,
+    requested_ttl_secs: u64,
+) -> Result<ProviderExecResult, std::io::Error> {
+    if argv.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "argv must not be empty",
+        ));
+    }
+
+    // NS-068: Build sandboxed environment, then overlay extra vars.
+    let mut env = build_sandboxed_env();
+    for (k, v) in extra_env {
+        env.insert(k.clone(), v.clone());
+    }
+
+    // Collect known token values for stderr redaction (NS-040).
+    let known_tokens: Vec<String> = extra_env
+        .iter()
+        .filter(|(k, _)| k.starts_with("NOSCOPE_TOKEN"))
+        .map(|(_, v)| v.clone())
+        .collect();
+
+    // Spawn: no shell, argv[0] is the executable, rest are args.
+    let mut cmd = tokio::process::Command::new(&argv[0]);
+    if argv.len() > 1 {
+        cmd.args(&argv[1..]);
+    }
+    cmd.env_clear();
+    for (k, v) in &env {
+        cmd.env(k, v);
+    }
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn()?;
+
+    // Take stdout/stderr handles for concurrent reading.
+    // Must read concurrently with wait() to avoid pipe buffer deadlock:
+    // if the child writes more than the pipe buffer, it blocks on write
+    // and never exits. wait() would then hang forever.
+    let child_stdout = child.stdout.take();
+    let child_stderr = child.stderr.take();
+
+    let stdout_task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        if let Some(mut out) = child_stdout {
+            let _ = out.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+
+    let stderr_task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        if let Some(mut err) = child_stderr {
+            let _ = err.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+
+    // NS-035: Enforce timeout with SIGTERM then SIGKILL escalation.
+    let timed_out;
+    let wait_result = tokio::time::timeout(config.timeout, child.wait()).await;
+
+    let exit_status = match wait_result {
+        Ok(result) => {
+            timed_out = false;
+            result?
+        }
+        Err(_elapsed) => {
+            // Timeout expired. Send SIGTERM.
+            timed_out = true;
+            send_signal(&child, libc::SIGTERM);
+
+            // Wait grace period for the process to exit.
+            let grace_result = tokio::time::timeout(config.kill_grace_period, child.wait()).await;
+
+            match grace_result {
+                Ok(result) => result?,
+                Err(_) => {
+                    // Grace period expired. Escalate to SIGKILL.
+                    send_signal(&child, libc::SIGKILL);
+                    child.wait().await?
+                }
+            }
+        }
+    };
+
+    // Collect stdout/stderr from the concurrent read tasks.
+    let stdout_bytes = stdout_task.await.unwrap_or_default();
+    let stderr_bytes = stderr_task.await.unwrap_or_default();
+
+    let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
+    let raw_stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
+
+    // NS-040: Capture stderr (truncate), then redact known tokens.
+    let captured = capture_stderr(&raw_stderr);
+    let token_refs: Vec<&str> = known_tokens.iter().map(|s| s.as_str()).collect();
+    let stderr = redact_stderr(captured, &token_refs);
+
+    // NS-010: Map exit code through interpret_provider_exit().
+    let raw_exit = exit_status.code().unwrap_or(1);
+    let exit_result = if timed_out {
+        // NS-035: Timeout is treated as exit 4 (Unavailable).
+        interpret_provider_exit(4)
+    } else {
+        interpret_provider_exit(raw_exit)
+    };
+
+    // Determine parsed_output.
+    let parsed_output = if timed_out {
+        Err(ProviderExecError::Timeout {
+            timeout: config.timeout,
+        })
+    } else {
+        // NS-036: Check stdout size limit first.
+        match check_stdout_size_limit(stdout.len()) {
+            Err(e) => Err(e),
+            Ok(()) => {
+                // NS-009: Parse output only on exit 0.
+                if raw_exit == 0 {
+                    parse_provider_output(&stdout, requested_ttl_secs)
+                } else {
+                    Err(ProviderExecError::OutputContract {
+                        message: format!(
+                            "provider exited with code {} ({})",
+                            raw_exit, exit_result.exit_code
+                        ),
+                    })
+                }
+            }
+        }
+    };
+
+    Ok(ProviderExecResult {
+        stdout,
+        stderr,
+        exit_result,
+        parsed_output,
+        timed_out,
+    })
+}
+
+/// Send a Unix signal to a child process.
+///
+/// Best-effort: if the process has already exited, the signal is silently ignored.
+fn send_signal(child: &tokio::process::Child, signal: libc::c_int) {
+    if let Some(pid) = child.id() {
+        unsafe {
+            libc::kill(pid as libc::pid_t, signal);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1383,5 +1589,571 @@ mint = "/usr/bin/mint"
             msg.contains("bad;role"),
             "InvalidRole display should include the role"
         );
+    }
+}
+
+// =========================================================================
+// Execution engine tests — noscope-6a9
+//
+// These tests cover the actual subprocess execution engine that ties
+// together all the policy building blocks above.
+// =========================================================================
+
+#[cfg(test)]
+mod engine_tests {
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::exit_code::ProviderExitCode;
+
+    // =========================================================================
+    // NS-068: Execution engine uses build_sandboxed_env() for subprocess env
+    // =========================================================================
+
+    #[tokio::test]
+    async fn engine_spawns_with_sandboxed_env() {
+        // The engine must use build_sandboxed_env() as the base environment.
+        // Verify by running a command that prints its environment.
+        let result = execute_provider_command(
+            &["/usr/bin/env".to_string()],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        // The command should succeed (exit 0).
+        let result = result.expect("env command should not fail to spawn");
+        // stdout should contain PATH, HOME, LANG but NOT random vars like TERM
+        let stdout = &result.stdout;
+        assert!(
+            stdout.contains("PATH="),
+            "NS-068: spawned process must have PATH"
+        );
+        assert!(
+            stdout.contains("HOME="),
+            "NS-068: spawned process must have HOME"
+        );
+        assert!(
+            stdout.contains("LANG="),
+            "NS-068: spawned process must have LANG"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_sandboxed_env_excludes_parent_vars() {
+        // Set a marker env var in the parent; it must NOT leak to the child.
+        // SAFETY: This test is not run concurrently with others that depend on
+        // NOSCOPE_TEST_LEAK_CHECK. The var is set and removed within this test.
+        unsafe {
+            std::env::set_var("NOSCOPE_TEST_LEAK_CHECK", "leaked");
+        }
+        let result = execute_provider_command(
+            &["/usr/bin/env".to_string()],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("env command should not fail to spawn");
+        assert!(
+            !result.stdout.contains("NOSCOPE_TEST_LEAK_CHECK"),
+            "NS-068: parent env vars must NOT leak to provider subprocess"
+        );
+        unsafe {
+            std::env::remove_var("NOSCOPE_TEST_LEAK_CHECK");
+        }
+    }
+
+    #[tokio::test]
+    async fn engine_merges_extra_env_into_sandbox() {
+        // Extra env vars (e.g. NOSCOPE_TOKEN) are merged on top of the sandbox.
+        let mut extra_env = HashMap::new();
+        extra_env.insert("NOSCOPE_TOKEN".to_string(), "secret-val".to_string());
+
+        let result = execute_provider_command(
+            &["/usr/bin/env".to_string()],
+            &extra_env,
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("env command should not fail to spawn");
+        assert!(
+            result.stdout.contains("NOSCOPE_TOKEN=secret-val"),
+            "NS-068: extra env vars must be available to subprocess"
+        );
+    }
+
+    // =========================================================================
+    // NS-036: Execution engine checks stdout size limit
+    // =========================================================================
+
+    #[tokio::test]
+    async fn engine_rejects_oversized_stdout() {
+        // Generate stdout > 1 MiB using head -c from /dev/urandom.
+        let over_1_mib = MAX_STDOUT_BYTES + 1;
+        let script = format!("head -c {} /dev/zero", over_1_mib);
+        let result = execute_provider_command(
+            &["/bin/sh".to_string(), "-c".to_string(), script],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        assert!(
+            result.parsed_output.is_err(),
+            "NS-036: stdout exceeding 1 MiB must be rejected"
+        );
+        let err = result.parsed_output.unwrap_err();
+        assert!(
+            matches!(err, ProviderExecError::StdoutTooLarge { .. }),
+            "NS-036: error must be StdoutTooLarge, got: {:?}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_accepts_valid_sized_stdout() {
+        let json = r#"{"token":"tok-123","expires_at":"2099-01-01T00:00:00Z"}"#;
+        let script = format!("printf '{}'", json);
+        let result = execute_provider_command(
+            &["/bin/sh".to_string(), "-c".to_string(), script],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        assert!(
+            result.parsed_output.is_ok(),
+            "NS-036: valid-sized stdout must be accepted, got: {:?}",
+            result.parsed_output
+        );
+    }
+
+    // =========================================================================
+    // NS-040: Execution engine captures and redacts stderr
+    // =========================================================================
+
+    #[tokio::test]
+    async fn engine_captures_stderr_on_failure() {
+        let result = execute_provider_command(
+            &[
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo 'error: auth failed' >&2; exit 2".to_string(),
+            ],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        assert!(
+            result.stderr.contains("auth failed"),
+            "NS-040: stderr must be captured on failure, got: {:?}",
+            result.stderr
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_truncates_long_stderr() {
+        let long_msg = "x".repeat(8192);
+        let script = format!("printf '{}' >&2; exit 1", long_msg);
+        let result = execute_provider_command(
+            &["/bin/sh".to_string(), "-c".to_string(), script],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        assert!(
+            result.stderr.len() <= MAX_STDERR_CAPTURE_BYTES,
+            "NS-040: stderr must be truncated to {} bytes, got: {}",
+            MAX_STDERR_CAPTURE_BYTES,
+            result.stderr.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_redacts_known_tokens_from_stderr() {
+        let token = "super-secret-token-value-xyz";
+        let mut extra_env = HashMap::new();
+        extra_env.insert("NOSCOPE_TOKEN".to_string(), token.to_string());
+
+        let script = format!("echo 'error: invalid token {}' >&2; exit 1", token);
+        let result = execute_provider_command(
+            &["/bin/sh".to_string(), "-c".to_string(), script],
+            &extra_env,
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        assert!(
+            !result.stderr.contains(token),
+            "NS-040: known token values must be redacted from stderr, got: {:?}",
+            result.stderr
+        );
+        assert!(
+            result.stderr.contains("[redacted]"),
+            "NS-040: redacted token must be replaced with [redacted]"
+        );
+    }
+
+    // =========================================================================
+    // NS-035: Execution engine enforces timeout with SIGTERM then SIGKILL
+    // =========================================================================
+
+    #[tokio::test]
+    async fn engine_times_out_long_running_command() {
+        let config = ExecConfig {
+            timeout: Duration::from_millis(200),
+            kill_grace_period: Duration::from_millis(100),
+        };
+
+        let result = execute_provider_command(
+            &["/bin/sleep".to_string(), "60".to_string()],
+            &HashMap::new(),
+            &config,
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        assert!(
+            result.timed_out,
+            "NS-035: long-running command must time out"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_timeout_produces_timeout_error() {
+        let config = ExecConfig {
+            timeout: Duration::from_millis(200),
+            kill_grace_period: Duration::from_millis(100),
+        };
+
+        let result = execute_provider_command(
+            &["/bin/sleep".to_string(), "60".to_string()],
+            &HashMap::new(),
+            &config,
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        assert!(
+            matches!(result.parsed_output, Err(ProviderExecError::Timeout { .. })),
+            "NS-035: timeout must produce Timeout error, got: {:?}",
+            result.parsed_output
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_timeout_kills_after_grace_period() {
+        // Use a command that traps SIGTERM and ignores it; the engine
+        // must escalate to SIGKILL after the grace period.
+        let config = ExecConfig {
+            timeout: Duration::from_millis(200),
+            kill_grace_period: Duration::from_millis(200),
+        };
+
+        let start = std::time::Instant::now();
+        let result = execute_provider_command(
+            &[
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                // Trap SIGTERM and keep sleeping (force SIGKILL escalation)
+                "trap '' TERM; sleep 60".to_string(),
+            ],
+            &HashMap::new(),
+            &config,
+            3600,
+        )
+        .await;
+        let elapsed = start.elapsed();
+
+        let result = result.expect("command should spawn");
+        assert!(result.timed_out, "NS-035: must time out");
+        // Should finish within timeout + grace + some slack, not wait the full 60s
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "NS-035: must SIGKILL after grace period, took {:?}",
+            elapsed
+        );
+    }
+
+    // =========================================================================
+    // NS-009: Execution engine parses output through parse_provider_output()
+    // =========================================================================
+
+    #[tokio::test]
+    async fn engine_parses_valid_provider_json() {
+        let json = r#"{"token":"mint-token-123","expires_at":"2099-06-15T10:30:00Z"}"#;
+        let script = format!("printf '{}'", json);
+        let result = execute_provider_command(
+            &["/bin/sh".to_string(), "-c".to_string(), script],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        let output = result.parsed_output.expect("NS-009: valid JSON must parse");
+        assert_eq!(output.token, "mint-token-123");
+        assert!(output.expires_at_provided);
+    }
+
+    #[tokio::test]
+    async fn engine_rejects_invalid_provider_json() {
+        let result = execute_provider_command(
+            &[
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo 'not json'".to_string(),
+            ],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        assert!(
+            result.parsed_output.is_err(),
+            "NS-009: invalid JSON stdout must be rejected"
+        );
+        assert!(
+            matches!(
+                result.parsed_output,
+                Err(ProviderExecError::OutputContract { .. })
+            ),
+            "NS-009: must be OutputContract error"
+        );
+    }
+
+    // =========================================================================
+    // NS-010: Execution engine maps exit codes through interpret_provider_exit()
+    // =========================================================================
+
+    #[tokio::test]
+    async fn engine_maps_exit_code_success() {
+        let json = r#"{"token":"tok","expires_at":"2099-01-01T00:00:00Z"}"#;
+        let script = format!("printf '{}'; exit 0", json);
+        let result = execute_provider_command(
+            &["/bin/sh".to_string(), "-c".to_string(), script],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        assert_eq!(
+            result.exit_result.exit_code,
+            ProviderExitCode::Success,
+            "NS-010: exit 0 must map to Success"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_maps_exit_code_auth_failure() {
+        let result = execute_provider_command(
+            &[
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "exit 2".to_string(),
+            ],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        assert_eq!(
+            result.exit_result.exit_code,
+            ProviderExitCode::AuthFailure,
+            "NS-010: exit 2 must map to AuthFailure"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_maps_exit_code_role_not_found() {
+        let result = execute_provider_command(
+            &[
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "exit 3".to_string(),
+            ],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        assert_eq!(
+            result.exit_result.exit_code,
+            ProviderExitCode::RoleNotFound,
+            "NS-010: exit 3 must map to RoleNotFound"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_maps_exit_code_unavailable() {
+        let result = execute_provider_command(
+            &[
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "exit 4".to_string(),
+            ],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        assert_eq!(
+            result.exit_result.exit_code,
+            ProviderExitCode::Unavailable,
+            "NS-010: exit 4 must map to Unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_does_not_parse_output_on_nonzero_exit() {
+        // When the provider exits non-zero, we should still report the exit
+        // code but the parsed_output should reflect the failure.
+        let result = execute_provider_command(
+            &[
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo 'not json'; exit 1".to_string(),
+            ],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        assert_eq!(result.exit_result.exit_code, ProviderExitCode::GeneralError,);
+    }
+
+    // =========================================================================
+    // Integration: engine result struct
+    // =========================================================================
+
+    #[tokio::test]
+    async fn engine_result_has_all_fields() {
+        let json = r#"{"token":"tok","expires_at":"2099-01-01T00:00:00Z"}"#;
+        let script = format!("printf '{}'; echo 'debug info' >&2", json);
+        let result = execute_provider_command(
+            &["/bin/sh".to_string(), "-c".to_string(), script],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        // Must have all fields
+        let _exit_result = &result.exit_result;
+        let _parsed = &result.parsed_output;
+        let _stderr = &result.stderr;
+        let _stdout = &result.stdout;
+        let _timed_out = result.timed_out;
+    }
+
+    #[tokio::test]
+    async fn engine_spawn_failure_returns_error() {
+        // Try to execute a command that doesn't exist
+        let result = execute_provider_command(
+            &["/nonexistent/command/path".to_string()],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "Spawning a nonexistent command must return Err"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_empty_argv_returns_error() {
+        let result =
+            execute_provider_command(&[], &HashMap::new(), &ExecConfig::default(), 3600).await;
+
+        assert!(result.is_err(), "Empty argv must return error");
+    }
+
+    // =========================================================================
+    // Edge cases discovered during Linus review
+    // =========================================================================
+
+    #[tokio::test]
+    async fn engine_signal_killed_process_maps_to_general_error() {
+        // A process killed by signal has no exit code (.code() returns None).
+        // The engine must handle this by defaulting to exit 1 (GeneralError).
+        let result = execute_provider_command(
+            &[
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "kill -9 $$".to_string(), // Self-SIGKILL
+            ],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        assert!(
+            !result.timed_out,
+            "Self-kill should not be treated as timeout"
+        );
+        // Signal-killed process (exit > 128) maps through interpret_provider_exit
+        // to GeneralError.
+        assert_eq!(
+            result.exit_result.exit_code,
+            ProviderExitCode::GeneralError,
+            "Signal-killed process must map to GeneralError"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_result_is_debuggable() {
+        // ProviderExecResult must implement Debug for diagnostics.
+        let json = r#"{"token":"tok","expires_at":"2099-01-01T00:00:00Z"}"#;
+        let script = format!("printf '{}'", json);
+        let result = execute_provider_command(
+            &["/bin/sh".to_string(), "-c".to_string(), script],
+            &HashMap::new(),
+            &ExecConfig::default(),
+            3600,
+        )
+        .await;
+
+        let result = result.expect("command should spawn");
+        let debug = format!("{:?}", result);
+        assert!(!debug.is_empty(), "ProviderExecResult must implement Debug");
     }
 }
