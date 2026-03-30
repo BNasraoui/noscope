@@ -17,7 +17,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use zeroize::Zeroize;
 
-use crate::exit_code::{ProviderExitResult, interpret_provider_exit};
+use crate::exit_code::{interpret_provider_exit, ProviderExitResult};
 
 /// NS-036: Maximum provider stdout size in bytes (1 MiB).
 pub const MAX_STDOUT_BYTES: usize = 1024 * 1024;
@@ -31,7 +31,6 @@ pub const MAX_STDERR_CAPTURE_BYTES: usize = 4096;
 /// supply `expires_at`, it is computed from the requested TTL and
 /// `expires_at_provided` is `false` (the caller should emit a warning
 /// per NS-034).
-#[derive(Debug)]
 pub struct ProviderOutput {
     /// The raw token string from the provider.
     pub token: String,
@@ -40,6 +39,17 @@ pub struct ProviderOutput {
     /// Whether the provider explicitly supplied `expires_at`.
     /// `false` means it was computed from `now() + requested_ttl` (NS-034).
     pub expires_at_provided: bool,
+}
+
+impl fmt::Debug for ProviderOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let redacted = crate::redaction::RedactedToken::new(&self.token, None);
+        f.debug_struct("ProviderOutput")
+            .field("token", &redacted)
+            .field("expires_at", &self.expires_at)
+            .field("expires_at_provided", &self.expires_at_provided)
+            .finish()
+    }
 }
 
 // NS-019: Zeroize the raw token value on drop, matching MintEnvelope pattern.
@@ -1500,6 +1510,53 @@ mint = "/usr/bin/mint"
         let output = super::parse_provider_output(json, 3600).unwrap();
         assert_eq!(output.token, "sensitive-credential-value-12345");
         // Drop happens here — token.zeroize() is called.
+    }
+
+    #[test]
+    fn ns_058_provider_output_debug_redacts_token() {
+        let output = super::parse_provider_output(
+            r#"{"token": "provider-secret-token-abc123", "expires_at": "2026-06-15T10:30:00Z"}"#,
+            3600,
+        )
+        .unwrap();
+
+        let debug = format!("{:?}", output);
+        assert!(
+            !debug.contains("provider-secret-token-abc123"),
+            "NS-058: Debug output must not expose raw token, got: {}",
+            debug
+        );
+    }
+
+    #[test]
+    fn ns_058_provider_output_debug_includes_non_secret_fields() {
+        let output = super::parse_provider_output(
+            r#"{"token": "provider-secret-token-abc123", "expires_at": "2026-06-15T10:30:00Z"}"#,
+            3600,
+        )
+        .unwrap();
+
+        let debug = format!("{:?}", output);
+        assert!(
+            debug.contains("RedactedToken"),
+            "NS-058: Debug output should use redaction wrapper, got: {}",
+            debug
+        );
+        assert!(debug.contains("expires_at"));
+        assert!(debug.contains("expires_at_provided"));
+    }
+
+    #[test]
+    fn ns_058_provider_output_debug_redacts_short_tokens_too() {
+        let output = super::parse_provider_output(
+            r#"{"token": "shorttok", "expires_at": "2026-06-15T10:30:00Z"}"#,
+            3600,
+        )
+        .unwrap();
+
+        let debug = format!("{:?}", output);
+        assert!(!debug.contains("shorttok"));
+        assert!(debug.contains("RedactedToken"));
     }
 
     #[test]
