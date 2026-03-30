@@ -151,9 +151,8 @@ mod tests {
     fn release_workflow_builds_linux_amd64() {
         let content = read_workflow("release.yml");
         assert!(
-            content.contains("x86_64-unknown-linux")
-                || content.contains("ubuntu") && content.contains("x86_64"),
-            "Release must build Linux amd64 binary"
+            content.contains("x86_64-unknown-linux-gnu"),
+            "Release must build Linux amd64 binary (x86_64-unknown-linux-gnu target)"
         );
     }
 
