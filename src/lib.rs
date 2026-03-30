@@ -8,6 +8,7 @@ pub mod credential_set;
 pub mod error;
 pub mod event;
 pub mod exit_code;
+pub mod integration_runtime;
 pub mod mint;
 pub mod orchestrator;
 pub mod process_group;
