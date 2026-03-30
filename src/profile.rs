@@ -107,16 +107,23 @@ impl std::error::Error for ProfileError {}
 ///
 /// Uses XDG_CONFIG_HOME if provided, otherwise falls back to
 /// `$HOME/.config`.
-pub fn profile_config_path(name: &str, xdg_config_home: Option<&Path>) -> PathBuf {
+///
+/// Returns `Err` if the name contains path traversal characters.
+pub fn profile_config_path(
+    name: &str,
+    xdg_config_home: Option<&Path>,
+) -> Result<PathBuf, crate::config_path::ConfigPathError> {
     named_config_toml_path(xdg_config_home, None, "profiles", name)
 }
 
 /// Same as `profile_config_path` but with explicit HOME fallback.
+///
+/// Returns `Err` if the name contains path traversal characters.
 pub fn profile_config_path_with_home(
     name: &str,
     xdg_config_home: Option<&Path>,
     home: &Path,
-) -> PathBuf {
+) -> Result<PathBuf, crate::config_path::ConfigPathError> {
     named_config_toml_path(xdg_config_home, Some(home), "profiles", name)
 }
 
@@ -921,7 +928,7 @@ ttl = 1800
     #[test]
     fn profile_path_under_xdg_config() {
         let xdg = PathBuf::from("/home/user/.config");
-        let path = super::profile_config_path("dev", Some(&xdg));
+        let path = super::profile_config_path("dev", Some(&xdg)).unwrap();
         assert_eq!(
             path,
             PathBuf::from("/home/user/.config/noscope/profiles/dev.toml")
@@ -931,7 +938,7 @@ ttl = 1800
     #[test]
     fn profile_path_default_home() {
         let home = PathBuf::from("/home/user");
-        let path = super::profile_config_path_with_home("staging", None, &home);
+        let path = super::profile_config_path_with_home("staging", None, &home).unwrap();
         assert_eq!(
             path,
             PathBuf::from("/home/user/.config/noscope/profiles/staging.toml")

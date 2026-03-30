@@ -283,6 +283,12 @@ impl From<crate::provider_exec::ProviderExecError> for Error {
     }
 }
 
+impl From<crate::config_path::ConfigPathError> for Error {
+    fn from(e: crate::config_path::ConfigPathError) -> Self {
+        Self::security(&format!("{}", e))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     // =========================================================================

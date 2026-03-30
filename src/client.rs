@@ -168,9 +168,9 @@ impl Client {
 
         // Load file config from disk if no overrides are active.
         let config_path = match (&self.opts.xdg_config_home, &self.opts.home) {
-            (Some(xdg), _) => provider::provider_config_path(name, Some(xdg)),
-            (None, Some(home)) => provider::provider_config_path_with_home(name, None, home),
-            (None, None) => provider::provider_config_path(name, None),
+            (Some(xdg), _) => provider::provider_config_path(name, Some(xdg))?,
+            (None, Some(home)) => provider::provider_config_path_with_home(name, None, home)?,
+            (None, None) => provider::provider_config_path(name, None)?,
         };
         let file_config = provider::load_provider_file(&config_path)?;
 

@@ -215,17 +215,24 @@ pub struct ResolvedProvider {
 ///
 /// Uses XDG_CONFIG_HOME if provided, otherwise falls back to
 /// `$HOME/.config`.
-pub fn provider_config_path(name: &str, xdg_config_home: Option<&Path>) -> PathBuf {
+///
+/// Returns `Err` if the name contains path traversal characters.
+pub fn provider_config_path(
+    name: &str,
+    xdg_config_home: Option<&Path>,
+) -> Result<PathBuf, crate::config_path::ConfigPathError> {
     named_config_toml_path(xdg_config_home, None, "providers", name)
 }
 
 /// NS-042: Same as `provider_config_path` but with explicit HOME fallback.
 /// Used when XDG_CONFIG_HOME is not set.
+///
+/// Returns `Err` if the name contains path traversal characters.
 pub fn provider_config_path_with_home(
     name: &str,
     xdg_config_home: Option<&Path>,
     home: &Path,
-) -> PathBuf {
+) -> Result<PathBuf, crate::config_path::ConfigPathError> {
     named_config_toml_path(xdg_config_home, Some(home), "providers", name)
 }
 
@@ -449,7 +456,10 @@ pub fn resolve_provider_config(
     }
 
     // NS-044: No layer provided config — enumerate checked locations.
-    let config_path = provider_config_path(name, None);
+    let config_path =
+        provider_config_path(name, None).map_err(|e| ProviderConfigError::MalformedConfig {
+            message: format!("{}", e),
+        })?;
     Err(ProviderConfigError::ProviderNotFound {
         provider: name.to_string(),
         checked_locations: vec![
@@ -714,7 +724,7 @@ VAULT_ADDR = "https://vault.example.com"
         let tmp = tempfile::tempdir().unwrap();
         let xdg_config = tmp.path().to_path_buf();
 
-        let path = provider_config_path("aws", Some(&xdg_config));
+        let path = provider_config_path("aws", Some(&xdg_config)).unwrap();
         assert_eq!(
             path,
             xdg_config
@@ -727,7 +737,7 @@ VAULT_ADDR = "https://vault.example.com"
     #[test]
     fn config_xdg_defaults_to_home_dot_config() {
         let tmp = tempfile::tempdir().unwrap();
-        let path = provider_config_path_with_home("aws", None, tmp.path());
+        let path = provider_config_path_with_home("aws", None, tmp.path()).unwrap();
         assert_eq!(
             path,
             tmp.path()
@@ -741,7 +751,7 @@ VAULT_ADDR = "https://vault.example.com"
     #[test]
     fn config_xdg_custom_overrides_default() {
         let custom_xdg = PathBuf::from("/custom/xdg");
-        let path = provider_config_path("gcp", Some(&custom_xdg));
+        let path = provider_config_path("gcp", Some(&custom_xdg)).unwrap();
         assert_eq!(
             path,
             PathBuf::from("/custom/xdg/noscope/providers/gcp.toml")
