@@ -275,7 +275,6 @@ impl SignalHandlingPolicy {
 
         for cred in credentials {
             let revoke = revoke_fn.clone();
-            let budget = budget;
             set.spawn(async move {
                 let kind = revoke_with_budget(cred.clone(), budget, revoke).await;
                 RevocationResult {
