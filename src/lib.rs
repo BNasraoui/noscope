@@ -1,5 +1,6 @@
 pub mod agent_process;
-pub mod ci_checks;
+#[cfg(test)]
+mod ci_checks;
 pub mod cli;
 pub mod cli_adapter;
 pub mod client;
@@ -424,5 +425,53 @@ mod convergence_tests {
     #[test]
     fn migration_noscope_error_is_send_sync() {
         static_assertions::assert_impl_all!(crate::NoscopeError: Send, Sync);
+    }
+}
+
+
+#[cfg(test)]
+mod module_hygiene_tests {
+    use std::path::PathBuf;
+
+    fn repo_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    }
+
+    #[test]
+    fn ci_checks_is_not_publicly_exported_from_crate_root() {
+        let lib_rs = std::fs::read_to_string(repo_root().join("src/lib.rs"))
+            .expect("failed reading src/lib.rs");
+        assert!(
+            !lib_rs
+                .lines()
+                .any(|line| line.trim() == "pub mod ci_checks;"),
+            "ci_checks is test-only and must not be a public crate export"
+        );
+    }
+
+    #[test]
+    fn ci_checks_is_gated_to_test_builds() {
+        let lib_rs = std::fs::read_to_string(repo_root().join("src/lib.rs"))
+            .expect("failed reading src/lib.rs");
+        assert!(
+            lib_rs.contains("#[cfg(test)]\nmod ci_checks;"),
+            "ci_checks must be wired behind #[cfg(test)]"
+        );
+    }
+
+    #[test]
+    fn signal_handling_policy_unit_tests_live_in_signal_policy_module() {
+        let integration_test_path = repo_root().join("tests/signal_handling_policy.rs");
+        assert!(
+            !integration_test_path.exists(),
+            "signal policy unit tests must not live in tests/"
+        );
+
+        let signal_policy_rs = std::fs::read_to_string(repo_root().join("src/signal_policy.rs"))
+            .expect("failed reading src/signal_policy.rs");
+        assert!(
+            signal_policy_rs.contains("#[cfg(test)]") && signal_policy_rs.contains("mod tests"),
+            "signal policy unit tests must live in src/signal_policy.rs"
+        );
     }
 }
