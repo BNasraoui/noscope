@@ -6,6 +6,9 @@
 
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
+use std::future::Future;
+
 /// NS-008: What to do after a refresh failure.
 ///
 /// `KillChild` exists only to be explicitly rejected — no code path
@@ -189,6 +192,270 @@ pub fn rotate_mode_startup_warning() -> &'static str {
 pub struct RefreshTracker {
     credential_id: String,
     consecutive_failures: u32,
+}
+
+/// Result of comparing pre/post-refresh lease values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LeaseRefreshKind {
+    /// Same token value after refresh command.
+    Renewal,
+    /// Different token value after refresh command.
+    Rotation,
+}
+
+/// Runtime state for one independently refreshed credential.
+pub struct RuntimeCredential {
+    credential_id: String,
+    provider: String,
+    env_key: String,
+    token: crate::token::ScopedToken,
+    tracker: RefreshTracker,
+    next_refresh_at: DateTime<Utc>,
+}
+
+impl RuntimeCredential {
+    pub fn new(
+        credential_id: &str,
+        provider: &str,
+        env_key: &str,
+        token: crate::token::ScopedToken,
+    ) -> Self {
+        let next_refresh_at = crate::credential_set::compute_refresh_at(&token);
+        Self {
+            credential_id: credential_id.to_string(),
+            provider: provider.to_string(),
+            env_key: env_key.to_string(),
+            token,
+            tracker: RefreshTracker::new(credential_id),
+            next_refresh_at,
+        }
+    }
+}
+
+/// Snapshot of upcoming refresh schedule for one credential.
+#[derive(Debug)]
+pub struct RuntimeScheduleEntry {
+    pub credential_id: String,
+    pub provider: String,
+    pub env_key: String,
+    pub refresh_at: DateTime<Utc>,
+}
+
+/// Input for invoking a provider refresh command.
+#[derive(Debug, Clone)]
+pub struct RefreshExecutionRequest {
+    pub credential_id: String,
+    pub provider: String,
+    pub env_key: String,
+    pub token_id: Option<String>,
+    pub token_value: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Result of processing one credential during a runtime refresh tick.
+#[derive(Debug)]
+pub struct RuntimeRefreshEvent {
+    pub credential_id: String,
+    pub outcome: Result<LeaseRefreshKind, RefreshOutcome>,
+}
+
+/// Runtime loop state that drives per-credential refresh timers.
+pub struct RefreshRuntimeLoop {
+    policy: RefreshPolicy,
+    credentials: Vec<RuntimeCredential>,
+    startup_done: bool,
+}
+
+impl RefreshRuntimeLoop {
+    pub fn new(credentials: Vec<RuntimeCredential>) -> Self {
+        Self {
+            policy: RefreshPolicy::default(),
+            credentials,
+            startup_done: false,
+        }
+    }
+
+    /// Emit rotate-mode startup warning once when rotate mode is enabled.
+    pub fn startup(&mut self, rotate_mode: bool, warnings: &mut Vec<&'static str>) {
+        if rotate_mode && !self.startup_done {
+            warnings.push(rotate_mode_startup_warning());
+        }
+        self.startup_done = true;
+    }
+
+    /// Return a read-only schedule snapshot for all credentials.
+    pub fn schedule_snapshot(&self) -> Vec<RuntimeScheduleEntry> {
+        self.credentials
+            .iter()
+            .map(|c| RuntimeScheduleEntry {
+                credential_id: c.credential_id.clone(),
+                provider: c.provider.clone(),
+                env_key: c.env_key.clone(),
+                refresh_at: c.next_refresh_at,
+            })
+            .collect()
+    }
+
+    /// Compute delay until the next credential refresh timer fires.
+    pub fn next_wake_delay(&self, now: DateTime<Utc>) -> Option<Duration> {
+        self.credentials
+            .iter()
+            .map(|c| {
+                c.next_refresh_at
+                    .signed_duration_since(now)
+                    .to_std()
+                    .unwrap_or(Duration::ZERO)
+            })
+            .min()
+    }
+
+    /// Run one refresh tick for all credentials due at `now`.
+    ///
+    /// Uses `child_alive` as the AgentProcess lifecycle guard: once the child
+    /// exits, no further refresh commands are executed.
+    pub async fn run_once<F, Fut>(
+        &mut self,
+        now: DateTime<Utc>,
+        child_alive: bool,
+        mut execute_refresh: F,
+    ) -> Vec<RuntimeRefreshEvent>
+    where
+        F: FnMut(RefreshExecutionRequest) -> Fut,
+        Fut: Future<Output = Result<crate::token::ScopedToken, String>>,
+    {
+        if !child_alive {
+            return Vec::new();
+        }
+
+        let due_ids: Vec<String> = self
+            .credentials
+            .iter()
+            .filter(|c| c.next_refresh_at <= now)
+            .map(|c| c.credential_id.clone())
+            .collect();
+
+        let mut events = Vec::with_capacity(due_ids.len());
+        for credential_id in due_ids {
+            let request = {
+                let c = self
+                    .credentials
+                    .iter()
+                    .find(|c| c.credential_id == credential_id)
+                    .unwrap_or_else(|| panic!("unknown credential_id: {}", credential_id));
+                RefreshExecutionRequest {
+                    credential_id: c.credential_id.clone(),
+                    provider: c.provider.clone(),
+                    env_key: c.env_key.clone(),
+                    token_id: c.token.token_id().map(|v| v.to_string()),
+                    token_value: c.token.expose_secret().to_string(),
+                    expires_at: c.token.expires_at(),
+                }
+            };
+
+            let event = match execute_refresh(request).await {
+                Ok(new_token) => RuntimeRefreshEvent {
+                    credential_id: credential_id.clone(),
+                    outcome: Ok(self.record_refresh_success(&credential_id, new_token)),
+                },
+                Err(_err) => RuntimeRefreshEvent {
+                    credential_id: credential_id.clone(),
+                    outcome: Err(self.record_refresh_failure(&credential_id, now)),
+                },
+            };
+            events.push(event);
+        }
+
+        events
+    }
+
+    /// Record a refresh failure and compute next action via RefreshPolicy.
+    pub fn record_refresh_failure(
+        &mut self,
+        credential_id: &str,
+        now: DateTime<Utc>,
+    ) -> RefreshOutcome {
+        let (attempt, remaining_lifetime) = {
+            let credential = self.credential_mut(credential_id);
+            credential.tracker.record_failure();
+            let attempt = credential.tracker.consecutive_failures().saturating_sub(1);
+            let remaining_lifetime = credential
+                .token
+                .expires_at()
+                .signed_duration_since(now)
+                .to_std()
+                .unwrap_or(Duration::ZERO);
+            (attempt, remaining_lifetime)
+        };
+
+        let outcome = self.policy.on_refresh_failure(attempt, remaining_lifetime);
+        let credential = self.credential_mut(credential_id);
+        match outcome.action {
+            RefreshAction::Retry { delay } => {
+                credential.next_refresh_at =
+                    now + chrono::Duration::from_std(delay).unwrap_or_default();
+            }
+            RefreshAction::AllowExpiry => {
+                // NS-032: Keep participating in normal refresh cadence.
+                credential.next_refresh_at = normal_refresh_at(&credential.token, now);
+            }
+            RefreshAction::KillChild => {
+                // Defensive invariant; policy should never return this.
+                credential.next_refresh_at = normal_refresh_at(&credential.token, now);
+            }
+        }
+
+        outcome
+    }
+
+    /// Record a refresh success and classify as renewal or rotation.
+    pub fn record_refresh_success(
+        &mut self,
+        credential_id: &str,
+        token: crate::token::ScopedToken,
+    ) -> LeaseRefreshKind {
+        let credential = self.credential_mut(credential_id);
+
+        let kind = if credential.token.expose_secret() == token.expose_secret() {
+            LeaseRefreshKind::Renewal
+        } else {
+            LeaseRefreshKind::Rotation
+        };
+
+        credential.token = token;
+        credential.tracker.record_success();
+        credential.next_refresh_at = normal_refresh_at(&credential.token, Utc::now());
+
+        kind
+    }
+
+    pub fn failure_count(&self, credential_id: &str) -> u32 {
+        self.credential(credential_id)
+            .tracker
+            .consecutive_failures()
+    }
+
+    fn credential_mut(&mut self, credential_id: &str) -> &mut RuntimeCredential {
+        self.credentials
+            .iter_mut()
+            .find(|c| c.credential_id == credential_id)
+            .unwrap_or_else(|| panic!("unknown credential_id: {}", credential_id))
+    }
+
+    fn credential(&self, credential_id: &str) -> &RuntimeCredential {
+        self.credentials
+            .iter()
+            .find(|c| c.credential_id == credential_id)
+            .unwrap_or_else(|| panic!("unknown credential_id: {}", credential_id))
+    }
+}
+
+fn normal_refresh_at(token: &crate::token::ScopedToken, now: DateTime<Utc>) -> DateTime<Utc> {
+    let computed = crate::credential_set::compute_refresh_at(token);
+    if computed <= now {
+        now + chrono::Duration::seconds(1)
+    } else {
+        computed
+    }
 }
 
 impl RefreshTracker {
@@ -670,5 +937,247 @@ mod tests {
         let delay = params.base_delay_for_attempt(100);
         // Just assert it doesn't panic and produces a non-zero duration.
         assert!(delay > Duration::ZERO);
+    }
+
+    fn make_runtime_token(
+        value: &str,
+        provider: &str,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> crate::token::ScopedToken {
+        crate::token::ScopedToken::new(
+            secrecy::SecretString::from(value.to_string()),
+            "runtime-role",
+            expires_at,
+            Some(format!("tok-{}", provider)),
+            provider,
+        )
+    }
+
+    #[test]
+    fn refresh_runtime_ns_048_timer_based_scheduling_uses_compute_refresh_at() {
+        let token = make_runtime_token(
+            "aws-v1",
+            "aws",
+            chrono::Utc::now() + chrono::Duration::minutes(20),
+        );
+        let expected = crate::credential_set::compute_refresh_at(&token);
+
+        let runtime = RefreshRuntimeLoop::new(vec![RuntimeCredential::new(
+            "cred-aws",
+            "aws",
+            "AWS_TOKEN",
+            token,
+        )]);
+
+        let schedule = runtime.schedule_snapshot();
+        assert_eq!(schedule.len(), 1);
+        let skew = (schedule[0].refresh_at - expected).num_milliseconds().abs();
+        assert!(
+            skew <= 5,
+            "runtime schedule must derive from compute_refresh_at (skew={}ms)",
+            skew
+        );
+    }
+
+    #[test]
+    fn refresh_runtime_ns_031_per_credential_independent_timers() {
+        let token_a = make_runtime_token(
+            "a-v1",
+            "aws",
+            chrono::Utc::now() + chrono::Duration::minutes(10),
+        );
+        let token_b = make_runtime_token(
+            "b-v1",
+            "gcp",
+            chrono::Utc::now() + chrono::Duration::minutes(40),
+        );
+
+        let runtime = RefreshRuntimeLoop::new(vec![
+            RuntimeCredential::new("cred-a", "aws", "AWS_TOKEN", token_a),
+            RuntimeCredential::new("cred-b", "gcp", "GCP_TOKEN", token_b),
+        ]);
+
+        let schedule = runtime.schedule_snapshot();
+        assert_eq!(schedule.len(), 2);
+        assert_ne!(schedule[0].refresh_at, schedule[1].refresh_at);
+    }
+
+    #[test]
+    fn refresh_runtime_ns_008_ns_030_failure_handling_uses_policy() {
+        let token = make_runtime_token(
+            "aws-v1",
+            "aws",
+            chrono::Utc::now() + chrono::Duration::minutes(5),
+        );
+        let mut runtime = RefreshRuntimeLoop::new(vec![RuntimeCredential::new(
+            "cred-aws",
+            "aws",
+            "AWS_TOKEN",
+            token,
+        )]);
+
+        let outcome = runtime.record_refresh_failure("cred-aws", chrono::Utc::now());
+        assert!(outcome.log_warning);
+        assert!(!matches!(outcome.action, RefreshAction::KillChild));
+    }
+
+    #[test]
+    fn refresh_runtime_ns_032_tracker_counts_success_and_failure() {
+        let token = make_runtime_token(
+            "aws-v1",
+            "aws",
+            chrono::Utc::now() + chrono::Duration::minutes(10),
+        );
+        let mut runtime = RefreshRuntimeLoop::new(vec![RuntimeCredential::new(
+            "cred-aws",
+            "aws",
+            "AWS_TOKEN",
+            token,
+        )]);
+
+        runtime.record_refresh_failure("cred-aws", chrono::Utc::now());
+        assert_eq!(runtime.failure_count("cred-aws"), 1);
+
+        let next_token = make_runtime_token(
+            "aws-v2",
+            "aws",
+            chrono::Utc::now() + chrono::Duration::minutes(10),
+        );
+        runtime.record_refresh_success("cred-aws", next_token);
+        assert_eq!(runtime.failure_count("cred-aws"), 0);
+    }
+
+    #[test]
+    fn refresh_runtime_ns_025_startup_warning_for_rotate_mode() {
+        let token = make_runtime_token(
+            "aws-v1",
+            "aws",
+            chrono::Utc::now() + chrono::Duration::minutes(10),
+        );
+
+        let mut runtime = RefreshRuntimeLoop::new(vec![RuntimeCredential::new(
+            "cred-aws",
+            "aws",
+            "AWS_TOKEN",
+            token,
+        )]);
+        let mut warnings = Vec::new();
+
+        runtime.startup(true, &mut warnings);
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0], rotate_mode_startup_warning());
+    }
+
+    #[test]
+    fn refresh_runtime_lease_renewal_detection_same_token_is_renewal_different_is_rotation() {
+        let token = make_runtime_token(
+            "aws-v1",
+            "aws",
+            chrono::Utc::now() + chrono::Duration::minutes(10),
+        );
+        let mut runtime = RefreshRuntimeLoop::new(vec![RuntimeCredential::new(
+            "cred-aws",
+            "aws",
+            "AWS_TOKEN",
+            token,
+        )]);
+
+        let renewal_token = make_runtime_token(
+            "aws-v1",
+            "aws",
+            chrono::Utc::now() + chrono::Duration::minutes(10),
+        );
+        let renewal = runtime.record_refresh_success("cred-aws", renewal_token);
+        assert!(matches!(renewal, LeaseRefreshKind::Renewal));
+
+        let rotation_token = make_runtime_token(
+            "aws-v2",
+            "aws",
+            chrono::Utc::now() + chrono::Duration::minutes(10),
+        );
+        let rotation = runtime.record_refresh_success("cred-aws", rotation_token);
+        assert!(matches!(rotation, LeaseRefreshKind::Rotation));
+    }
+
+    #[test]
+    fn refresh_runtime_ns_048_timer_delay_until_next_refresh() {
+        let now = chrono::Utc::now();
+        let token_a = make_runtime_token("a-v1", "aws", now + chrono::Duration::minutes(20));
+        let token_b = make_runtime_token("b-v1", "gcp", now + chrono::Duration::minutes(40));
+
+        let runtime = RefreshRuntimeLoop::new(vec![
+            RuntimeCredential::new("cred-a", "aws", "AWS_TOKEN", token_a),
+            RuntimeCredential::new("cred-b", "gcp", "GCP_TOKEN", token_b),
+        ]);
+
+        let delay = runtime.next_wake_delay(now).expect("expected wake delay");
+        assert!(delay > Duration::ZERO);
+        assert!(delay <= Duration::from_secs(16 * 60));
+    }
+
+    #[tokio::test]
+    async fn refresh_runtime_provider_execution_runs_only_due_credentials_with_child_context() {
+        let now = chrono::Utc::now();
+        let token = make_runtime_token("aws-v1", "aws", now + chrono::Duration::seconds(1));
+        let mut runtime = RefreshRuntimeLoop::new(vec![RuntimeCredential::new(
+            "cred-aws",
+            "aws",
+            "AWS_TOKEN",
+            token,
+        )]);
+
+        let mut executed = false;
+        let events = runtime
+            .run_once(now + chrono::Duration::seconds(1), true, |_request| {
+                executed = true;
+                Box::pin(async {
+                    Ok(make_runtime_token(
+                        "aws-v2",
+                        "aws",
+                        chrono::Utc::now() + chrono::Duration::minutes(10),
+                    ))
+                })
+            })
+            .await;
+
+        assert!(executed);
+        assert_eq!(events.len(), 1);
+
+        let mut not_run = false;
+        let skipped = runtime
+            .run_once(now + chrono::Duration::seconds(1), false, |_request| {
+                not_run = true;
+                Box::pin(async {
+                    Ok(make_runtime_token(
+                        "aws-v3",
+                        "aws",
+                        chrono::Utc::now() + chrono::Duration::minutes(10),
+                    ))
+                })
+            })
+            .await;
+        assert!(!not_run);
+        assert!(skipped.is_empty());
+    }
+
+    #[test]
+    fn refresh_runtime_allow_expiry_does_not_schedule_tight_retry_loop() {
+        let now = chrono::Utc::now();
+        let expired = make_runtime_token("aws-v1", "aws", now - chrono::Duration::seconds(5));
+        let mut runtime = RefreshRuntimeLoop::new(vec![RuntimeCredential::new(
+            "cred-aws",
+            "aws",
+            "AWS_TOKEN",
+            expired,
+        )]);
+
+        let outcome = runtime.record_refresh_failure("cred-aws", now);
+        assert!(matches!(outcome.action, RefreshAction::AllowExpiry));
+
+        let delay = runtime.next_wake_delay(now).expect("expected wake delay");
+        assert!(
+            delay >= Duration::from_secs(1),
+            "allow-expiry path must avoid immediate tight loops"
+        );
     }
 }
