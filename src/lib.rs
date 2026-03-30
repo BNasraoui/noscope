@@ -1,4 +1,5 @@
 pub mod ci_checks;
+pub mod cli;
 pub mod cli_adapter;
 pub mod client;
 mod config_path;
