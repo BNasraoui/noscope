@@ -107,6 +107,10 @@ pub struct RunArgs {
     #[arg(long)]
     pub profile: Option<String>,
 
+    /// Structured runtime event log format written to stderr.
+    #[arg(long, default_value = "text")]
+    pub log_format: String,
+
     /// The child command and its arguments (after `--`).
     #[arg(last = true, required = true)]
     pub child_args: Vec<String>,

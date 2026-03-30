@@ -18,6 +18,7 @@ pub mod provider;
 pub mod provider_exec;
 pub mod redaction;
 pub mod refresh;
+pub mod run_signal_wiring;
 pub mod security;
 pub mod signal_policy;
 pub mod token;
@@ -58,12 +59,15 @@ pub use exit_code::{NoscopeExitCode, ProviderExitCode};
 pub use mint::MintEnvelope;
 pub use token::ScopedToken;
 pub use token_convert::{
-    ConversionResult, provider_output_to_scoped_token,
-    provider_output_to_scoped_token_with_metadata, scoped_token_to_mint_envelope,
+    provider_output_to_scoped_token, provider_output_to_scoped_token_with_metadata,
+    scoped_token_to_mint_envelope, ConversionResult,
 };
 pub use token_provider::{
-    CleanupOnDropFuture, TokenProvider, TokenProviderError, TokenProviderFuture, with_mint_cleanup,
+    with_mint_cleanup, CleanupOnDropFuture, TokenProvider, TokenProviderError, TokenProviderFuture,
 };
+
+#[cfg(test)]
+mod event_emission_wiring_tests;
 
 #[cfg(test)]
 mod formatting_gate_tests {
@@ -427,7 +431,6 @@ mod convergence_tests {
         static_assertions::assert_impl_all!(crate::NoscopeError: Send, Sync);
     }
 }
-
 
 #[cfg(test)]
 mod module_hygiene_tests {

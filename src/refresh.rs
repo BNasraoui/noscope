@@ -8,6 +8,9 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use std::future::Future;
+use std::time::Instant;
+
+use crate::event::{emit_runtime_event, Event, EventType};
 
 /// NS-008: What to do after a refresh failure.
 ///
@@ -352,15 +355,35 @@ impl RefreshRuntimeLoop {
                 }
             };
 
+            emit_runtime_event(Event::new(EventType::RefreshStart, &request.provider));
+            let started = Instant::now();
+            let provider = request.provider.clone();
+
             let event = match execute_refresh(request).await {
-                Ok(new_token) => RuntimeRefreshEvent {
-                    credential_id: credential_id.clone(),
-                    outcome: Ok(self.record_refresh_success(&credential_id, new_token)),
-                },
-                Err(_err) => RuntimeRefreshEvent {
-                    credential_id: credential_id.clone(),
-                    outcome: Err(self.record_refresh_failure(&credential_id, now)),
-                },
+                Ok(new_token) => {
+                    let mut emitted = Event::new(EventType::RefreshSuccess, &provider);
+                    if let Some(token_id) = new_token.token_id() {
+                        emitted.set_token_id(token_id);
+                    }
+                    emitted.set_duration(started.elapsed());
+                    emit_runtime_event(emitted);
+
+                    RuntimeRefreshEvent {
+                        credential_id: credential_id.clone(),
+                        outcome: Ok(self.record_refresh_success(&credential_id, new_token)),
+                    }
+                }
+                Err(err) => {
+                    let mut emitted = Event::new(EventType::RefreshFail, &provider);
+                    emitted.set_error(&err);
+                    emitted.set_duration(started.elapsed());
+                    emit_runtime_event(emitted);
+
+                    RuntimeRefreshEvent {
+                        credential_id: credential_id.clone(),
+                        outcome: Err(self.record_refresh_failure(&credential_id, now)),
+                    }
+                }
             };
             events.push(event);
         }

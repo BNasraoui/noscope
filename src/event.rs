@@ -10,6 +10,9 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::fmt;
+#[cfg(test)]
+use std::sync::Mutex;
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
 /// NS-070: All structured event types emitted by noscope.
@@ -216,6 +219,10 @@ impl EventEmitter {
         Self { format }
     }
 
+    pub fn format(&self) -> LogFormat {
+        self.format
+    }
+
     /// Format an event as a string according to the configured format.
     ///
     /// - `Json`: single-line JSON (same as `event.to_json()`)
@@ -251,6 +258,79 @@ impl EventEmitter {
             }
         }
     }
+}
+
+#[derive(Clone)]
+struct RuntimeEmitter {
+    format: LogFormat,
+    sink: Arc<dyn Fn(String) + Send + Sync>,
+}
+
+fn runtime_emitter_slot() -> &'static RwLock<Option<RuntimeEmitter>> {
+    static SLOT: OnceLock<RwLock<Option<RuntimeEmitter>>> = OnceLock::new();
+    SLOT.get_or_init(|| RwLock::new(None))
+}
+
+pub struct RuntimeEmitterGuard;
+
+impl Drop for RuntimeEmitterGuard {
+    fn drop(&mut self) {
+        clear_runtime_emitter();
+    }
+}
+
+pub fn install_runtime_emitter(emitter: EventEmitter) -> RuntimeEmitterGuard {
+    let sink: Arc<dyn Fn(String) + Send + Sync> = Arc::new(|line| eprintln!("{}", line));
+    let runtime = RuntimeEmitter {
+        format: emitter.format(),
+        sink,
+    };
+    if let Ok(mut slot) = runtime_emitter_slot().write() {
+        *slot = Some(runtime);
+    }
+    RuntimeEmitterGuard
+}
+
+pub fn clear_runtime_emitter() {
+    if let Ok(mut slot) = runtime_emitter_slot().write() {
+        *slot = None;
+    }
+}
+
+pub fn emit_runtime_event(event: Event) {
+    let runtime = runtime_emitter_slot()
+        .read()
+        .ok()
+        .and_then(|slot| slot.clone());
+    let Some(runtime) = runtime else {
+        return;
+    };
+
+    let emitter = EventEmitter::new(runtime.format);
+    let line = emitter.format_event(&event);
+    (runtime.sink)(line);
+}
+
+#[cfg(test)]
+pub fn install_test_event_collector(format: LogFormat) -> Arc<Mutex<Vec<String>>> {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let captured_for_sink = Arc::clone(&captured);
+    let sink: Arc<dyn Fn(String) + Send + Sync> = Arc::new(move |line| {
+        if let Ok(mut lines) = captured_for_sink.lock() {
+            lines.push(line);
+        }
+    });
+
+    let runtime = RuntimeEmitter { format, sink };
+    if let Ok(mut slot) = runtime_emitter_slot().write() {
+        *slot = Some(runtime);
+    }
+    captured
+}
+
+#[cfg(test)]
+pub fn clear_test_event_collector() {
+    clear_runtime_emitter();
 }
 
 #[cfg(test)]

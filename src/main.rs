@@ -56,6 +56,11 @@ fn run(cli: cli::Cli) -> Result<i32, noscope::Error> {
 }
 
 fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, noscope::Error> {
+    let log_format = noscope::LogFormat::parse(&args.log_format)
+        .ok_or_else(|| noscope::Error::usage("--log-format must be 'json' or 'text'"))?;
+    let _runtime_emitter_guard =
+        noscope::event::install_runtime_emitter(noscope::event::EventEmitter::new(log_format));
+
     let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
     let client = Client::new(ClientOptions {
         verbose,
@@ -696,15 +701,32 @@ async fn execute_revoke(
     resolved: &noscope::provider::ResolvedProvider,
     input: &noscope::mint::RevokeInput,
 ) -> Result<(), noscope::Error> {
-    let revoke_cmd = resolved.revoke_cmd.as_deref().ok_or_else(|| {
-        noscope::Error::provider(&resolved.name, "provider does not define a revoke command")
-    })?;
+    let emit_revoke_fail = |message: &str, started: Instant| {
+        let mut event = noscope::Event::new(noscope::EventType::RevokeFail, &resolved.name);
+        event.set_token_id(input.token_id());
+        event.set_error(message);
+        event.set_duration(started.elapsed());
+        noscope::event::emit_runtime_event(event);
+    };
+
+    let started = Instant::now();
+    let mut revoke_start = noscope::Event::new(noscope::EventType::RevokeStart, &resolved.name);
+    revoke_start.set_token_id(input.token_id());
+    noscope::event::emit_runtime_event(revoke_start);
+
+    let revoke_cmd = match resolved.revoke_cmd.as_deref() {
+        Some(cmd) => cmd,
+        None => {
+            let message = "provider does not define a revoke command";
+            emit_revoke_fail(message, started);
+            return Err(noscope::Error::provider(&resolved.name, message));
+        }
+    };
     let argv = parse_command(revoke_cmd);
     if argv.is_empty() {
-        return Err(noscope::Error::provider(
-            &resolved.name,
-            "empty revoke command",
-        ));
+        let message = "empty revoke command";
+        emit_revoke_fail(message, started);
+        return Err(noscope::Error::provider(&resolved.name, message));
     }
 
     let mut env = resolved.env.clone();
@@ -723,9 +745,17 @@ async fn execute_revoke(
         0,
     )
     .await
-    .map_err(|e| noscope::Error::provider(&resolved.name, &format!("spawn failed: {}", e)))?;
+    .map_err(|e| {
+        let message = format!("spawn failed: {}", e);
+        emit_revoke_fail(&message, started);
+        noscope::Error::provider(&resolved.name, &message)
+    })?;
 
     if noscope::provider_exec::is_revoke_success(exec_result.exit_result.exit_code.as_raw()) {
+        let mut event = noscope::Event::new(noscope::EventType::RevokeSuccess, &resolved.name);
+        event.set_token_id(input.token_id());
+        event.set_duration(started.elapsed());
+        noscope::event::emit_runtime_event(event);
         Ok(())
     } else {
         let stderr = if exec_result.stderr.is_empty() {
@@ -733,6 +763,11 @@ async fn execute_revoke(
         } else {
             exec_result.stderr
         };
+        let mut event = noscope::Event::new(noscope::EventType::RevokeFail, &resolved.name);
+        event.set_token_id(input.token_id());
+        event.set_error(&stderr);
+        event.set_duration(started.elapsed());
+        noscope::event::emit_runtime_event(event);
         Err(noscope::Error::provider(
             &resolved.name,
             &format!("revoke failed for token {}: {}", input.token_id(), stderr),
@@ -936,6 +971,7 @@ mod run_wiring_tests {
         role: &str,
         ttl: u64,
         profile: Option<String>,
+        log_format: &str,
         child_args: Vec<String>,
     ) -> cli::RunArgs {
         cli::RunArgs {
@@ -943,6 +979,7 @@ mod run_wiring_tests {
             role: role.to_string(),
             ttl,
             profile,
+            log_format: log_format.to_string(),
             child_args,
         }
     }
@@ -978,6 +1015,7 @@ mod run_wiring_tests {
             "admin",
             3600,
             None,
+            "text",
             vec!["/bin/true".to_string()],
         );
 
@@ -1028,6 +1066,7 @@ mod run_wiring_tests {
             "ignored-role",
             3600,
             Some("dev".to_string()),
+            "text",
             vec![child.to_string_lossy().to_string()],
         );
 
@@ -1069,6 +1108,7 @@ mod run_wiring_tests {
             "admin",
             3600,
             None,
+            "text",
             vec![child.to_string_lossy().to_string()],
         );
 
@@ -1112,6 +1152,7 @@ mod run_wiring_tests {
             "admin",
             3600,
             None,
+            "text",
             vec![child.to_string_lossy().to_string()],
         );
 
@@ -1149,6 +1190,7 @@ mod run_wiring_tests {
             "admin",
             3600,
             None,
+            "text",
             vec![child.to_string_lossy().to_string()],
         );
 
@@ -1212,6 +1254,7 @@ mod run_wiring_tests {
             "admin",
             3600,
             None,
+            "text",
             vec![child.to_string_lossy().to_string()],
         );
 
@@ -1259,6 +1302,7 @@ mod run_wiring_tests {
             "admin",
             3600,
             None,
+            "text",
             vec!["/definitely/not/a/real/command".to_string()],
         );
 

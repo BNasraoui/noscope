@@ -7,14 +7,16 @@ use tokio::time::sleep;
 
 use crate::agent_process::{AgentMode, AgentProcess, AgentProcessConfig};
 use crate::client::{Client, ClientOptions, MintRequest, ProviderOverrides};
-use crate::credential_set::{CredentialSet, CredentialSpec, validate_env_key_uniqueness};
+use crate::credential_set::{validate_env_key_uniqueness, CredentialSet, CredentialSpec};
 use crate::error::Error;
 use crate::event::EventType;
 use crate::profile;
 use crate::provider;
 use crate::provider_exec::{self, ExecConfig, ProviderExecResult};
 use crate::refresh::{RefreshOutcome, RefreshPolicy};
-use crate::signal_policy::{ParentSignal, SignalHandlingPolicy};
+use crate::run_signal_wiring::{
+    parent_signal_from_raw, RunSignalWiring, SignalProcess, SignalRevoker,
+};
 use crate::token::ScopedToken;
 use crate::token_convert::provider_output_to_scoped_token;
 
@@ -114,17 +116,54 @@ async fn revoke_token(
     let Some(revoke_cmd) = &resolved.revoke_cmd else {
         return;
     };
+    let started = std::time::Instant::now();
+    let token_id = token.token_id().unwrap_or("unknown");
+    let mut start = crate::Event::new(crate::EventType::RevokeStart, &resolved.name);
+    start.set_token_id(token_id);
+    crate::event::emit_runtime_event(start);
+
     let argv = parse_command(revoke_cmd);
     if argv.is_empty() {
+        let mut fail = crate::Event::new(crate::EventType::RevokeFail, &resolved.name);
+        fail.set_token_id(token_id);
+        fail.set_error("empty revoke command");
+        fail.set_duration(started.elapsed());
+        crate::event::emit_runtime_event(fail);
         return;
     }
-    let token_id = token.token_id().unwrap_or("unknown");
+
     let mut env = resolved.env.clone();
     env.extend(provider_exec::build_revoke_env(
         token.expose_secret(),
         token_id,
     ));
-    let _ = provider_exec::execute_provider_command(&argv, &env, exec_config, 0).await;
+    match provider_exec::execute_provider_command(&argv, &env, exec_config, 0).await {
+        Ok(result) if provider_exec::is_revoke_success(result.exit_result.exit_code.as_raw()) => {
+            let mut success = crate::Event::new(crate::EventType::RevokeSuccess, &resolved.name);
+            success.set_token_id(token_id);
+            success.set_duration(started.elapsed());
+            crate::event::emit_runtime_event(success);
+        }
+        Ok(result) => {
+            let err = if result.stderr.is_empty() {
+                result.exit_result.stderr_message()
+            } else {
+                result.stderr
+            };
+            let mut fail = crate::Event::new(crate::EventType::RevokeFail, &resolved.name);
+            fail.set_token_id(token_id);
+            fail.set_error(&err);
+            fail.set_duration(started.elapsed());
+            crate::event::emit_runtime_event(fail);
+        }
+        Err(err) => {
+            let mut fail = crate::Event::new(crate::EventType::RevokeFail, &resolved.name);
+            fail.set_token_id(token_id);
+            fail.set_error(&format!("spawn failed: {}", err));
+            fail.set_duration(started.elapsed());
+            crate::event::emit_runtime_event(fail);
+        }
+    }
 }
 
 pub async fn mint_refresh_revoke_cycle(
@@ -322,33 +361,109 @@ pub fn forward_sigterm_then_escalate(
     command: &str,
     args: &[String],
 ) -> Result<SignalHandlingReport, Error> {
+    forward_sigterm_then_escalate_with_os_signals(command, args, &[])
+}
+
+pub fn forward_sigterm_then_escalate_with_os_signals(
+    command: &str,
+    args: &[String],
+    parent_signals: &[i32],
+) -> Result<SignalHandlingReport, Error> {
     let mut process = AgentProcess::spawn(AgentProcessConfig {
         command: command.to_string(),
         args: args.to_vec(),
         mode: AgentMode::Run,
         injected_env: HashMap::new(),
         force_env: true,
-        timeout: Some(Duration::from_secs(2)),
+        timeout: None,
     })
     .map_err(|e| Error::internal(&format!("{}", e)))?;
 
-    process
-        .forward_signal(libc::SIGTERM)
-        .map_err(|e| Error::internal(&format!("{}", e)))?;
+    let mut signals =
+        signal_hook::iterator::Signals::new([libc::SIGTERM, libc::SIGINT, libc::SIGHUP])
+            .map_err(|e| Error::internal(&format!("failed to register signal handlers: {}", e)))?;
 
-    let mut policy = SignalHandlingPolicy::default();
-    let _ = policy.on_shutdown_signal(ParentSignal::Sigterm);
-    let decision = policy.on_shutdown_signal(ParentSignal::Sigint);
-    if decision.immediate_sigkill {
-        let _ = process.forward_signal(libc::SIGKILL);
+    for raw in parent_signals {
+        let rc = unsafe { libc::raise(*raw) };
+        if rc != 0 {
+            return Err(Error::internal("failed to inject parent signal"));
+        }
     }
 
-    let _ = process.wait_with_revoke(|| Ok(()));
+    let mut wiring = RunSignalWiring::default();
+    let mut forwarded_sigterm = false;
+    let mut double_signal_escalated = false;
+    let mut noop_revoker = NoopRevoker;
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(2);
+    let mut timeout_kill_sent = false;
+
+    loop {
+        for raw in signals.pending() {
+            if let Some(parent_signal) = parent_signal_from_raw(raw) {
+                let mut process_adapter = IntegrationSignalProcessAdapter {
+                    inner: &mut process,
+                    forwarded_sigterm: &mut forwarded_sigterm,
+                };
+                let action = wiring
+                    .on_parent_signal(parent_signal, &mut process_adapter, &mut noop_revoker)
+                    .map_err(|e| {
+                        Error::internal(&format!("failed during signal handling: {}", e))
+                    })?;
+                if action.immediate_sigkill {
+                    double_signal_escalated = true;
+                }
+            }
+        }
+
+        if process
+            .try_wait_exit_code()
+            .map_err(|e| Error::internal(&format!("{}", e)))?
+            .is_some()
+        {
+            break;
+        }
+
+        if !timeout_kill_sent && start.elapsed() >= timeout {
+            let _ = process.forward_signal(libc::SIGKILL);
+            timeout_kill_sent = true;
+        }
+
+        if timeout_kill_sent && start.elapsed() >= timeout + Duration::from_secs(1) {
+            return Err(Error::internal("timed out waiting for child exit"));
+        }
+
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     Ok(SignalHandlingReport {
-        forwarded_sigterm: true,
-        double_signal_escalated: decision.immediate_sigkill,
+        forwarded_sigterm,
+        double_signal_escalated,
     })
+}
+
+struct IntegrationSignalProcessAdapter<'a> {
+    inner: &'a mut AgentProcess,
+    forwarded_sigterm: &'a mut bool,
+}
+
+impl SignalProcess for IntegrationSignalProcessAdapter<'_> {
+    fn forward_signal(&mut self, sig: i32) -> Result<(), std::io::Error> {
+        if sig == libc::SIGTERM {
+            *self.forwarded_sigterm = true;
+        }
+        self.inner
+            .forward_signal(sig)
+            .map_err(|e| std::io::Error::other(format!("{}", e)))
+    }
+}
+
+struct NoopRevoker;
+
+impl SignalRevoker for NoopRevoker {
+    fn revoke_all(&mut self) -> Result<(), std::io::Error> {
+        Ok(())
+    }
 }
 
 pub async fn execute_provider_with_timeout(

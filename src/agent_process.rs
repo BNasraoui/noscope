@@ -5,6 +5,11 @@ use std::io::Read;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
+use crate::event::{emit_runtime_event, Event, EventType};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentMode {
     Run,
@@ -110,6 +115,16 @@ impl AgentProcess {
 
         match config.mode {
             AgentMode::Run => {
+                #[cfg(unix)]
+                {
+                    unsafe {
+                        command.pre_exec(|| {
+                            crate::process_group::configure_child_for_mode(
+                                crate::process_group::ProcessGroupMode::Run,
+                            )
+                        });
+                    }
+                }
                 command.stdout(Stdio::inherit());
                 command.stderr(Stdio::inherit());
             }
@@ -126,6 +141,8 @@ impl AgentProcess {
                 source,
             })?;
 
+        emit_runtime_event(Event::new(EventType::ChildSpawn, "child"));
+
         Ok(Self {
             child: Some(child),
             mode: config.mode,
@@ -140,15 +157,55 @@ impl AgentProcess {
         })?;
 
         let pid = child.id();
-        let rc = unsafe { libc::kill(pid as libc::pid_t, signal) };
-        if rc != 0 {
-            return Err(AgentProcessError::Io {
-                context: "failed to forward signal",
-                source: io::Error::last_os_error(),
-            });
+        let pgid = -(pid as libc::pid_t);
+
+        let rc_group = unsafe { libc::kill(pgid, signal) };
+        if rc_group != 0 {
+            let group_err = io::Error::last_os_error();
+            if group_err.raw_os_error() != Some(libc::ESRCH) {
+                return Err(AgentProcessError::Io {
+                    context: "failed to forward signal",
+                    source: group_err,
+                });
+            }
+
+            let rc_child = unsafe { libc::kill(pid as libc::pid_t, signal) };
+            if rc_child != 0 {
+                let child_err = io::Error::last_os_error();
+                if child_err.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(AgentProcessError::Io {
+                        context: "failed to forward signal",
+                        source: child_err,
+                    });
+                }
+            }
         }
 
         Ok(())
+    }
+
+    pub fn try_wait_exit_code(&mut self) -> Result<Option<i32>, AgentProcessError> {
+        let child = self.child.as_mut().ok_or_else(|| AgentProcessError::Io {
+            context: "child already waited",
+            source: io::Error::new(io::ErrorKind::BrokenPipe, "child already waited"),
+        })?;
+
+        let status = child.try_wait().map_err(|source| AgentProcessError::Io {
+            context: "failed polling child status",
+            source,
+        })?;
+
+        match status {
+            Some(s) => {
+                self.child.take();
+                let exit_code = exit_status_code(s);
+                let mut event = Event::new(EventType::ChildExit, "child");
+                event.set_exit_code(exit_code);
+                emit_runtime_event(event);
+                Ok(Some(exit_code))
+            }
+            None => Ok(None),
+        }
     }
 
     pub fn wait_with_revoke<F>(&mut self, revoke: F) -> Result<i32, AgentProcessError>
@@ -157,6 +214,9 @@ impl AgentProcess {
     {
         let status = self.wait_for_exit_status()?;
         let exit_code = exit_status_code(status);
+        let mut event = Event::new(EventType::ChildExit, "child");
+        event.set_exit_code(exit_code);
+        emit_runtime_event(event);
         revoke()?;
         Ok(exit_code)
     }
@@ -175,6 +235,9 @@ impl AgentProcess {
 
         let status = wait_child_with_optional_timeout(&mut child, self.timeout)?;
         let exit_code = exit_status_code(status);
+        let mut event = Event::new(EventType::ChildExit, "child");
+        event.set_exit_code(exit_code);
+        emit_runtime_event(event);
 
         let mut stdout = Vec::new();
         if let Some(mut pipe) = child.stdout.take() {
@@ -278,8 +341,8 @@ fn wait_child_with_optional_timeout(
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::time::Duration;
 
     use super::{AgentMode, AgentProcess, AgentProcessConfig, AgentProcessError};

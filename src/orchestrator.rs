@@ -5,14 +5,16 @@
 // NS-063: Mint mode JSON array output (format_mint_output wiring)
 
 use std::future::Future;
+use std::time::Instant;
 
 use tokio::sync::Semaphore;
 
 use crate::credential_set::{
-    CredentialSet, CredentialSetError, CredentialSpec, MintConfig, MintResult,
-    format_timeout_error, resolve_mint_results,
+    format_timeout_error, resolve_mint_results, CredentialSet, CredentialSetError, CredentialSpec,
+    MintConfig, MintResult,
 };
-use crate::mint::{MintEnvelope, format_mint_output};
+use crate::event::{emit_runtime_event, Event, EventType};
+use crate::mint::{format_mint_output, MintEnvelope};
 use crate::token_convert::scoped_token_to_mint_envelope;
 
 /// NS-050 + NS-046 + NS-006: Execute provider mint operations in parallel
@@ -61,6 +63,9 @@ where
         let fut = mint_fn(spec);
 
         let handle = tokio::spawn(async move {
+            emit_runtime_event(Event::new(EventType::MintStart, &provider_name));
+            let started = Instant::now();
+
             // NS-046: Per-provider timeout.
             let result = tokio::time::timeout(timeout, fut).await;
 
@@ -68,15 +73,39 @@ where
             drop(permit);
 
             match result {
-                Ok(mint_result) => mint_result,
+                Ok(mint_result) => {
+                    let mut event = match &mint_result {
+                        MintResult::Success { token, .. } => {
+                            let mut event = Event::new(EventType::MintSuccess, &provider_name);
+                            if let Some(token_id) = token.token_id() {
+                                event.set_token_id(token_id);
+                            }
+                            event
+                        }
+                        MintResult::Failure { error, .. } => {
+                            let mut event = Event::new(EventType::MintFail, &provider_name);
+                            event.set_error(error);
+                            event
+                        }
+                    };
+                    event.set_duration(started.elapsed());
+                    emit_runtime_event(event);
+                    mint_result
+                }
                 Err(_elapsed) => {
                     // NS-046: Timeout produces a failure result.
                     // The spec is reconstructed with minimal fields — only
                     // `provider` and `env_key` are used by resolve_mint_results()
                     // for error reporting. Role and TTL are not relevant here.
+                    let timeout_error = format_timeout_error(&provider_name, timeout);
+                    let mut event = Event::new(EventType::MintFail, &provider_name);
+                    event.set_error(&timeout_error);
+                    event.set_duration(started.elapsed());
+                    emit_runtime_event(event);
+
                     MintResult::Failure {
                         spec: CredentialSpec::new(&provider_name, "", 0, &env_key),
-                        error: format_timeout_error(&provider_name, timeout),
+                        error: timeout_error,
                     }
                 }
             }
@@ -113,8 +142,8 @@ pub fn format_orchestrator_output(cred_set: &CredentialSet) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::time::Duration;
 
     use chrono::Utc;

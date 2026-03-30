@@ -197,7 +197,7 @@ pub enum SelectedProviderConfigLayer {
 }
 
 /// Fully resolved provider configuration after precedence resolution.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ResolvedProvider {
     pub name: String,
     /// NS-072: Contract version from the file config layer.
