@@ -140,12 +140,26 @@ pub struct MintArgs {
 #[derive(Parser)]
 pub struct RevokeArgs {
     /// The token ID to revoke (opaque identifier, not the secret).
-    #[arg(long)]
-    pub token_id: String,
+    #[arg(
+        long,
+        requires = "provider",
+        required_unless_present = "from_stdin",
+        conflicts_with = "from_stdin"
+    )]
+    pub token_id: Option<String>,
 
     /// The provider that minted the token.
-    #[arg(long)]
-    pub provider: String,
+    #[arg(
+        long,
+        requires = "token_id",
+        required_unless_present = "from_stdin",
+        conflicts_with = "from_stdin"
+    )]
+    pub provider: Option<String>,
+
+    /// Read a mint envelope JSON object from stdin and extract token_id/provider.
+    #[arg(long, conflicts_with_all = ["token_id", "provider"])]
+    pub from_stdin: bool,
 }
 
 /// Arguments for the `validate` subcommand.
@@ -448,8 +462,8 @@ mod tests {
         .unwrap();
         match cli.command {
             crate::cli::Command::Revoke(ref args) => {
-                assert_eq!(args.token_id, "tok-abc");
-                assert_eq!(args.provider, "aws");
+                assert_eq!(args.token_id.as_deref(), Some("tok-abc"));
+                assert_eq!(args.provider.as_deref(), Some("aws"));
             }
             _ => panic!("Expected Revoke subcommand"),
         }
