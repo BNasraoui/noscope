@@ -378,6 +378,47 @@ where
     }
 }
 
+#[cfg(test)]
+struct RunModeSignalPollOutcome {
+    signal_processed: bool,
+}
+
+#[cfg(test)]
+fn run_mode_poll_without_signal_for_test<P, F>(
+    _wiring: &mut RunSignalWiring,
+    _process: &mut P,
+    _revoke_all: &mut F,
+) -> Result<RunModeSignalPollOutcome, noscope::Error>
+where
+    P: SignalProcess,
+    F: FnMut() -> Result<(), noscope::Error>,
+{
+    Ok(RunModeSignalPollOutcome {
+        signal_processed: false,
+    })
+}
+
+#[cfg(test)]
+fn run_mode_dispatch_parent_signal_for_test<P, F>(
+    wiring: &mut RunSignalWiring,
+    signal: noscope::signal_policy::ParentSignal,
+    process: &mut P,
+    revoke_all: &mut F,
+) -> Result<RunModeSignalPollOutcome, noscope::Error>
+where
+    P: SignalProcess,
+    F: FnMut() -> Result<(), noscope::Error>,
+{
+    let mut revoker = ClosureRevoker { revoke_all };
+    wiring
+        .on_parent_signal(signal, process, &mut revoker)
+        .map_err(|e| noscope::Error::internal(&format!("failed during signal handling: {}", e)))?;
+
+    Ok(RunModeSignalPollOutcome {
+        signal_processed: true,
+    })
+}
+
 struct AgentProcessSignalAdapter<'a> {
     inner: &'a mut noscope::agent_process::AgentProcess,
 }
@@ -940,6 +981,7 @@ mod revoke_wiring_tests {
 #[cfg(test)]
 mod run_wiring_tests {
     use super::*;
+    use noscope::signal_policy::ParentSignal;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
@@ -1317,6 +1359,109 @@ mod run_wiring_tests {
             revoked.contains("tok-aws"),
             "cmd_run must revoke minted credential when child spawn fails"
         );
+    }
+
+    #[test]
+    fn ns_029_revocation_callback_not_invoked_before_signal_receipt_in_run_mode() {
+        let mut revoke_calls = 0usize;
+        let mut process = FakeSignalProcess::default();
+        let mut wiring = RunSignalWiring::default();
+
+        let polled = run_mode_poll_without_signal_for_test(&mut wiring, &mut process, &mut || {
+            revoke_calls += 1;
+            Ok(())
+        })
+        .expect("polling run loop without signals should succeed");
+
+        assert!(
+            !polled.signal_processed,
+            "NS-029: no signal should be processed when none were received"
+        );
+        assert_eq!(
+            revoke_calls, 0,
+            "NS-029: ClosureRevoker callback must not run before shutdown signal receipt"
+        );
+    }
+
+    #[test]
+    fn ns_029_revocation_callback_triggers_only_after_shutdown_signal_in_run_mode() {
+        let mut revoke_calls = 0usize;
+        let mut process = FakeSignalProcess::default();
+        let mut wiring = RunSignalWiring::default();
+
+        let no_signal =
+            run_mode_poll_without_signal_for_test(&mut wiring, &mut process, &mut || {
+                revoke_calls += 1;
+                Ok(())
+            })
+            .expect("polling run loop without signals should succeed");
+        assert!(!no_signal.signal_processed);
+        assert_eq!(revoke_calls, 0, "must not revoke before signal receipt");
+
+        let with_signal = run_mode_dispatch_parent_signal_for_test(
+            &mut wiring,
+            ParentSignal::Sigterm,
+            &mut process,
+            &mut || {
+                revoke_calls += 1;
+                Ok(())
+            },
+        )
+        .expect("dispatching shutdown signal should succeed");
+
+        assert!(with_signal.signal_processed);
+        assert_eq!(
+            revoke_calls, 1,
+            "NS-029: ClosureRevoker callback must trigger after first shutdown signal"
+        );
+    }
+
+    #[test]
+    fn ns_029_revocation_callback_runs_at_most_once_across_multiple_shutdown_signals() {
+        let mut revoke_calls = 0usize;
+        let mut process = FakeSignalProcess::default();
+        let mut wiring = RunSignalWiring::default();
+
+        let first = run_mode_dispatch_parent_signal_for_test(
+            &mut wiring,
+            ParentSignal::Sigterm,
+            &mut process,
+            &mut || {
+                revoke_calls += 1;
+                Ok(())
+            },
+        )
+        .expect("first shutdown signal dispatch should succeed");
+        assert!(first.signal_processed);
+        assert_eq!(revoke_calls, 1, "first shutdown signal should revoke once");
+
+        let second = run_mode_dispatch_parent_signal_for_test(
+            &mut wiring,
+            ParentSignal::Sigint,
+            &mut process,
+            &mut || {
+                revoke_calls += 1;
+                Ok(())
+            },
+        )
+        .expect("second shutdown signal dispatch should succeed");
+        assert!(second.signal_processed);
+        assert_eq!(
+            revoke_calls, 1,
+            "NS-029: revocation callback must not run again after first shutdown-triggered revoke"
+        );
+    }
+
+    #[derive(Default)]
+    struct FakeSignalProcess {
+        forwarded: Vec<i32>,
+    }
+
+    impl SignalProcess for FakeSignalProcess {
+        fn forward_signal(&mut self, sig: i32) -> Result<(), std::io::Error> {
+            self.forwarded.push(sig);
+            Ok(())
+        }
     }
 }
 
