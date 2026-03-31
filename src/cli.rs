@@ -10,7 +10,7 @@
 // - NS-074: Facade for workflows (all subcommands go through Client)
 // - NS-075: CLI parsing in adapter layer (clap types here, not in lib core)
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
 use crate::error::Error;
@@ -46,15 +46,34 @@ where
 
 /// Subprocess credential lifecycle manager.
 #[derive(Parser)]
-#[command(name = "noscope", version, about, long_about = None)]
+#[command(
+    name = "noscope",
+    version,
+    about,
+    long_about = None,
+    after_help = "Examples:\n  noscope run --provider aws --role admin --ttl 3600 -- my-command --flag\n  noscope mint --provider aws --role viewer --ttl 900\n  noscope revoke --token-id tok-123 --provider aws\n  noscope revoke --from-stdin < mint-output.json"
+)]
 pub struct Cli {
     /// Enable verbose output (include provider stderr on success).
     #[arg(long, global = true)]
     pub verbose: bool,
 
+    /// Output format for command responses.
+    #[arg(long, global = true, value_enum, default_value_t = OutputFormat::Text)]
+    pub output: OutputFormat,
+
     /// The subcommand to execute.
     #[command(subcommand)]
     pub command: Command,
+}
+
+/// Output format for command responses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum OutputFormat {
+    /// Human-readable text output.
+    Text,
+    /// Structured JSON output.
+    Json,
 }
 
 // ---------------------------------------------------------------------------
@@ -76,7 +95,7 @@ pub enum Command {
     /// Validate a provider configuration without executing it.
     Validate(ValidateArgs),
 
-    /// Show what would be executed without running any provider (NS-071).
+    /// Show what would be executed without running any provider.
     #[command(name = "dry-run")]
     DryRun(DryRunArgs),
 
@@ -103,11 +122,15 @@ pub struct RunArgs {
     #[arg(long)]
     pub ttl: u64,
 
-    /// Use a named profile instead of individual flags.
+    /// Use a named profile from `profiles/<name>.toml`.
+    ///
+    /// When set, this cannot be combined with --provider, --role, or --ttl.
     #[arg(long)]
     pub profile: Option<String>,
 
-    /// Structured runtime event log format written to stderr.
+    /// Runtime event log format written to stderr (`text` or `json`).
+    ///
+    /// This only affects runtime event logs on stderr and does not change --output.
     #[arg(long, default_value = "text")]
     pub log_format: String,
 
@@ -131,11 +154,13 @@ pub struct MintArgs {
     #[arg(long)]
     pub ttl: u64,
 
-    /// Use a named profile instead of individual flags.
+    /// Use a named profile from `profiles/<name>.toml`.
+    ///
+    /// When set, this cannot be combined with --provider, --role, or --ttl.
     #[arg(long)]
     pub profile: Option<String>,
 
-    /// Allow output to a terminal (override NS-065 check).
+    /// Allow output to a terminal.
     #[arg(long)]
     pub force_terminal: bool,
 }
@@ -751,5 +776,86 @@ mod tests {
         ])
         .unwrap();
         assert!(!cli.verbose, "--verbose must default to false");
+    }
+
+    // =========================================================================
+    // noscope-3ez.11: Improve help text quality and semantics.
+    // =========================================================================
+
+    fn render_help(args: impl IntoIterator<Item = &'static str>) -> String {
+        match crate::cli::parse_from_args(args) {
+            Ok(_) => panic!("--help should return clap::Error"),
+            Err(err) => err.to_string(),
+        }
+    }
+
+    #[test]
+    fn help_includes_concrete_usage_examples() {
+        let root_help = render_help(["noscope", "--help"]);
+        assert!(
+            root_help.contains("Examples:"),
+            "root help must include concrete examples"
+        );
+        assert!(
+            root_help.contains("noscope run"),
+            "root help examples must include run"
+        );
+        assert!(
+            root_help.contains("noscope mint"),
+            "root help examples must include mint"
+        );
+        assert!(
+            root_help.contains("noscope revoke"),
+            "root help examples must include revoke"
+        );
+    }
+
+    #[test]
+    fn profile_help_clarifies_flag_behavior() {
+        let run_help = render_help(["noscope", "run", "--help"]);
+        assert!(
+            run_help.contains("cannot be combined with --provider, --role, or --ttl"),
+            "run --profile help must explain mutual exclusion semantics"
+        );
+
+        let mint_help = render_help(["noscope", "mint", "--help"]);
+        assert!(
+            mint_help.contains("cannot be combined with --provider, --role, or --ttl"),
+            "mint --profile help must explain mutual exclusion semantics"
+        );
+    }
+
+    #[test]
+    fn log_format_help_clarifies_scope_and_relationship_to_output() {
+        let run_help = render_help(["noscope", "run", "--help"]);
+        assert!(
+            run_help.contains("only affects runtime event logs on stderr"),
+            "--log-format help must explain it only affects stderr runtime events"
+        );
+        assert!(
+            run_help.contains("does not change --output"),
+            "--log-format help must explain it does not affect --output"
+        );
+    }
+
+    #[test]
+    fn user_facing_help_avoids_internal_rule_jargon() {
+        let root_help = render_help(["noscope", "--help"]);
+        assert!(
+            !root_help.contains("NS-"),
+            "root help should avoid internal rule identifiers"
+        );
+
+        let dry_run_help = render_help(["noscope", "dry-run", "--help"]);
+        assert!(
+            !dry_run_help.contains("NS-"),
+            "subcommand help should avoid internal rule identifiers"
+        );
+
+        let mint_help = render_help(["noscope", "mint", "--help"]);
+        assert!(
+            !mint_help.contains("NS-"),
+            "argument help should avoid internal rule identifiers"
+        );
     }
 }
