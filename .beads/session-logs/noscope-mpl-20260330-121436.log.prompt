@@ -1,0 +1,83 @@
+You are implementing bead noscope-mpl: "Signal handling policy"
+
+## Bead Details
+
+Provenance REQ: jn764cw67wc4h6d9st0qpe903x83vbgz
+
+The hard part of the tool. What happens when the parent is killed? Revocation must be best-effort with configurable timeout. SIGKILL cannot be caught so rely on TTL expiry as safety net.
+
+Rules:
+- NS-003: Revoke on exit guarantee — attempt revocation on child exit regardless of reason; best-effort with timeout+retry; SIGKILL exception relies on TTL
+- NS-011: TTL as safety net — ultimate revocation guarantee; if SIGKILL/network-down/retries-exhausted, credential still expires at TTL; never mint without TTL
+- NS-014: Revocation must be idempotent — already-revoked/expired treated as success (exit 0)
+- NS-026: Signal forwarding policy — SIGTERM/SIGHUP/SIGINT forwarded to child process group; configurable grace period (default 30s); SIGKILL after grace; then revoke; ignore SIGPIPE
+- NS-027: Revocation timeout and retry budget — configurable wall-clock budget (default 10s); exponential backoff (base 500ms, max 3 retries); budget=0 disables
+- NS-028: Double-signal escalation — second SIGTERM/SIGINT during shutdown: immediately SIGKILL process group, abandon revocation, log, exit; TTL is safety net
+- NS-029: Multi-credential revocation on signal — revoke all active credentials in parallel within budget; one failure must not prevent others
+- NS-066: Minimum TTL enforcement — minimum 60 seconds; prevents misconfiguration and high-frequency token generation
+- NS-067: Maximum TTL enforcement — configurable max (default 12 hours); rejects excessive TTLs; max blast radius for mint mode
+
+Provenance stats: 0 resolutions, 9 rules
+
+## Your Workflow
+
+You MUST follow this workflow exactly. Do not skip steps.
+
+### Phase 1: Understand
+1. Read the existing codebase: src/lib.rs and all modules in src/ to understand patterns.
+2. Read .agents/skills/statesman-provenance/SKILL.md if you need provenance CLI reference.
+3. Understand every rule listed in the bead description. Each rule is a hard requirement.
+
+### Phase 2: TDD — Red
+4. Create a new module (or extend existing) with ONLY tests. No production code yet.
+5. Write tests for EVERY rule. Name tests after the rule (e.g., test for NS-042 named
+   `config_follows_xdg_base_directory`). Each rule must have at least one test.
+6. Run `cargo test` and verify ALL tests fail. If any test passes, it's testing
+   existing behavior — rewrite it.
+
+### Phase 3: TDD — Green
+7. Write the MINIMAL production code to make all tests pass.
+8. Run `cargo test` — all tests must pass.
+9. Run `cargo clippy` — zero warnings.
+
+### Phase 4: TDD — Refactor
+10. Clean up: improve names, extract helpers, remove duplication.
+11. Run `cargo test && cargo clippy` — still clean.
+
+### Phase 5: Linus Torvalds Review
+12. Review your own code AS IF you are Linus Torvalds reading it on LKML.
+    Be brutal: check for API design mistakes, missing edge cases, naming problems,
+    over-engineering, write-only data structures, missing trait impls, semantic lies
+    in type names. Write the review to yourself.
+13. Fix every legitimate issue from the review. Add tests for missing edge cases.
+14. Run `cargo test && cargo clippy` again.
+
+### Phase 6: Commit
+15. Stage and commit with message format:
+    feat: <short description> (<bead_id>)
+
+    <body explaining what was implemented and which rules are covered>
+16. Do NOT push.
+
+
+## Statesman Provenance (OFFLINE)
+
+statesman is not reachable. For any provenance updates (new rules, resolutions,
+thread messages), write them to: /home/ben/Documents/repos/noscope/.beads/provenance-drafts/noscope-mpl.md
+Use this format:
+  # Provenance Draft: noscope-mpl
+  ## Thread Message (for requirement jn764cw67wc4h6d9st0qpe903x83vbgz)
+  <your message>
+  ## New Artifacts (if any)
+  - type: rule/resolution/requirement
+    content: ...
+
+
+## Rules
+
+- Follow the test-driven-development skill STRICTLY. No production code before failing tests.
+- Every NS-xxx rule in the bead MUST have at least one dedicated test.
+- Match existing code patterns (see token.rs, security.rs, redaction.rs for style).
+- Use `cp -f`, `mv -f`, `rm -f` for file operations (non-interactive shell).
+- Do NOT run benchmarks.
+- If you get stuck on a rule, create a bd issue: `bd create "Blocked on NS-xxx" --deps discovered-from:noscope-mpl`

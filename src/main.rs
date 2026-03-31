@@ -10,9 +10,10 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use noscope::cli::{self, Command};
+use noscope::command_parse::parse_command;
 use noscope::credential_set::{CredentialSpec, MintConfig, MintResult};
 use noscope::run_signal_wiring::{
-    parent_signal_from_raw, RunSignalWiring, SignalProcess, SignalRevoker,
+    dispatch_pending_parent_signals, RunSignalWiring, SignalProcess, SignalRevoker,
 };
 use noscope::signal_policy::{
     ActiveCredential, RevocationBudget, RevocationResultKind, SignalHandlingPolicy,
@@ -29,12 +30,28 @@ fn main() -> ExitCode {
         }
     };
 
+    let output_format = cli.output;
+    let command_name = command_name(&cli.command);
+
     match run(cli) {
         // NS-054: All noscope exit codes are sysexits.h values (0-78)
         // which fit in u8. Child exit codes are 0-255 on Unix.
         Ok(code) => ExitCode::from(code as u8),
         Err(err) => {
-            eprintln!("noscope: {}", err);
+            match output_format {
+                cli::OutputFormat::Text => eprintln!("noscope: {}", err),
+                cli::OutputFormat::Json => {
+                    eprintln!(
+                        "{}",
+                        serde_json::json!({
+                            "status": "error",
+                            "command": command_name,
+                            "kind": err.kind().as_str(),
+                            "message": err.message(),
+                        })
+                    );
+                }
+            }
             ExitCode::from(cli::error_to_exit_code(&err) as u8)
         }
     }
@@ -45,13 +62,24 @@ fn run(cli: cli::Cli) -> Result<i32, noscope::Error> {
     match cli.command {
         Command::Run(args) => cmd_run(args, cli.verbose),
         Command::Mint(args) => cmd_mint(args, cli.verbose),
-        Command::Revoke(args) => cmd_revoke(args, cli.verbose),
-        Command::Validate(args) => cmd_validate(args),
-        Command::DryRun(args) => cmd_dry_run(args),
+        Command::Revoke(args) => cmd_revoke(args, cli.verbose, cli.output),
+        Command::Validate(args) => cmd_validate(args, cli.output),
+        Command::DryRun(args) => cmd_dry_run(args, cli.output),
         Command::Completions(args) => {
             cmd_completions(args);
             Ok(cli::SUCCESS_EXIT_CODE)
         }
+    }
+}
+
+fn command_name(command: &Command) -> &'static str {
+    match command {
+        Command::Run(_) => "run",
+        Command::Mint(_) => "mint",
+        Command::Revoke(_) => "revoke",
+        Command::Validate(_) => "validate",
+        Command::DryRun(_) => "dry-run",
+        Command::Completions(_) => "completions",
     }
 }
 
@@ -345,26 +373,24 @@ where
         )?;
 
     let mut wiring = RunSignalWiring::default();
+    let mut process_adapter = AgentProcessSignalAdapter {
+        inner: &mut process,
+    };
 
     loop {
-        for raw in signals.pending() {
-            if let Some(parent_signal) = parent_signal_from_raw(raw) {
-                let mut process_adapter = AgentProcessSignalAdapter {
-                    inner: &mut process,
-                };
-                let mut revoker = ClosureRevoker {
-                    revoke_all: &mut revoke_all,
-                };
+        let mut revoker = ClosureRevoker {
+            revoke_all: &mut revoke_all,
+        };
+        dispatch_pending_parent_signals(
+            signals.pending(),
+            &mut wiring,
+            &mut process_adapter,
+            &mut revoker,
+        )
+        .map_err(|e| noscope::Error::internal(&format!("failed during signal handling: {}", e)))?;
 
-                wiring
-                    .on_parent_signal(parent_signal, &mut process_adapter, &mut revoker)
-                    .map_err(|e| {
-                        noscope::Error::internal(&format!("failed during signal handling: {}", e))
-                    })?;
-            }
-        }
-
-        if let Some(exit_code) = process
+        if let Some(exit_code) = process_adapter
+            .inner
             .try_wait_exit_code()
             .map_err(|e| noscope::Error::internal(&format!("{}", e)))?
         {
@@ -689,7 +715,11 @@ fn cmd_mint(args: cli::MintArgs, verbose: bool) -> Result<i32, noscope::Error> {
     Ok(cli::SUCCESS_EXIT_CODE)
 }
 
-fn cmd_revoke(args: cli::RevokeArgs, _verbose: bool) -> Result<i32, noscope::Error> {
+fn cmd_revoke(
+    args: cli::RevokeArgs,
+    _verbose: bool,
+    output: cli::OutputFormat,
+) -> Result<i32, noscope::Error> {
     let client = Client::new(ClientOptions::default())?;
 
     let stdin_payload = if args.from_stdin {
@@ -710,10 +740,26 @@ fn cmd_revoke(args: cli::RevokeArgs, _verbose: bool) -> Result<i32, noscope::Err
         .map_err(|e| noscope::Error::internal(&format!("failed creating async runtime: {}", e)))?;
     runtime.block_on(execute_revoke(&resolved, &input))?;
 
-    eprintln!(
-        "{}",
-        format_revoke_result(input.provider(), input.token_id())
-    );
+    match output {
+        cli::OutputFormat::Text => {
+            println!(
+                "{}",
+                format_revoke_result(input.provider(), input.token_id())
+            );
+        }
+        cli::OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "ok",
+                    "command": "revoke",
+                    "provider": input.provider(),
+                    "token_id": input.token_id(),
+                    "message": format_revoke_result(input.provider(), input.token_id()),
+                })
+            );
+        }
+    }
     Ok(cli::SUCCESS_EXIT_CODE)
 }
 
@@ -816,17 +862,6 @@ async fn execute_revoke(
     }
 }
 
-fn parse_command(command: &str) -> Vec<String> {
-    match shlex::split(command) {
-        Some(parts) => parts,
-        None => command
-            .split_whitespace()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect(),
-    }
-}
-
 fn format_revoke_result(provider: &str, token_id: &str) -> String {
     format!(
         "noscope: revoked token {} for provider {}",
@@ -834,23 +869,159 @@ fn format_revoke_result(provider: &str, token_id: &str) -> String {
     )
 }
 
-fn cmd_validate(args: cli::ValidateArgs) -> Result<i32, noscope::Error> {
+fn cmd_validate(args: cli::ValidateArgs, output: cli::OutputFormat) -> Result<i32, noscope::Error> {
     let client = Client::new(ClientOptions::default())?;
-    let _resolved = client.resolve_provider(&args.provider, &ProviderOverrides::default())?;
+    let resolved = client.resolve_provider(&args.provider, &ProviderOverrides::default())?;
+    noscope::provider::validate_provider(&resolved)?;
 
-    eprintln!(
+    let message = format!(
         "noscope: provider '{}' configuration is valid",
         args.provider
     );
+    match output {
+        cli::OutputFormat::Text => println!("{}", message),
+        cli::OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "ok",
+                    "command": "validate",
+                    "provider": args.provider,
+                    "message": message,
+                })
+            );
+        }
+    }
     Ok(cli::SUCCESS_EXIT_CODE)
 }
 
-fn cmd_dry_run(args: cli::DryRunArgs) -> Result<i32, noscope::Error> {
+#[cfg(test)]
+mod validate_wiring_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+
+    fn write_non_executable_file(path: &Path) {
+        fs::write(path, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    fn scoped_env_var<T>(
+        key: &str,
+        value: impl AsRef<std::ffi::OsStr>,
+        f: impl FnOnce() -> T,
+    ) -> T {
+        let old = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        let out = f();
+        match old {
+            Some(prev) => unsafe {
+                std::env::set_var(key, prev);
+            },
+            None => unsafe {
+                std::env::remove_var(key);
+            },
+        }
+        out
+    }
+
+    fn scoped_validate_env<T>(mint_cmd: &Path, f: impl FnOnce() -> T) -> T {
+        let mint_cmd: PathBuf = mint_cmd.into();
+        scoped_env_var("NOSCOPE_MINT_CMD", mint_cmd.as_os_str(), || {
+            scoped_env_var("NOSCOPE_REFRESH_CMD", "", || {
+                scoped_env_var("NOSCOPE_REVOKE_CMD", "", f)
+            })
+        })
+    }
+
+    #[test]
+    fn validate_command_performs_provider_executable_validation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mint = tmp.path().join("mint.sh");
+        write_non_executable_file(&mint);
+
+        let result = scoped_validate_env(&mint, || {
+            cmd_validate(
+                cli::ValidateArgs {
+                    provider: "aws".to_string(),
+                },
+                cli::OutputFormat::Text,
+            )
+        });
+
+        assert!(
+            result.is_err(),
+            "validate must fail when provider command is not executable"
+        );
+    }
+
+    #[test]
+    fn validate_command_error_is_actionable_for_operator() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mint = tmp.path().join("mint.sh");
+        write_non_executable_file(&mint);
+        let mint_cmd = mint.to_string_lossy().to_string();
+
+        let result = scoped_validate_env(&mint, || {
+            cmd_validate(
+                cli::ValidateArgs {
+                    provider: "aws".to_string(),
+                },
+                cli::OutputFormat::Text,
+            )
+        });
+
+        let err = result.expect_err("validate must fail for non-executable command");
+        let message = format!("{}", err);
+
+        assert!(
+            message.contains("mint") && message.contains(&mint_cmd),
+            "validate failure must include failing command type and path, got: {}",
+            message
+        );
+    }
+}
+
+fn cmd_dry_run(args: cli::DryRunArgs, output: cli::OutputFormat) -> Result<i32, noscope::Error> {
     let client = Client::new(ClientOptions::default())?;
     let resolved = client.resolve_provider(&args.provider, &ProviderOverrides::default())?;
-    let output = client.dry_run(&resolved, &args.role, args.ttl);
-    println!("{}", output);
+    match output {
+        cli::OutputFormat::Text => {
+            let text = client.dry_run(&resolved, &args.role, args.ttl);
+            println!("{}", text);
+        }
+        cli::OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "ok",
+                    "command": "dry-run",
+                    "provider": resolved.name,
+                    "source": config_source_label(resolved.source),
+                    "role": args.role,
+                    "ttl": args.ttl,
+                    "commands": {
+                        "mint": resolved.mint_cmd,
+                        "refresh": resolved.refresh_cmd,
+                        "revoke": resolved.revoke_cmd,
+                    },
+                    "env": resolved.env,
+                })
+            );
+        }
+    }
     Ok(cli::SUCCESS_EXIT_CODE)
+}
+
+fn config_source_label(source: noscope::provider::ConfigSource) -> &'static str {
+    match source {
+        noscope::provider::ConfigSource::Flags => "flags",
+        noscope::provider::ConfigSource::EnvVars => "environment variables",
+        noscope::provider::ConfigSource::File => "config file",
+    }
 }
 
 fn cmd_completions(args: cli::CompletionsArgs) {
@@ -1710,6 +1881,422 @@ mod rollback_budget_wiring_tests {
         assert!(
             lines[0].contains("timed out"),
             "NS-047: timed-out rollback attempts should be logged as failures"
+        );
+    }
+}
+
+#[cfg(test)]
+fn global_signal_test_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+#[cfg(test)]
+mod run_mode_os_signal_e2e_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    fn clear_pending_parent_signals() {
+        let mut signals =
+            signal_hook::iterator::Signals::new([libc::SIGTERM, libc::SIGINT, libc::SIGHUP])
+                .unwrap();
+        for _ in 0..5 {
+            let mut saw_pending = false;
+            for _ in signals.pending() {
+                saw_pending = true;
+            }
+            if !saw_pending {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn write_executable(path: &Path, script: &str) {
+        fs::write(path, script).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn write_provider_config(
+        xdg_config_home: &Path,
+        provider_name: &str,
+        mint_cmd: &str,
+        revoke_cmd: &str,
+    ) {
+        let providers_dir = xdg_config_home.join("noscope").join("providers");
+        fs::create_dir_all(&providers_dir).unwrap();
+        let cfg = format!(
+            "contract_version = 1\n\n[commands]\nmint = \"{}\"\nrevoke = \"{}\"\n",
+            mint_cmd, revoke_cmd
+        );
+        let path = providers_dir.join(format!("{}.toml", provider_name));
+        fs::write(&path, cfg).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    fn make_run_args(child_script: &Path) -> cli::RunArgs {
+        cli::RunArgs {
+            provider: vec!["aws".to_string()],
+            role: "admin".to_string(),
+            ttl: 3600,
+            profile: None,
+            log_format: "text".to_string(),
+            child_args: vec![child_script.to_string_lossy().to_string()],
+        }
+    }
+
+    fn scoped_xdg_config_home<T>(value: &Path, f: impl FnOnce() -> T) -> T {
+        let old = std::env::var_os("XDG_CONFIG_HOME");
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", value);
+        }
+        let out = f();
+        match old {
+            Some(prev) => unsafe {
+                std::env::set_var("XDG_CONFIG_HOME", prev);
+            },
+            None => unsafe {
+                std::env::remove_var("XDG_CONFIG_HOME");
+            },
+        }
+        out
+    }
+
+    fn spawn_parent_signals_after_child_ready(
+        ready_file: PathBuf,
+        signals: Vec<i32>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !ready_file.exists() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+
+            let pid = unsafe { libc::getpid() };
+            for sig in signals {
+                let rc = unsafe { libc::kill(pid, sig) };
+                assert_eq!(rc, 0, "failed to deliver parent signal {}", sig);
+                thread::sleep(Duration::from_millis(100));
+            }
+        })
+    }
+
+    #[test]
+    fn ns_026_run_mode_forwards_real_sigterm_sigint_sighup_via_cmd_run_path() {
+        let _guard = global_signal_test_lock().lock().unwrap();
+        clear_pending_parent_signals();
+
+        let cases = [
+            (libc::SIGTERM, "TERM"),
+            (libc::SIGINT, "INT"),
+            (libc::SIGHUP, "HUP"),
+        ];
+
+        for (signal, expected_marker) in cases {
+            clear_pending_parent_signals();
+            let tmp = tempfile::tempdir().unwrap();
+            let ready_file = tmp.path().join(format!("ready-{}", signal));
+            let signal_log = tmp.path().join(format!("signal-{}.log", signal));
+            let revoke_log = tmp.path().join(format!("revoke-{}.log", signal));
+
+            let child = tmp.path().join("child.sh");
+            write_executable(
+                &child,
+                &format!(
+                    "#!/bin/sh\nprintf ready > '{}'\ntrap 'printf TERM > {}; exit 0' TERM\ntrap 'printf INT > {}; exit 0' INT\ntrap 'printf HUP > {}; exit 0' HUP\nwhile :; do sleep 0.05; done\n",
+                    ready_file.display(),
+                    signal_log.display(),
+                    signal_log.display(),
+                    signal_log.display(),
+                ),
+            );
+
+            let mint = tmp.path().join("mint.sh");
+            write_executable(
+                &mint,
+                "#!/bin/sh\nprintf '{\"token\":\"signal-secret\",\"expires_at\":\"2099-01-01T00:00:00Z\"}'\n",
+            );
+
+            let revoke = tmp.path().join("revoke.sh");
+            write_executable(
+                &revoke,
+                &format!(
+                    "#!/bin/sh\nprintf '%s\n' \"$NOSCOPE_TOKEN_ID\" >> '{}'\nexit 0\n",
+                    revoke_log.display()
+                ),
+            );
+
+            write_provider_config(
+                tmp.path(),
+                "aws",
+                mint.to_string_lossy().as_ref(),
+                revoke.to_string_lossy().as_ref(),
+            );
+
+            let sender = spawn_parent_signals_after_child_ready(ready_file.clone(), vec![signal]);
+            let result =
+                scoped_xdg_config_home(tmp.path(), || cmd_run(make_run_args(&child), false));
+            sender.join().unwrap();
+
+            assert_eq!(result.unwrap(), 0);
+            assert_eq!(
+                fs::read_to_string(&signal_log).unwrap_or_default(),
+                expected_marker,
+                "NS-026: child must receive forwarded signal {} via cmd_run path",
+                expected_marker
+            );
+        }
+    }
+
+    #[test]
+    fn ns_003_run_mode_attempts_revoke_on_real_shutdown_signal_via_cmd_run_path() {
+        let _guard = global_signal_test_lock().lock().unwrap();
+        clear_pending_parent_signals();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let ready_file = tmp.path().join("ready");
+        let signal_log = tmp.path().join("signal.log");
+        let revoke_log = tmp.path().join("revoke.log");
+
+        let child = tmp.path().join("child.sh");
+        write_executable(
+            &child,
+            &format!(
+                "#!/bin/sh\nprintf ready > '{}'\ntrap 'printf TERM > {}; exit 0' TERM\ntrap 'printf INT > {}; exit 0' INT\ntrap 'printf HUP > {}; exit 0' HUP\nwhile :; do sleep 0.05; done\n",
+                ready_file.display(),
+                signal_log.display(),
+                signal_log.display(),
+                signal_log.display(),
+            ),
+        );
+
+        let mint = tmp.path().join("mint.sh");
+        write_executable(
+            &mint,
+            "#!/bin/sh\nprintf '{\"token\":\"revoke-secret\",\"expires_at\":\"2099-01-01T00:00:00Z\"}'\n",
+        );
+
+        let revoke = tmp.path().join("revoke.sh");
+        write_executable(
+            &revoke,
+            &format!(
+                "#!/bin/sh\nprintf '%s\n' \"$NOSCOPE_TOKEN_ID\" >> '{}'\nexit 0\n",
+                revoke_log.display()
+            ),
+        );
+
+        write_provider_config(
+            tmp.path(),
+            "aws",
+            mint.to_string_lossy().as_ref(),
+            revoke.to_string_lossy().as_ref(),
+        );
+
+        let sender = spawn_parent_signals_after_child_ready(ready_file, vec![libc::SIGTERM]);
+        let result = scoped_xdg_config_home(tmp.path(), || cmd_run(make_run_args(&child), false));
+        sender.join().unwrap();
+
+        assert_eq!(result.unwrap(), 0);
+        let revoked = fs::read_to_string(&revoke_log).unwrap_or_default();
+        assert!(
+            revoked.contains("tok-aws"),
+            "NS-003: run-mode shutdown must attempt revocation on signal via cmd_run path"
+        );
+    }
+
+    #[test]
+    fn ns_028_run_mode_double_real_signal_escalates_to_sigkill_via_cmd_run_path() {
+        let _guard = global_signal_test_lock().lock().unwrap();
+        clear_pending_parent_signals();
+
+        let tmp = tempfile::tempdir().unwrap();
+        let ready_file = tmp.path().join("ready");
+        let revoke_log = tmp.path().join("revoke.log");
+
+        let child = tmp.path().join("child.sh");
+        write_executable(
+            &child,
+            &format!(
+                "#!/bin/sh\nprintf ready > '{}'\ntrap '' TERM\ntrap '' INT\ntrap '' HUP\nwhile :; do sleep 1; done\n",
+                ready_file.display()
+            ),
+        );
+
+        let mint = tmp.path().join("mint.sh");
+        write_executable(
+            &mint,
+            "#!/bin/sh\nprintf '{\"token\":\"double-signal-secret\",\"expires_at\":\"2099-01-01T00:00:00Z\"}'\n",
+        );
+
+        let revoke = tmp.path().join("revoke.sh");
+        write_executable(
+            &revoke,
+            &format!(
+                "#!/bin/sh\nprintf '%s\n' \"$NOSCOPE_TOKEN_ID\" >> '{}'\nexit 0\n",
+                revoke_log.display()
+            ),
+        );
+
+        write_provider_config(
+            tmp.path(),
+            "aws",
+            mint.to_string_lossy().as_ref(),
+            revoke.to_string_lossy().as_ref(),
+        );
+
+        let sender =
+            spawn_parent_signals_after_child_ready(ready_file, vec![libc::SIGTERM, libc::SIGINT]);
+        let result = scoped_xdg_config_home(tmp.path(), || cmd_run(make_run_args(&child), false));
+        sender.join().unwrap();
+
+        assert_eq!(result.unwrap(), 128 + libc::SIGKILL);
+
+        let revoked = fs::read_to_string(&revoke_log).unwrap_or_default();
+        assert_eq!(
+            revoked.lines().filter(|line| *line == "tok-aws").count(),
+            1,
+            "NS-028: double-signal escalation must not trigger duplicate revocations"
+        );
+    }
+}
+
+#[cfg(test)]
+mod signal_loop_parity_tests {
+    use super::*;
+    use noscope::signal_policy::ParentSignal;
+
+    #[derive(Default)]
+    struct FakeSignalProcess {
+        forwarded: Vec<i32>,
+    }
+
+    impl SignalProcess for FakeSignalProcess {
+        fn forward_signal(&mut self, sig: i32) -> Result<(), std::io::Error> {
+            self.forwarded.push(sig);
+            Ok(())
+        }
+    }
+
+    struct MainLoopReport {
+        forwarded_sigterm: bool,
+        forwarded_sigint: bool,
+        forwarded_sighup: bool,
+        double_signal_escalated: bool,
+    }
+
+    fn run_main_loop_sequence(parent_signals: &[ParentSignal]) -> MainLoopReport {
+        let mut process = FakeSignalProcess::default();
+        let mut wiring = RunSignalWiring::default();
+
+        for signal in parent_signals {
+            run_mode_dispatch_parent_signal_for_test(
+                &mut wiring,
+                *signal,
+                &mut process,
+                &mut || Ok(()),
+            )
+            .expect("main loop signal dispatch should succeed");
+        }
+
+        MainLoopReport {
+            forwarded_sigterm: process.forwarded.contains(&libc::SIGTERM),
+            forwarded_sigint: process.forwarded.contains(&libc::SIGINT),
+            forwarded_sighup: process.forwarded.contains(&libc::SIGHUP),
+            double_signal_escalated: process.forwarded.contains(&libc::SIGKILL),
+        }
+    }
+
+    #[test]
+    fn parity_sigterm_sequence_matches_forwarding_and_escalation_outcomes() {
+        let _guard = global_signal_test_lock().lock().unwrap();
+        let main_report = run_main_loop_sequence(&[ParentSignal::Sigterm]);
+        let integration_report =
+            noscope::integration_runtime::forward_sigterm_then_escalate_with_os_signals(
+                "/bin/sh",
+                &["-c".to_string(), "sleep 1".to_string()],
+                &[libc::SIGTERM],
+            )
+            .expect("integration loop signal dispatch should succeed");
+
+        assert_eq!(
+            integration_report.forwarded_sigterm,
+            main_report.forwarded_sigterm
+        );
+        assert_eq!(
+            integration_report.forwarded_sigint,
+            main_report.forwarded_sigint
+        );
+        assert_eq!(
+            integration_report.forwarded_sighup,
+            main_report.forwarded_sighup
+        );
+        assert_eq!(
+            integration_report.double_signal_escalated,
+            main_report.double_signal_escalated
+        );
+    }
+
+    #[test]
+    fn parity_sigint_then_sigterm_sequence_matches_forwarding_and_escalation_outcomes() {
+        let _guard = global_signal_test_lock().lock().unwrap();
+        let main_report = run_main_loop_sequence(&[ParentSignal::Sigint, ParentSignal::Sigterm]);
+        let integration_report =
+            noscope::integration_runtime::forward_sigterm_then_escalate_with_os_signals(
+                "/bin/sh",
+                &["-c".to_string(), "sleep 1".to_string()],
+                &[libc::SIGINT, libc::SIGTERM],
+            )
+            .expect("integration loop signal dispatch should succeed");
+
+        assert_eq!(
+            integration_report.forwarded_sigterm,
+            main_report.forwarded_sigterm
+        );
+        assert_eq!(
+            integration_report.forwarded_sigint,
+            main_report.forwarded_sigint
+        );
+        assert_eq!(
+            integration_report.forwarded_sighup,
+            main_report.forwarded_sighup
+        );
+        assert_eq!(
+            integration_report.double_signal_escalated,
+            main_report.double_signal_escalated
+        );
+    }
+
+    #[test]
+    fn parity_sighup_sequence_matches_forwarding_and_escalation_outcomes() {
+        let _guard = global_signal_test_lock().lock().unwrap();
+        let main_report = run_main_loop_sequence(&[ParentSignal::Sighup]);
+        let integration_report =
+            noscope::integration_runtime::forward_sigterm_then_escalate_with_os_signals(
+                "/bin/sh",
+                &["-c".to_string(), "sleep 1".to_string()],
+                &[libc::SIGHUP],
+            )
+            .expect("integration loop signal dispatch should succeed");
+
+        assert_eq!(
+            integration_report.forwarded_sigterm,
+            main_report.forwarded_sigterm
+        );
+        assert_eq!(
+            integration_report.forwarded_sigint,
+            main_report.forwarded_sigint
+        );
+        assert_eq!(
+            integration_report.forwarded_sighup,
+            main_report.forwarded_sighup
+        );
+        assert_eq!(
+            integration_report.double_signal_escalated,
+            main_report.double_signal_escalated
         );
     }
 }

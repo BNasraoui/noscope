@@ -7,6 +7,7 @@ use tokio::time::sleep;
 
 use crate::agent_process::{AgentMode, AgentProcess, AgentProcessConfig};
 use crate::client::{Client, ClientOptions, MintRequest, ProviderOverrides};
+use crate::command_parse::parse_command;
 use crate::credential_set::{validate_env_key_uniqueness, CredentialSet, CredentialSpec};
 use crate::error::Error;
 use crate::event::EventType;
@@ -15,7 +16,7 @@ use crate::provider;
 use crate::provider_exec::{self, ExecConfig, ProviderExecResult};
 use crate::refresh::{RefreshOutcome, RefreshPolicy};
 use crate::run_signal_wiring::{
-    parent_signal_from_raw, RunSignalWiring, SignalProcess, SignalRevoker,
+    dispatch_pending_parent_signals, RunSignalWiring, SignalProcess, SignalRevoker,
 };
 use crate::token::ScopedToken;
 use crate::token_convert::provider_output_to_scoped_token;
@@ -39,18 +40,9 @@ pub struct AtomicMintReport {
 
 pub struct SignalHandlingReport {
     pub forwarded_sigterm: bool,
+    pub forwarded_sigint: bool,
+    pub forwarded_sighup: bool,
     pub double_signal_escalated: bool,
-}
-
-fn parse_command(command: &str) -> Vec<String> {
-    match shlex::split(command) {
-        Some(parts) => parts,
-        None => command
-            .split_whitespace()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect(),
-    }
 }
 
 fn make_exec_config(cfg: &IntegrationRuntimeConfig) -> ExecConfig {
@@ -392,35 +384,60 @@ pub fn forward_sigterm_then_escalate_with_os_signals(
 
     let mut wiring = RunSignalWiring::default();
     let mut forwarded_sigterm = false;
+    let mut forwarded_sigint = false;
+    let mut forwarded_sighup = false;
     let mut double_signal_escalated = false;
     let mut noop_revoker = NoopRevoker;
+    let mut remaining_parent_signals: HashMap<i32, usize> = HashMap::new();
+    for raw in parent_signals {
+        *remaining_parent_signals.entry(*raw).or_insert(0) += 1;
+    }
     let start = std::time::Instant::now();
     let timeout = Duration::from_secs(2);
     let mut timeout_kill_sent = false;
 
     loop {
+        let mut dispatchable_signals = Vec::new();
         for raw in signals.pending() {
-            if let Some(parent_signal) = parent_signal_from_raw(raw) {
-                let mut process_adapter = IntegrationSignalProcessAdapter {
-                    inner: &mut process,
-                    forwarded_sigterm: &mut forwarded_sigterm,
-                };
-                let action = wiring
-                    .on_parent_signal(parent_signal, &mut process_adapter, &mut noop_revoker)
-                    .map_err(|e| {
-                        Error::internal(&format!("failed during signal handling: {}", e))
-                    })?;
-                if action.immediate_sigkill {
-                    double_signal_escalated = true;
-                }
+            let Some(remaining) = remaining_parent_signals.get_mut(&raw) else {
+                continue;
+            };
+            if *remaining == 0 {
+                continue;
             }
+            *remaining -= 1;
+            dispatchable_signals.push(raw);
         }
+
+        let mut process_adapter = IntegrationSignalProcessAdapter {
+            inner: &mut process,
+            forwarded_sigterm: &mut forwarded_sigterm,
+            forwarded_sigint: &mut forwarded_sigint,
+            forwarded_sighup: &mut forwarded_sighup,
+        };
+        let actions = dispatch_pending_parent_signals(
+            dispatchable_signals,
+            &mut wiring,
+            &mut process_adapter,
+            &mut noop_revoker,
+        )
+        .map_err(|e| Error::internal(&format!("failed during signal handling: {}", e)))?;
+        if actions.iter().any(|action| action.immediate_sigkill) {
+            double_signal_escalated = true;
+        }
+
+        let has_pending_expected_signals =
+            remaining_parent_signals.values().any(|count| *count > 0);
 
         if process
             .try_wait_exit_code()
             .map_err(|e| Error::internal(&format!("{}", e)))?
             .is_some()
         {
+            if has_pending_expected_signals {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
             break;
         }
 
@@ -438,6 +455,8 @@ pub fn forward_sigterm_then_escalate_with_os_signals(
 
     Ok(SignalHandlingReport {
         forwarded_sigterm,
+        forwarded_sigint,
+        forwarded_sighup,
         double_signal_escalated,
     })
 }
@@ -445,12 +464,17 @@ pub fn forward_sigterm_then_escalate_with_os_signals(
 struct IntegrationSignalProcessAdapter<'a> {
     inner: &'a mut AgentProcess,
     forwarded_sigterm: &'a mut bool,
+    forwarded_sigint: &'a mut bool,
+    forwarded_sighup: &'a mut bool,
 }
 
 impl SignalProcess for IntegrationSignalProcessAdapter<'_> {
     fn forward_signal(&mut self, sig: i32) -> Result<(), std::io::Error> {
-        if sig == libc::SIGTERM {
-            *self.forwarded_sigterm = true;
+        match sig {
+            libc::SIGTERM => *self.forwarded_sigterm = true,
+            libc::SIGINT => *self.forwarded_sigint = true,
+            libc::SIGHUP => *self.forwarded_sighup = true,
+            _ => {}
         }
         self.inner
             .forward_signal(sig)

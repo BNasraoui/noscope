@@ -4,6 +4,7 @@ mod ci_checks;
 pub mod cli;
 pub mod cli_adapter;
 pub mod client;
+pub mod command_parse;
 pub(crate) mod config_path;
 pub mod credential_set;
 pub mod error;
@@ -68,6 +69,12 @@ pub use token_provider::{
 
 #[cfg(test)]
 mod event_emission_wiring_tests;
+
+#[cfg(test)]
+mod run_signal_loop_consolidation_tests;
+
+#[cfg(test)]
+mod parse_command_shared_tests;
 
 #[cfg(test)]
 mod formatting_gate_tests {

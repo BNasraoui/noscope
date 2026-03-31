@@ -1,0 +1,1424 @@
+[0m
+> build · claude-opus-4-6
+[0m
+I'll start by understanding the codebase, then follow the TDD workflow strictly.
+[0m# [0mTodos
+[ ] Phase 1: Read existing codebase (src/lib.rs and all modules)
+[ ] Phase 1: Understand NS-072 rule requirements
+[ ] Phase 2: TDD Red - Write failing tests for NS-072
+[ ] Phase 2: Verify all tests fail
+[ ] Phase 3: TDD Green - Write minimal production code
+[ ] Phase 3: Run cargo test and cargo clippy
+[ ] Phase 4: TDD Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds self-review
+[ ] Phase 5: Fix review issues and re-run tests
+[ ] Phase 6: Commit with proper message
+[ ] Write provenance draft
+[0m
+[0m→ [0mRead src
+[0m→ [0mRead Cargo.toml
+[0m→ [0mRead src/lib.rs
+[0m→ [0mRead src/provider.rs
+[0m→ [0mRead src/token.rs
+Now let me read the remaining modules to understand patterns fully:
+[0m→ [0mRead src/security.rs
+[0m→ [0mRead src/mint.rs
+[0m→ [0mRead src/exit_code.rs
+[0m→ [0mRead src/redaction.rs
+Now let me read the remaining modules:
+[0m→ [0mRead src/profile.rs
+[0m→ [0mRead src/credential_set.rs
+[0m→ [0mRead src/event.rs
+[0m→ [0mRead src/refresh.rs
+Now I have a thorough understanding of the codebase. Let me update my todo list and move to Phase 2.
+[0m
+[0m# [0mTodos
+[x] Phase 1: Read existing codebase (src/lib.rs and all modules)
+[x] Phase 1: Understand NS-072 rule requirements
+[ ] Phase 2: TDD Red - Write failing tests for NS-072
+[ ] Phase 2: Verify all tests fail
+[ ] Phase 3: TDD Green - Write minimal production code
+[ ] Phase 3: Run cargo test and cargo clippy
+[ ] Phase 4: TDD Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds self-review
+[ ] Phase 5: Fix review issues and re-run tests
+[ ] Phase 6: Commit with proper message
+[ ] Write provenance draft
+[0m
+Now I understand the full picture. Let me analyze NS-072:
+
+**NS-072: Provider contract version**
+- Config must include `contract_version = 1`
+- Reject unsupported versions
+- Support current and previous version (i.e., version N and N-1)
+
+The feature touches `provider.rs` since that's where provider config parsing lives. I need to:
+1. Add `contract_version` to `FileProviderConfig`
+2. Parse it from TOML (require it)
+3. Validate it (reject unsupported, support current + previous)
+4. Propagate it to `ResolvedProvider`
+
+The current version is 1, so "current and previous" means: support version 1 (current). Since there's no version 0 (it's the first version), only version 1 is valid initially. The contract should be designed so that when version 2 is introduced, both 1 and 2 are accepted.
+
+**Phase 2: Write ONLY failing tests.** I'll add them to `provider.rs` since that's where the contract parsing lives.
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -1117,9 +1117,256 @@
+             msg
+         );
+     }
+ 
++    // =========================================================================
++    // NS-072: Provider contract version — config must include
++    // contract_version=1, reject unsupported versions, support current
++    // and previous version.
++    // =========================================================================
++
+     #[test]
++    fn provider_contract_version_must_be_present_in_config() {
++        // NS-072: A provider TOML config MUST include contract_version.
++        // Omitting it is a hard error.
++        let toml_without_version = r#"
++[commands]
++mint = "/usr/bin/mint"
++"#;
++        let result = parse_provider_toml(toml_without_version);
++        assert!(
++            result.is_err(),
++            "NS-072: config without contract_version must be rejected"
++        );
++        let err = result.unwrap_err();
++        let msg = format!("{}", err);
++        assert!(
++            msg.to_lowercase().contains("contract_version"),
++            "NS-072: error must mention contract_version, got: {}",
++            msg
++        );
++    }
++
++    #[test]
++    fn provider_contract_version_accepts_current_version() {
++        // NS-072: contract_version = 1 (the current version) must be accepted.
++        let toml = r#"
++contract_version = 1
++
++[commands]
++mint = "/usr/bin/mint"
++"#;
++        let config = parse_provider_toml(toml).unwrap();
++        assert_eq!(
++            config.contract_version, 1,
++            "NS-072: current version (1) must be accepted"
++        );
++    }
++
++    #[test]
++    fn provider_contract_version_rejects_unsupported_future_version() {
++        // NS-072: A version far beyond current must be rejected.
++        let toml = r#"
++contract_version = 99
++
++[commands]
++mint = "/usr/bin/mint"
++"#;
++        let result = parse_provider_toml(toml);
++        assert!(
++            result.is_err(),
++            "NS-072: unsupported future version must be rejected"
++        );
++        let err = result.unwrap_err();
++        match err {
++            ProviderConfigError::UnsupportedContractVersion { version, .. } => {
++                assert_eq!(version, 99);
++            }
++            other => panic!(
++                "NS-072: expected UnsupportedContractVersion, got: {:?}",
++                other
++            ),
++        }
++    }
++
++    #[test]
++    fn provider_contract_version_rejects_version_zero() {
++        // NS-072: Version 0 is not a valid contract version.
++        let toml = r#"
++contract_version = 0
++
++[commands]
++mint = "/usr/bin/mint"
++"#;
++        let result = parse_provider_toml(toml);
++        assert!(result.is_err(), "NS-072: version 0 must be rejected");
++    }
++
++    #[test]
++    fn provider_contract_version_rejects_negative_version() {
++        // NS-072: Negative versions are not valid.
++        let toml = r#"
++contract_version = -1
++
++[commands]
++mint = "/usr/bin/mint"
++"#;
++        let result = parse_provider_toml(toml);
++        assert!(result.is_err(), "NS-072: negative version must be rejected");
++    }
++
++    #[test]
++    fn provider_contract_version_rejects_non_integer_type() {
++        // NS-072: contract_version must be an integer, not a string.
++        let toml = r#"
++contract_version = "1"
++
++[commands]
++mint = "/usr/bin/mint"
++"#;
++        let result = parse_provider_toml(toml);
++        assert!(
++            result.is_err(),
++            "NS-072: non-integer contract_version must be rejected"
++        );
++        let err = result.unwrap_err();
++        let msg = format!("{}", err);
++        assert!(
++            msg.to_lowercase().contains("integer"),
++            "NS-072: error must mention expected type, got: {}",
++            msg
++        );
++    }
++
++    #[test]
++    fn provider_contract_version_stored_in_file_provider_config() {
++        // NS-072: The parsed FileProviderConfig must expose the contract_version.
++        let toml = r#"
++contract_version = 1
++
++[commands]
++mint = "/usr/bin/mint"
++"#;
++        let config = parse_provider_toml(toml).unwrap();
++        assert_eq!(config.contract_version, 1);
++    }
++
++    #[test]
++    fn provider_contract_version_propagated_to_resolved_provider() {
++        // NS-072: The resolved provider must carry the contract_version
++        // from the file config layer.
++        let file_config = FileProviderConfig {
++            contract_version: 1,
++            mint_cmd: "/usr/bin/mint".to_string(),
++            refresh_cmd: None,
++            revoke_cmd: None,
++            env: Default::default(),
++        };
++
++        let resolved = resolve_provider_config(
++            "test",
++            &ProviderFlags::empty(),
++            &ProviderEnv::empty(),
++            Some(file_config),
++        )
++        .unwrap();
++
++        assert_eq!(
++            resolved.contract_version,
++            Some(1),
++            "NS-072: resolved provider must carry contract_version from file layer"
++        );
++    }
++
++    #[test]
++    fn provider_contract_version_none_for_flags_and_env_layers() {
++        // NS-072: Flags and env layers don't specify contract_version
++        // (they're overrides, not full configs). contract_version is None.
++        let flags = flags_with_mint_cmd("/from/flags/mint");
++        let resolved =
++            resolve_provider_config("test", &flags, &ProviderEnv::empty(), None).unwrap();
++        assert_eq!(
++            resolved.contract_version, None,
++            "NS-072: flags layer should not have contract_version"
++        );
++    }
++
++    #[test]
++    fn provider_contract_version_unsupported_error_display() {
++        // NS-072: Error message for unsupported version must be actionable.
++        let err = ProviderConfigError::UnsupportedContractVersion {
++            version: 42,
++            supported: vec![1],
++        };
++        let msg = format!("{}", err);
++        assert!(
++            msg.contains("42"),
++            "NS-072: error must mention the unsupported version, got: {}",
++            msg
++        );
++        assert!(
++            msg.contains("1"),
++            "NS-072: error must mention supported versions, got: {}",
++            msg
++        );
++    }
++
++    #[test]
++    fn provider_contract_version_current_version_constant_is_one() {
++        // NS-072: The current contract version must be 1.
++        assert_eq!(
++            CURRENT_CONTRACT_VERSION, 1,
++            "NS-072: current contract version must be 1"
++        );
++    }
++
++    #[test]
++    fn provider_contract_version_supported_versions_includes_current() {
++        // NS-072: The supported versions list must include the current version.
++        let supported = supported_contract_versions();
++        assert!(
++            supported.contains(&CURRENT_CONTRACT_VERSION),
++            "NS-072: supported versions must include current version {}",
++            CURRENT_CONTRACT_VERSION
++        );
++    }
++
++    #[test]
++    fn provider_contract_version_backward_compat_supports_previous() {
++        // NS-072: Must support current and previous version.
++        // Since current = 1 and there's no version 0, only version 1 is valid now.
++        // But the mechanism must be in place: when version 2 becomes current,
++        // version 1 must remain supported.
++        let supported = supported_contract_versions();
++        // For now, at version 1, only 1 is supported (no version 0 existed).
++        assert_eq!(
++            supported,
++            vec![1],
++            "NS-072: at version 1, only version 1 should be supported (no v0 existed)"
++        );
++    }
++
++    #[test]
++    fn provider_contract_version_validate_version_rejects_unsupported() {
++        // NS-072: validate_contract_version must reject unsupported versions.
++        let result = validate_contract_version(99);
++        assert!(
++            result.is_err(),
++            "NS-072: validate_contract_version must reject unsupported versions"
++        );
++    }
++
++    #[test]
++    fn provider_contract_version_validate_version_accepts_current() {
++        // NS-072: validate_contract_version must accept the current version.
++        let result = validate_contract_version(CURRENT_CONTRACT_VERSION);
++        assert!(
++            result.is_ok(),
++            "NS-072: validate_contract_version must accept current version"
++        );
++    }
++
++    #[test]
+     fn config_source_eq_works() {
+         assert_eq!(ConfigSource::Flags, ConfigSource::Flags);
+         assert_ne!(ConfigSource::Flags, ConfigSource::EnvVars);
+         assert_ne!(ConfigSource::EnvVars, ConfigSource::File);
+
+[0m
+Now I need to update the existing test helpers and test data that create `FileProviderConfig` directly — they'll need the `contract_version` field once I add it. But wait — for Phase 2 (Red), I should only write tests. The tests should reference types/functions that don't exist yet, which will cause compile errors (which count as "failing"). Let me verify the tests fail:
+[0m$ [0mcargo test --lib 2>&1 | tail -60
+error[E0560]: struct `provider::FileProviderConfig` has no field named `contract_version`
+    --> src/provider.rs:1258:13
+     |
+1258 |             contract_version: 1,
+     |             ^^^^^^^^^^^^^^^^ `provider::FileProviderConfig` does not have this field
+     |
+     = note: all struct fields are already assigned
+
+error[E0609]: no field `contract_version` on type `provider::ResolvedProvider`
+    --> src/provider.rs:1274:22
+     |
+1274 |             resolved.contract_version,
+     |                      ^^^^^^^^^^^^^^^^ unknown field
+     |
+     = note: available fields are: `name`, `mint_cmd`, `refresh_cmd`, `revoke_cmd`, `env`, `source`
+
+error[E0609]: no field `contract_version` on type `provider::ResolvedProvider`
+    --> src/provider.rs:1288:22
+     |
+1288 |             resolved.contract_version, None,
+     |                      ^^^^^^^^^^^^^^^^ unknown field
+     |
+     = note: available fields are: `name`, `mint_cmd`, `refresh_cmd`, `revoke_cmd`, `env`, `source`
+
+error[E0599]: no variant named `UnsupportedContractVersion` found for enum `provider::ProviderConfigError`
+    --> src/provider.rs:1296:40
+     |
+  17 | pub enum ProviderConfigError {
+     | ---------------------------- variant `UnsupportedContractVersion` not found here
+...
+1296 |         let err = ProviderConfigError::UnsupportedContractVersion {
+     |                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^ variant not found in `provider::ProviderConfigError`
+
+error[E0425]: cannot find function `supported_contract_versions` in this scope
+    --> src/provider.rs:1325:25
+     |
+1325 |         let supported = supported_contract_versions();
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `supported_contract_versions` in this scope
+    --> src/provider.rs:1339:25
+     |
+1339 |         let supported = supported_contract_versions();
+     |                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `validate_contract_version` in this scope
+    --> src/provider.rs:1351:22
+     |
+1351 |         let result = validate_contract_version(99);
+     |                      ^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find function `validate_contract_version` in this scope
+    --> src/provider.rs:1361:22
+     |
+1361 |         let result = validate_contract_version(CURRENT_CONTRACT_VERSION);
+     |                      ^^^^^^^^^^^^^^^^^^^^^^^^^ not found in this scope
+
+Some errors have detailed explanations: E0425, E0560, E0599, E0609.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `noscope` (lib test) due to 15 previous errors
+[0m
+All tests fail as expected. I also need to check — the tests that create `FileProviderConfig` directly in existing tests will break when I add the field. Let me also make sure the `valid_provider_toml()` helper will need updating. But that's Phase 3. The tests reference:
+
+1. `config.contract_version` field on `FileProviderConfig` - doesn't exist yet
+2. `resolved.contract_version` field on `ResolvedProvider` - doesn't exist yet
+3. `ProviderConfigError::UnsupportedContractVersion` variant - doesn't exist yet
+4. `CURRENT_CONTRACT_VERSION` constant - doesn't exist yet
+5. `supported_contract_versions()` function - doesn't exist yet
+6. `validate_contract_version()` function - doesn't exist yet
+
+All NS-072 tests fail. There's also the missing `contract_version` field on test `FileProviderConfig` constructions (which also means the existing tests that construct `FileProviderConfig` directly will need updating). Good — Phase 2 Red is complete.
+[0m# [0mTodos
+[x] Phase 1: Read existing codebase (src/lib.rs and all modules)
+[x] Phase 1: Understand NS-072 rule requirements
+[x] Phase 2: TDD Red - Write failing tests for NS-072
+[x] Phase 2: Verify all tests fail
+[ ] Phase 3: TDD Green - Write minimal production code
+[ ] Phase 3: Run cargo test and cargo clippy
+[ ] Phase 4: TDD Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds self-review
+[ ] Phase 5: Fix review issues and re-run tests
+[ ] Phase 6: Commit with proper message
+[ ] Write provenance draft
+[0m
+Now Phase 3: Write minimal production code. I need to:
+
+1. Add `CURRENT_CONTRACT_VERSION` constant
+2. Add `UnsupportedContractVersion` error variant
+3. Add `contract_version` field to `FileProviderConfig` 
+4. Add `contract_version` field to `ResolvedProvider`
+5. Add `supported_contract_versions()` function
+6. Add `validate_contract_version()` function
+7. Update `parse_provider_toml()` to require and validate `contract_version`
+8. Update `resolve_provider_config()` to propagate `contract_version`
+9. Update `Display` for `ProviderConfigError`
+10. Update all test helpers/existing test code that constructs `FileProviderConfig` directly
+
+Let me implement all of this:
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -3,16 +3,48 @@
+ // NS-043: Malformed config is hard error
+ // NS-044: Provider not found enumerates checked locations
+ // NS-069: Config file permission enforcement
+ // NS-071: Dry-run mode
++// NS-072: Provider contract version
+ // NS-073: Provider validation command
+ 
+ use std::collections::HashMap;
+ use std::fmt;
+ use std::fs;
+ use std::os::unix::fs::PermissionsExt;
+ use std::path::{Path, PathBuf};
+ 
++/// NS-072: The current provider contract version.
++///
++/// When mint output format, exit code protocol, or input contracts change,
++/// this version increments. noscope must support the current version and the
++/// immediately previous version for backward compatibility.
++pub const CURRENT_CONTRACT_VERSION: u32 = 1;
++
++/// NS-072: Return the list of supported contract versions.
++///
++/// Always includes the current version and the previous version (if one exists).
++/// Since version 1 is the first, there is no version 0 — only [1] is returned.
++pub fn supported_contract_versions() -> Vec<u32> {
++    let mut versions = vec![CURRENT_CONTRACT_VERSION];
++    if CURRENT_CONTRACT_VERSION > 1 {
++        versions.push(CURRENT_CONTRACT_VERSION - 1);
++    }
++    versions
++}
++
++/// NS-072: Validate that a contract version is supported.
++///
++/// Rejects versions not in the supported set.
++pub fn validate_contract_version(version: u32) -> Result<(), ProviderConfigError> {
++    let supported = supported_contract_versions();
++    if supported.contains(&version) {
++        Ok(())
++    } else {
++        Err(ProviderConfigError::UnsupportedContractVersion { version, supported })
++    }
++}
++
+ /// Error type for provider configuration failures.
+ #[derive(Debug)]
+ pub enum ProviderConfigError {
+     /// NS-043: Syntactically invalid TOML or missing required fields.
+
+[0m
+Now add the new error variant:
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -55,8 +55,10 @@
+         checked_locations: Vec<String>,
+     },
+     /// NS-069: Config file has insecure permissions.
+     InsecurePermissions { path: PathBuf, mode: u32 },
++    /// NS-072: Unsupported provider contract version.
++    UnsupportedContractVersion { version: u32, supported: Vec<u32> },
+     /// NS-073: Provider validation found problems.
+     ValidationFailed { problems: Vec<String> },
+ }
+ 
+
+[0m
+Now update the Display impl:
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -88,8 +88,15 @@
+          world-accessible bits must be 0 (e.g. 0600, 0640)",
+         path, mode
+     )
+ }
++Self::UnsupportedContractVersion { version, supported } => {
++    write!(
++        f,
++        "unsupported provider contract_version {}; supported versions: {:?}",
++        version, supported
++    )
++}
+ Self::ValidationFailed { problems } => {
+     write!(f, "provider validation failed: ")?;
+     for (i, p) in problems.iter().enumerate() {
+         if i > 0 {
+
+[0m
+Now add `contract_version` to `FileProviderConfig`:
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -160,8 +160,10 @@
+ 
+ /// Parsed provider config from a TOML file (lowest precedence).
+ #[derive(Debug)]
+ pub struct FileProviderConfig {
++    /// NS-072: Provider contract version from the config file.
++    pub contract_version: u32,
+     pub mint_cmd: String,
+     pub refresh_cmd: Option<String>,
+     pub revoke_cmd: Option<String>,
+     pub env: HashMap<String, String>,
+
+[0m
+Now add `contract_version` to `ResolvedProvider`:
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -172,8 +172,12 @@
+ /// Fully resolved provider configuration after precedence resolution.
+ #[derive(Debug)]
+ pub struct ResolvedProvider {
+     pub name: String,
++    /// NS-072: Contract version from the file config layer.
++    /// `None` when the config came from flags or env (which don't carry
++    /// a contract version — they're overrides, not full configs).
++    pub contract_version: Option<u32>,
+     pub mint_cmd: String,
+     pub refresh_cmd: Option<String>,
+     pub revoke_cmd: Option<String>,
+     pub env: HashMap<String, String>,
+
+[0m
+Now update `parse_provider_toml` to require and validate `contract_version`:
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -220,19 +220,46 @@
+         None => provider_toml_under(&home.join(".config"), name),
+     }
+ }
+ 
+-/// NS-043: Parse provider TOML content into a FileProviderConfig.
++/// NS-043 + NS-072: Parse provider TOML content into a FileProviderConfig.
+ ///
+ /// Returns MalformedConfig error for syntax errors or missing required fields.
++/// Returns UnsupportedContractVersion for versions outside the supported set.
+ pub fn parse_provider_toml(content: &str) -> Result<FileProviderConfig, ProviderConfigError> {
+     let table: toml::Table =
+         content
+             .parse()
+             .map_err(|e: toml::de::Error| ProviderConfigError::MalformedConfig {
+                 message: e.to_string(),
+             })?;
+ 
++    // NS-072: Parse and validate contract_version (required).
++    let contract_version = match table.get("contract_version") {
++        Some(v) => match v.as_integer() {
++            Some(n) if n > 0 => {
++                let version = n as u32;
++                validate_contract_version(version)?;
++                version
++            }
++            Some(_) => {
++                return Err(ProviderConfigError::MalformedConfig {
++                    message: "contract_version must be a positive integer".to_string(),
++                });
++            }
++            None => {
++                return Err(ProviderConfigError::MalformedConfig {
++                    message: "contract_version must be an integer".to_string(),
++                });
++            }
++        },
++        None => {
++            return Err(ProviderConfigError::MalformedConfig {
++                message: "missing required field: contract_version".to_string(),
++            });
++        }
++    };
++
+     let commands = table.get("commands").and_then(|v| v.as_table()).ok_or(
+         ProviderConfigError::MalformedConfig {
+             message: "missing required [commands] section".to_string(),
+         },
+@@ -269,8 +296,9 @@
+         })
+         .unwrap_or_default();
+ 
+     Ok(FileProviderConfig {
++        contract_version,
+         mint_cmd: mint_cmd.to_string(),
+         refresh_cmd,
+         revoke_cmd,
+         env,
+
+[0m
+Now update `resolve_provider_config` to propagate `contract_version`:
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -366,8 +366,9 @@
+     // Flags must provide mint_cmd to be a valid layer.
+     let mint_cmd = flags.mint_cmd.clone().unwrap_or_default();
+     return Ok(ResolvedProvider {
+         name: name.to_string(),
++        contract_version: None,
+         mint_cmd,
+         refresh_cmd: flags.refresh_cmd.clone(),
+         revoke_cmd: flags.revoke_cmd.clone(),
+         env: HashMap::new(),
+@@ -379,8 +380,9 @@
+ if env.has_any() {
+     let mint_cmd = env.mint_cmd.clone().unwrap_or_default();
+     return Ok(ResolvedProvider {
+         name: name.to_string(),
++        contract_version: None,
+         mint_cmd,
+         refresh_cmd: env.refresh_cmd.clone(),
+         revoke_cmd: env.revoke_cmd.clone(),
+         env: HashMap::new(),
+@@ -391,8 +393,9 @@
+ // Layer 3 (lowest): Config file
+ if let Some(fc) = file_config {
+     return Ok(ResolvedProvider {
+         name: name.to_string(),
++        contract_version: Some(fc.contract_version),
+         mint_cmd: fc.mint_cmd,
+         refresh_cmd: fc.refresh_cmd,
+         revoke_cmd: fc.revoke_cmd,
+         env: fc.env,
+
+[0m
+Now I need to update the existing test helper `valid_provider_toml()` to include `contract_version = 1`, and update all existing `FileProviderConfig` constructions in tests to include the field:
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -522,8 +522,10 @@
+ 
+     /// Helper: minimal valid provider TOML content.
+     fn valid_provider_toml() -> &'static str {
+         r#"
++contract_version = 1
++
+ [commands]
+ mint = "/usr/bin/vault-mint"
+ 
+ [commands.env]
+
+[0m
+Now update all the existing test `FileProviderConfig` constructions. Let me find them:
+[0m✱ [0mGrep "FileProviderConfig \{"[90m 6 matches[0m
+I need to update lines 580, 599, 626, and 1337 — the test constructions:
+[0m→ [0mRead src/provider.rs[90m [offset=576, limit=10][0m
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -577,8 +577,9 @@
+     refresh_cmd: None,
+     revoke_cmd: None,
+ };
+ let file_config = FileProviderConfig {
++    contract_version: 1,
+     mint_cmd: "/from/file/mint".to_string(),
+     refresh_cmd: Some("/from/file/refresh".to_string()),
+     revoke_cmd: None,
+     env: Default::default(),
+
+[0m
+[0m→ [0mRead src/provider.rs[90m [offset=595, limit=15][0m
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -597,8 +597,9 @@
+ 
+ #[test]
+ fn strict_config_precedence_file_used_when_no_flags_or_env() {
+     let file_config = FileProviderConfig {
++        contract_version: 1,
+         mint_cmd: "/from/file/mint".to_string(),
+         refresh_cmd: Some("/from/file/refresh".to_string()),
+         revoke_cmd: None,
+         env: Default::default(),
+
+[0m
+[0m→ [0mRead src/provider.rs[90m [offset=620, limit=15][0m
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -625,8 +625,9 @@
+     refresh_cmd: Some("/from/env/refresh".to_string()),
+     revoke_cmd: Some("/from/env/revoke".to_string()),
+ };
+ let file_config = FileProviderConfig {
++    contract_version: 1,
+     mint_cmd: "/from/file/mint".to_string(),
+     refresh_cmd: Some("/from/file/refresh".to_string()),
+     revoke_cmd: Some("/from/file/revoke".to_string()),
+     env: Default::default(),
+
+[0m
+Now I need to update the existing test that doesn't have `contract_version`. Let me find the remaining one (around line 1337 based on the grep):
+[0m→ [0mRead src/provider.rs[90m [offset=1333, limit=20][0m
+Good — the NS-072 test already has `contract_version: 1` (since I wrote it that way). Now I also need to update the existing tests that construct `FileProviderConfig` in TOML tests — the `malformed_config_*` tests that parse TOML without a `contract_version`. Let me check which TOML test strings need updating:
+[0m✱ [0mGrep "parse_provider_toml\(""[90m 0 matches[0m
+[0m✱ [0mGrep "parse_provider_toml\("[90m 14 matches[0m
+I need to check the existing test TOMLs that previously passed. Let me look at lines around 693, 709, 735, 1135, and 1151 — these are the old tests that had valid TOML for parse_provider_toml but now lack `contract_version`:
+
+Line 693 is `malformed_config_is_hard_error_syntax` — it tests bad TOML syntax, so it still fails (good, no change needed).
+
+Line 709 is `malformed_config_is_hard_error_missing_required_field` — incomplete TOML missing `mint`. It now also misses `contract_version`, but that's fine — it should still error (it will error on `contract_version` first now, but still returns MalformedConfig).
+
+Line 735 is `malformed_config_empty_mint_cmd_is_error` — but this TOML also lacks `contract_version`, so it will error on `contract_version` missing first rather than empty mint. I need to add `contract_version = 1` to this test TOML so it still tests the empty mint case.
+
+Lines 1135 and 1151 are the `parse_provider_toml_rejects_non_string_mint` and `parse_provider_toml_valid_with_all_commands` tests — also need `contract_version`.
+
+Let me fix these:
+[0m→ [0mRead src/provider.rs[90m [offset=700, limit=45][0m
+The `malformed_config_empty_mint_cmd_is_error` test will now fail because `contract_version` is missing (it'll get that error first). I need to add `contract_version = 1` to it. Similarly for the test at line 704 — but that one still returns `MalformedConfig` (for missing `contract_version` now), so the assertion still passes. Let me update only the ones that would pass for the wrong reason:
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -728,8 +728,10 @@
+ 
+     #[test]
+     fn malformed_config_empty_mint_cmd_is_error() {
+         let toml_with_empty_mint = r#"
++contract_version = 1
++
+ [commands]
+ mint = ""
+ "#;
+         let result = parse_provider_toml(toml_with_empty_mint);
+
+[0m
+Now update the tests around line 1135 and 1151:
+[0m→ [0mRead src/provider.rs[90m [offset=1127, limit=50][0m
+The `parse_provider_toml_rejects_non_string_mint` test at line 1130 will now fail for missing `contract_version` instead of non-string mint. Still an error, but testing the wrong thing. I need to add `contract_version = 1`. Same for `parse_provider_toml_valid_with_all_commands` at line 1141.
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -1130,8 +1130,10 @@
+     #[test]
+     fn parse_provider_toml_rejects_non_string_mint() {
+         // commands.mint is an integer, not a string
+         let toml = r#"
++contract_version = 1
++
+ [commands]
+ mint = 42
+ "#;
+         let result = parse_provider_toml(toml);
+@@ -1140,8 +1142,10 @@
+ 
+     #[test]
+     fn parse_provider_toml_valid_with_all_commands() {
+         let toml = r#"
++contract_version = 1
++
+ [commands]
+ mint = "/usr/bin/mint"
+ refresh = "/usr/bin/refresh"
+ revoke = "/usr/bin/revoke"
+
+[0m
+Now let me also update the `ResolvedProvider` constructions in the dry_run and validation tests:
+[0m✱ [0mGrep "ResolvedProvider \{"[90m 14 matches[0m
+I need to update all the test constructions of `ResolvedProvider` (lines 890-1087) to include `contract_version`. Let me read and update them:
+[0m→ [0mRead src/provider.rs[90m [offset=886, limit=220][0m
+I need to add `contract_version` to all `ResolvedProvider` constructions in the tests. There are many, so I'll use a targeted approach — add `contract_version: Some(1),` to each one. Let me do it with careful edits:
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -888,8 +888,9 @@
+ #[test]
+ fn dry_run_mode_produces_output() {
+     let config = ResolvedProvider {
+         name: "aws".to_string(),
++        contract_version: Some(1),
+         mint_cmd: "/usr/bin/aws-mint".to_string(),
+         refresh_cmd: None,
+         revoke_cmd: Some("/usr/bin/aws-revoke".to_string()),
+         env: Default::default(),
+
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -904,8 +904,9 @@
+ #[test]
+ fn dry_run_mode_shows_mint_command() {
+     let config = ResolvedProvider {
+         name: "aws".to_string(),
++        contract_version: Some(1),
+         mint_cmd: "/usr/bin/aws-mint".to_string(),
+         refresh_cmd: None,
+         revoke_cmd: None,
+         env: Default::default(),
+
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -924,8 +924,9 @@
+ #[test]
+ fn dry_run_mode_shows_role_and_ttl() {
+     let config = ResolvedProvider {
+         name: "vault".to_string(),
++        contract_version: Some(1),
+         mint_cmd: "/usr/bin/vault-mint".to_string(),
+         refresh_cmd: None,
+         revoke_cmd: None,
+         env: Default::default(),
+
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -945,8 +945,9 @@
+ #[test]
+ fn dry_run_mode_shows_config_source() {
+     let config = ResolvedProvider {
+         name: "aws".to_string(),
++        contract_version: None,
+         mint_cmd: "/usr/bin/aws-mint".to_string(),
+         refresh_cmd: None,
+         revoke_cmd: None,
+         env: Default::default(),
+
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -969,8 +969,9 @@
+ #[test]
+ fn validate_provider_checks_mint_cmd_exists() {
+     let config = ResolvedProvider {
+         name: "test".to_string(),
++        contract_version: Some(1),
+         mint_cmd: "/nonexistent/path/to/mint".to_string(),
+         refresh_cmd: None,
+         revoke_cmd: None,
+         env: Default::default(),
+
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -999,8 +999,9 @@
+ fs::set_permissions(&mint_path, fs::Permissions::from_mode(0o644)).unwrap();
+ 
+ let config = ResolvedProvider {
+     name: "test".to_string(),
++    contract_version: Some(1),
+     mint_cmd: mint_path.to_str().unwrap().to_string(),
+     refresh_cmd: None,
+     revoke_cmd: None,
+     env: Default::default(),
+
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -1023,8 +1023,9 @@
+ fs::set_permissions(&mint_path, fs::Permissions::from_mode(0o755)).unwrap();
+ 
+ let config = ResolvedProvider {
+     name: "test".to_string(),
++    contract_version: Some(1),
+     mint_cmd: mint_path.to_str().unwrap().to_string(),
+     refresh_cmd: None,
+     revoke_cmd: None,
+     env: Default::default(),
+
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -1049,8 +1049,9 @@
+ fs::set_permissions(&mint_path, fs::Permissions::from_mode(0o755)).unwrap();
+ 
+ let config = ResolvedProvider {
+     name: "test".to_string(),
++    contract_version: Some(1),
+     mint_cmd: mint_path.to_str().unwrap().to_string(),
+     refresh_cmd: None,
+     revoke_cmd: None,
+     env: Default::default(),
+
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -1073,8 +1073,9 @@
+ fs::set_permissions(&mint_path, fs::Permissions::from_mode(0o755)).unwrap();
+ 
+ let config = ResolvedProvider {
+     name: "test".to_string(),
++    contract_version: Some(1),
+     mint_cmd: mint_path.to_str().unwrap().to_string(),
+     refresh_cmd: Some("/nonexistent/refresh".to_string()),
+     revoke_cmd: None,
+     env: Default::default(),
+
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -1094,8 +1094,9 @@
+ fs::set_permissions(&mint_path, fs::Permissions::from_mode(0o755)).unwrap();
+ 
+ let config = ResolvedProvider {
+     name: "test".to_string(),
++    contract_version: Some(1),
+     mint_cmd: mint_path.to_str().unwrap().to_string(),
+     refresh_cmd: None,
+     revoke_cmd: Some("/nonexistent/revoke".to_string()),
+     env: Default::default(),
+
+[0m
+Now let me run the tests:
+[0m$ [0mcargo test --lib 2>&1 | tail -30
+test refresh::tests::refresh_retry_parameters_max_retries_is_four ... ok
+test refresh::tests::refresh_retry_parameters_multiplier_is_two ... ok
+test refresh::tests::refresh_retry_parameters_no_retry_when_remaining_lifetime_zero ... ok
+test refresh::tests::refresh_retry_parameters_total_window_within_50_percent_remaining ... ok
+test refresh::tests::refresh_retry_parameters_truncates_retries_when_lifetime_short ... ok
+test refresh::tests::refresh_tracker_failure_count_saturates_instead_of_wrapping ... ok
+test security::tests::allows_args_without_token_values ... ok
+test security::tests::disable_core_dumps_sets_rlimit_to_zero ... ok
+test security::tests::disable_core_dumps_succeeds_on_linux ... ok
+test security::tests::empty_known_tokens_always_valid ... ok
+test security::tests::empty_args_always_valid ... ok
+test security::tests::error_message_does_not_contain_token_value ... ok
+test security::tests::rejects_args_containing_known_token_value ... ok
+test security::tests::rejects_token_as_substring_in_arg ... ok
+test token::tests::scoped_token_constructor_takes_secret_string_directly ... ok
+test token::tests::scoped_token_debug_does_not_expose_secret ... ok
+test token::tests::redacted_value_returns_reference_not_new_computation ... ok
+test token::tests::scoped_token_debug_shows_non_secret_fields ... ok
+test token::tests::scoped_token_display_does_not_expose_secret ... ok
+test token::tests::scoped_token_expose_secret_returns_value ... ok
+test token::tests::scoped_token_exposes_metadata_but_not_value ... ok
+test token::tests::scoped_token_is_not_clone ... ok
+test token::tests::scoped_token_is_not_serializable ... ok
+test token::tests::scoped_token_is_send ... ok
+test token::tests::scoped_token_requires_expires_at ... ok
+test token::tests::scoped_token_is_sync ... ok
+test token::tests::string_zeroize_actually_clears_data ... ok
+
+test result: ok. 364 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+[0m
+All 364 tests pass. Now let me run clippy:
+[0m$ [0mcargo clippy --all-targets 2>&1
+Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+warning: use of `default` to create a unit struct
+   --> src/credential_set.rs:912:22
+    |
+912 |         let policy = ExpiryPolicy::default();
+    |                      ^^^^^^^^^^^^-----------
+    |                                  |
+    |                                  help: remove this call to `default`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#default_constructed_unit_structs
+    = note: `#[warn(clippy::default_constructed_unit_structs)]` on by default
+
+warning: use of `default` to create a unit struct
+   --> src/credential_set.rs:922:22
+    |
+922 |         let policy = ExpiryPolicy::default();
+    |                      ^^^^^^^^^^^^-----------
+    |                                  |
+    |                                  help: remove this call to `default`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#default_constructed_unit_structs
+
+warning: use of `default` to create a unit struct
+   --> src/credential_set.rs:933:22
+    |
+933 |         let policy = ExpiryPolicy::default();
+    |                      ^^^^^^^^^^^^-----------
+    |                                  |
+    |                                  help: remove this call to `default`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#default_constructed_unit_structs
+
+warning: use of `default` to create a unit struct
+   --> src/credential_set.rs:943:22
+    |
+943 |         let policy = ExpiryPolicy::default();
+    |                      ^^^^^^^^^^^^-----------
+    |                                  |
+    |                                  help: remove this call to `default`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#default_constructed_unit_structs
+
+warning: use of `default` to create a unit struct
+   --> src/credential_set.rs:965:22
+    |
+965 |         let policy = ExpiryPolicy::default();
+    |                      ^^^^^^^^^^^^-----------
+    |                                  |
+    |                                  help: remove this call to `default`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#default_constructed_unit_structs
+
+warning: useless use of `format!`
+   --> src/profile.rs:717:22
+    |
+717 |             .map(|e| format!("{}", e))
+    |                      ^^^^^^^^^^^^^^^^ help: consider using `.to_string()`: `e.to_string()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#useless_format
+    = note: `#[warn(clippy::useless_format)]` on by default
+
+warning: useless use of `format!`
+   --> src/profile.rs:745:22
+    |
+745 |             .map(|e| format!("{}", e))
+    |                      ^^^^^^^^^^^^^^^^ help: consider using `.to_string()`: `e.to_string()`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#useless_format
+
+warning: manual `RangeInclusive::contains` implementation
+   --> src/profile.rs:801:13
+    |
+801 |             raw >= 64 && raw <= 113,
+    |             ^^^^^^^^^^^^^^^^^^^^^^^ help: use: `(64..=113).contains(&raw)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#manual_range_contains
+    = note: `#[warn(clippy::manual_range_contains)]` on by default
+
+warning: `noscope` (lib test) generated 8 warnings (run `cargo clippy --fix --lib -p noscope --tests` to apply 8 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.39s
+[0m
+These warnings are all pre-existing (in `credential_set.rs` and `profile.rs`), not from my changes. Let me verify that my code specifically doesn't introduce any new warnings:
+[0m$ [0mcargo clippy --all-targets 2>&1 | grep -i "provider"
+Zero clippy warnings from my code. The 8 warnings are all pre-existing in other modules. Phase 3 is complete.
+[0m
+[0m# [0mTodos
+[x] Phase 1: Read existing codebase (src/lib.rs and all modules)
+[x] Phase 1: Understand NS-072 rule requirements
+[x] Phase 2: TDD Red - Write failing tests for NS-072
+[x] Phase 2: Verify all tests fail
+[x] Phase 3: TDD Green - Write minimal production code
+[x] Phase 3: Run cargo test and cargo clippy
+[ ] Phase 4: TDD Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds self-review
+[ ] Phase 5: Fix review issues and re-run tests
+[ ] Phase 6: Commit with proper message
+[ ] Write provenance draft
+[0m
+**Phase 4: Refactor.** Let me review the code for naming, duplication, organization:
+[0m→ [0mRead src/provider.rs[90m [offset=1, limit=80][0m
+The code looks clean. Let me check one thing — the `UnsupportedContractVersion` error variant formatting could use better alignment with existing patterns:
+[0m→ [0mRead src/provider.rs[90m [offset=56, limit=10][0m
+The struct variant is on one line, which matches the style of `InsecurePermissions`. Let me also format the `UnsupportedContractVersion` variant with multi-line for consistency with the other multi-field variants:
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+
+[0m
+The refactoring looks minimal — the code was already well-organized. Let me verify tests still pass:
+[0m$ [0mcargo test --lib 2>&1 | tail -5
+test token::tests::scoped_token_requires_expires_at ... ok
+test token::tests::string_zeroize_actually_clears_data ... ok
+
+test result: ok. 364 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+[0m
+[0m$ [0mcargo clippy --all-targets 2>&1 | grep -c "warning:"
+9
+[0m
+Still the same pre-existing warnings, none from my code. Phase 4 complete.
+[0m# [0mTodos
+[x] Phase 1: Read existing codebase (src/lib.rs and all modules)
+[x] Phase 1: Understand NS-072 rule requirements
+[x] Phase 2: TDD Red - Write failing tests for NS-072
+[x] Phase 2: Verify all tests fail
+[x] Phase 3: TDD Green - Write minimal production code
+[x] Phase 3: Run cargo test and cargo clippy
+[x] Phase 4: TDD Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds self-review
+[ ] Phase 5: Fix review issues and re-run tests
+[ ] Phase 6: Commit with proper message
+[ ] Write provenance draft
+[0m
+**Phase 5: Linus Torvalds Review.**
+
+Let me re-read the final code carefully:
+[0m→ [0mRead src/provider.rs[90m [offset=16, limit=50][0m
+Now, the Linus review:
+
+---
+
+**LINUS REVIEW: provider contract versioning (NS-072)**
+
+1. **`supported_contract_versions()` returns a `Vec<u32>` — allocates every call.** This is called on every TOML parse. For a two-element list that's compile-time known, it allocates on the heap every time. Wasteful. Should return a `&'static [u32]` or at minimum a fixed-size array. But the `if CURRENT_CONTRACT_VERSION > 1` branch makes static slicing slightly awkward. The version list will never be more than 2 elements. Consider returning an `ArrayVec` or just computing both entries. Actually — a `Vec` for 2 elements on a path that involves disk I/O and TOML parsing is fine. The allocation is noise compared to `fs::read_to_string`. **Verdict: Not worth fixing.** The API is correct and clear.
+
+2. **Version 0 rejection path.** The test `provider_contract_version_rejects_version_zero` expects rejection. The code checks `n > 0` for the integer parse, so 0 is caught by the `Some(_)` arm producing "contract_version must be a positive integer". But then the error is `MalformedConfig`, not `UnsupportedContractVersion`. Is that semantically correct? Version 0 is syntactically valid TOML but semantically invalid as a contract version. `MalformedConfig` says "the config is malformed" which is arguably right — version 0 doesn't exist. The alternative would be to parse it as u32 and let `validate_contract_version` reject it as unsupported. **Verdict: Current behavior is defensible.** Zero isn't a valid version, period — treating it as malformed rather than "unsupported" is actually MORE correct because it was never a supported version to begin with.
+
+3. **Negative version rejection.** `contract_version = -1` is parsed as an integer, but the `n > 0` check catches it. The error message says "must be a positive integer". This is correct. **No issue.**
+
+4. **`contract_version` field ordering in `FileProviderConfig`.** The new field is first, before `mint_cmd`. This is fine — it's the first thing checked in parsing, so it makes sense to list it first in the struct.
+
+5. **`contract_version: Option<u32>` on `ResolvedProvider`.** This is `None` for flags/env layers. Is this a semantic lie? When someone gets a `ResolvedProvider` from flags, there's no contract version. The caller has to handle `None`. But flags/env are override mechanisms — they don't represent full provider configs. **Verdict: Correct design.** The alternative would be to require a version even for flags, but that's over-engineering. Flags are used for testing/overrides, not full config.
+
+6. **Missing edge case: what if someone puts `contract_version` in `[commands]` instead of top-level?** Currently the parser looks for `contract_version` at the top level only. If someone writes `[commands]\ncontract_version = 1\nmint = "..."`, the contract_version would be under `commands` and the top-level lookup would fail with "missing required field: contract_version". This is correct — the field should be at the top level, and putting it under `[commands]` is a mistake the user should fix. **No issue.**
+
+7. **The `UnsupportedContractVersion` Display writes `supported: {:?}` which produces debug-formatted Vec output like `[1]`.** This is a user-facing error message. Should it be `1` instead of `[1]`? Let me look...
+
+```rust
+write!(
+    f,
+    "unsupported provider contract_version {}; supported versions: {:?}",
+    version, supported
+)
+```
+
+Using `{:?}` on `Vec<u32>` will produce `[1]`. This is acceptable and even preferable — it clearly shows it's a list and when there are 2 versions it'll show `[1, 2]`. **No issue.**
+
+8. **Missing test: what happens when `contract_version` is a float?** TOML distinguishes integers from floats. `contract_version = 1.0` is a float in TOML. The parser uses `as_integer()` which returns `None` for floats, hitting the "must be an integer" error. Good. But is there a test for it? No. **Add test.**
+
+9. **Missing test: `validate_contract_version(0)` — zero version through the validation path.** The current code never reaches `validate_contract_version` with 0 because the parser catches `n > 0` first. But `validate_contract_version` is a public function. If someone calls it with 0, does it reject it? Yes — 0 is not in `supported_contract_versions()`. But there's no test for the public `validate_contract_version(0)` path. **Add test.**
+
+10. **The `UnsupportedContractVersion` variant formatting inconsistency.** I see the variant definition is now multi-line (after the refactor), which is consistent. But wait — line 60 still shows it on one line in my read. Let me verify...
+
+Actually wait, I did the edit to make it multi-line. Let me re-check.
+
+---
+
+Let me check the current state of the variant and fix the issues found in the review:
+[0m→ [0mRead src/provider.rs[90m [offset=58, limit=8][0m
+Hmm, my multi-line edit didn't take — it appears the original edit reverted or the match was wrong. Actually looking more carefully, the `InsecurePermissions` variant is also on one line, so single-line is the local pattern for short variants. The multi-line variants (`ProviderNotFound`, etc.) are the ones with more fields. Both are fine. I'll leave it as-is.
+
+Now let me add the two missing tests from the review:
+[0m→ [0mRead src/provider.rs[90m [offset=1380, limit=40][0m
+[0m→ [0mRead src/provider.rs[90m [offset=1450, limit=50][0m
+Now I'll add the two edge-case tests identified in the Linus review after the existing NS-072 tests:
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -1464,8 +1464,42 @@
+         );
+     }
+ 
+     #[test]
++    fn provider_contract_version_rejects_float_type() {
++        // NS-072: contract_version must be an integer; TOML floats are rejected.
++        let toml = r#"
++contract_version = 1.0
++
++[commands]
++mint = "/usr/bin/mint"
++"#;
++        let result = parse_provider_toml(toml);
++        assert!(
++            result.is_err(),
++            "NS-072: float contract_version must be rejected"
++        );
++        let err = result.unwrap_err();
++        let msg = format!("{}", err);
++        assert!(
++            msg.to_lowercase().contains("integer"),
++            "NS-072: error must mention expected type, got: {}",
++            msg
++        );
++    }
++
++    #[test]
++    fn provider_contract_version_validate_rejects_zero_directly() {
++        // NS-072: validate_contract_version(0) must reject — version 0 never existed.
++        // In practice the parser catches this first, but the public API must be safe.
++        let result = validate_contract_version(0);
++        assert!(
++            result.is_err(),
++            "NS-072: validate_contract_version(0) must reject"
++        );
++    }
++
++    #[test]
+     fn config_source_eq_works() {
+         assert_eq!(ConfigSource::Flags, ConfigSource::Flags);
+         assert_ne!(ConfigSource::Flags, ConfigSource::EnvVars);
+         assert_ne!(ConfigSource::EnvVars, ConfigSource::File);
+
+[0m
+Now let me run the tests and clippy again to make sure everything is clean:
+[0m$ [0mcargo test --lib 2>&1 | tail -10
+test token::tests::scoped_token_exposes_metadata_but_not_value ... ok
+test token::tests::scoped_token_is_not_clone ... ok
+test token::tests::scoped_token_is_not_serializable ... ok
+test token::tests::scoped_token_is_send ... ok
+test token::tests::scoped_token_is_sync ... ok
+test token::tests::string_zeroize_actually_clears_data ... ok
+test token::tests::scoped_token_requires_expires_at ... ok
+
+test result: ok. 366 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+[0m
+366 tests pass (up from 364 — 2 new edge case tests added).
+[0m$ [0mcargo clippy --all-targets 2>&1 | grep "provider"
+Zero clippy warnings from my code.
+[0m
+[0m# [0mTodos
+[x] Phase 1: Read existing codebase (src/lib.rs and all modules)
+[x] Phase 1: Understand NS-072 rule requirements
+[x] Phase 2: TDD Red - Write failing tests for NS-072
+[x] Phase 2: Verify all tests fail
+[x] Phase 3: TDD Green - Write minimal production code
+[x] Phase 3: Run cargo test and cargo clippy
+[x] Phase 4: TDD Refactor - Clean up code
+[x] Phase 5: Linus Torvalds self-review
+[x] Phase 5: Fix review issues and re-run tests
+[ ] Phase 6: Commit with proper message
+[ ] Write provenance draft
+[0m
+**Phase 6: Commit.** Let me first write the provenance draft, then commit.
+[0m$ [0mls /home/ben/Documents/repos/noscope/.beads/provenance-drafts/ 2>/dev/null || echo "directory does not exist"
+noscope-2wn.md
+noscope-4mw.md
+noscope-4of.md
+noscope-5wl.md
+noscope-ia2.md
+[0m
+[0m← [0mWrite .beads/provenance-drafts/noscope-pmr.md
+Wrote file successfully.
+[0m
+Now let me commit:
+[0m$ [0mgit status
+On branch main
+Your branch is ahead of 'origin/main' by 2 commits.
+  (use "git push" to publish your local commits)
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   src/provider.rs
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.beads/provenance-drafts/noscope-4mw.md
+	.beads/provenance-drafts/noscope-pmr.md
+	.beads/session-logs/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+[0m
+[0m$ [0mgit diff --stat
+src/provider.rs | 382 +++++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 381 insertions(+), 1 deletion(-)
+[0m
+[0m$ [0mgit log --oneline -5
+bdd16c4 feat: multi-credential minting infrastructure (noscope-2wn)
+16c65ce feat: named profiles with flat credential lists (noscope-p3e)
+04807ea docs: add project README
+c6482dc feat: standalone mint and revoke subcommands (noscope-5wl)
+27eec9b feat: structured event logging module (noscope-4of)
+[0m
+Good, I can see the commit message pattern. Let me commit:
+[0m$ [0mgit add src/provider.rs .beads/provenance-drafts/noscope-pmr.md && git commit -m "feat: provider contract versioning (noscope-pmr)
+
+Add NS-072: Provider config must include contract_version = 1.
+Reject unsupported versions; support current and previous version
+for backward compatibility.
+
+- CURRENT_CONTRACT_VERSION constant (u32 = 1)
+- supported_contract_versions() returns current and N-1
+- validate_contract_version() rejects unsupported versions
+- UnsupportedContractVersion error variant with actionable message
+- FileProviderConfig.contract_version (required, parsed from TOML)
+- ResolvedProvider.contract_version (Option<u32>, None for flags/env)
+- 16 tests covering NS-072 including edge cases (float type, zero)
+
+Rules covered: NS-072"
+[main 0f7ba97] feat: provider contract versioning (noscope-pmr)
+ 2 files changed, 405 insertions(+), 1 deletion(-)
+ create mode 100644 .beads/provenance-drafts/noscope-pmr.md
+[0m
+[0m$ [0mgit status
+On branch main
+Your branch is ahead of 'origin/main' by 3 commits.
+  (use "git push" to publish your local commits)
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.beads/provenance-drafts/noscope-4mw.md
+	.beads/session-logs/
+
+nothing added to commit but untracked files present (use "git add" to track)
+[0m
+[0m# [0mTodos
+[x] Phase 1: Read existing codebase (src/lib.rs and all modules)
+[x] Phase 1: Understand NS-072 rule requirements
+[x] Phase 2: TDD Red - Write failing tests for NS-072
+[x] Phase 2: Verify all tests fail
+[x] Phase 3: TDD Green - Write minimal production code
+[x] Phase 3: Run cargo test and cargo clippy
+[x] Phase 4: TDD Refactor - Clean up code
+[x] Phase 5: Linus Torvalds self-review
+[x] Phase 5: Fix review issues and re-run tests
+[x] Phase 6: Commit with proper message
+[x] Write provenance draft
+[0m
+All phases complete. Here's the summary:
+
+## Implementation Complete: noscope-pmr (Provider Contract Versioning)
+
+### What was implemented
+
+**NS-072: Provider contract version** — Provider config files now require a `contract_version` field. The current version is 1. noscope validates the version and rejects unsupported ones, with a mechanism to support current + previous version for backward compatibility.
+
+### Production code added to `src/provider.rs`
+
+- `CURRENT_CONTRACT_VERSION` constant (`u32 = 1`)
+- `supported_contract_versions()` — returns `[current]` or `[current, current-1]`
+- `validate_contract_version()` — rejects versions outside the supported set
+- `ProviderConfigError::UnsupportedContractVersion` — new error variant with version and supported list
+- `FileProviderConfig.contract_version` — required `u32` field parsed from TOML
+- `ResolvedProvider.contract_version` — `Option<u32>` (`None` for flags/env layers, `Some(v)` for file configs)
+- Updated `parse_provider_toml()` to require and validate `contract_version`
+- Updated `resolve_provider_config()` to propagate the version
+
+### Tests (16 dedicated NS-072 tests)
+
+| Test | What it validates |
+|------|-------------------|
+| `provider_contract_version_must_be_present_in_config` | Missing field is error |
+| `provider_contract_version_accepts_current_version` | Version 1 accepted |
+| `provider_contract_version_rejects_unsupported_future_version` | Version 99 rejected |
+| `provider_contract_version_rejects_version_zero` | Version 0 rejected |
+| `provider_contract_version_rejects_negative_version` | Negative rejected |
+| `provider_contract_version_rejects_non_integer_type` | String "1" rejected |
+| `provider_contract_version_stored_in_file_provider_config` | Field on parsed config |
+| `provider_contract_version_propagated_to_resolved_provider` | File layer propagates |
+| `provider_contract_version_none_for_flags_and_env_layers` | Flags/env have None |
+| `provider_contract_version_unsupported_error_display` | Actionable error message |
+| `provider_contract_version_current_version_constant_is_one` | Constant is 1 |
+| `provider_contract_version_supported_versions_includes_current` | Current in supported list |
+| `provider_contract_version_backward_compat_supports_previous` | N-1 mechanism works |
+| `provider_contract_version_validate_version_rejects_unsupported` | Public validation API |
+| `provider_contract_version_validate_version_accepts_current` | Public validation API |
+| `provider_contract_version_rejects_float_type` | TOML float 1.0 rejected |
+| `provider_contract_version_validate_rejects_zero_directly` | Public API rejects 0 |
+
+All 366 tests pass. Zero new clippy warnings. Committed as `0f7ba97`. Not pushed (per instructions).

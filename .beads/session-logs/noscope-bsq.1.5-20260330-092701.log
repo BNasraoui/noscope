@@ -1,0 +1,3234 @@
+[0m
+> build · claude-opus-4-6
+[0m
+I'll start by loading the relevant skills and understanding the codebase thoroughly.
+[0m→ [0mSkill "test-driven-development"
+[0m→ [0mSkill "beads"
+[0m
+[0m# [0mTodos
+[ ] Phase 1: Understand the codebase - read src/lib.rs and all modules
+[ ] Phase 2: TDD Red - Write failing tests for error type convergence
+[ ] Phase 3: TDD Green - Write minimal production code to pass tests
+[ ] Phase 4: TDD Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds Review - Brutal self-review
+[ ] Phase 6: Commit with proper message
+[0m
+Let me start by understanding the codebase thoroughly.
+[0m→ [0mRead src
+[0m→ [0mRead Cargo.toml
+[0m✱ [0mGlob "src/**/*.rs"[90m 17 matches[0m
+[0m→ [0mRead src/lib.rs
+[0m→ [0mRead src/error.rs
+[0m→ [0mRead src/exit_code.rs
+[0m→ [0mRead src/cli_adapter.rs
+Now I need to understand the `NoscopeError` type in `client.rs` — this is the other error type creating the "split-brain".
+[0m→ [0mRead src/client.rs
+[0m→ [0mRead src/provider.rs
+[0m→ [0mRead src/mint.rs
+Now I have a thorough understanding of the codebase. Let me read a few more reference files to understand patterns.
+[0m→ [0mRead src/security.rs
+[0m→ [0mRead src/profile.rs
+[0m→ [0mRead src/credential_set.rs[90m [limit=50][0m
+[0m→ [0mRead src/provider_exec.rs[90m [limit=50][0m
+Now I have a complete picture. Let me also check for the `CredentialSetError` type:
+[0m✱ [0mGrep "pub enum CredentialSetError"[90m 1 match[0m
+[0m✱ [0mGrep "pub enum ProviderExecError"[90m 1 match[0m
+[0m→ [0mRead src/credential_set.rs[90m [offset=55, limit=30][0m
+[0m→ [0mRead src/provider_exec.rs[90m [offset=50, limit=40][0m
+Now I have a complete understanding of the problem. Let me also claim the bead and then plan the work.
+[0m
+[0m$ [0mbd show noscope-bsq.1.5 --json 2>/dev/null || echo "bd not available or bead not found"
+[
+  {
+    "id": "noscope-bsq.1.5",
+    "title": "Converge on a single public top-level error type",
+    "description": "API design cleanup: crate currently exports both `NoscopeError` and `error::Error`/`ErrorKind`.\n\nRequired changes:\n- Choose one canonical public error surface.\n- Make facade and adapter layers use that canonical type consistently.\n- Provide migration notes/tests for compatibility.\n\nAcceptance:\n- no split-brain error API for new consumers,\n- exit-code behavior remains stable and covered by tests.",
+    "status": "in_progress",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "Ben Nasraoui",
+    "owner": "nasraouiprojects@gmail.com",
+    "created_at": "2026-03-29T22:53:48Z",
+    "created_by": "Ben Nasraoui",
+    "updated_at": "2026-03-29T23:27:01Z",
+    "dependencies": [
+      {
+        "id": "noscope-bsq.1",
+        "title": "Linus review remediation backlog",
+        "description": "Ordered remediation backlog from the Linus-style review.\n\nExecution order:\n1) Finish runtime spine and lifecycle correctness in existing issues:\n   - noscope-508 (AgentProcess orchestration)\n   - noscope-66m (PR_SET_PDEATHSIG + process groups)\n   - noscope-mpl (signal/revoke policy)\n2) Close newly discovered hardening gaps:\n   - config-path traversal defense\n   - env override plumbing in Client\n   - tighter file permission policy\n   - explicit handling of core-dump hardening failures\n3) Converge public error API surface.\n4) Restore formatting hygiene and gate it.\n\nDefinition of done:\n- Each child issue has tests first, implementation second.\n- `cargo test`, `cargo clippy --all-targets --all-features`, and `cargo fmt --check` all pass.",
+        "notes": "Execution map (ordered): 1) noscope-508, 2) noscope-66m, 3) noscope-mpl, 4) noscope-bsq.1.1, 5) noscope-bsq.1.2, 6) noscope-bsq.1.3, 7) noscope-bsq.1.4, 8) noscope-bsq.1.5, 9) noscope-bsq.1.6",
+        "status": "open",
+        "priority": 1,
+        "issue_type": "epic",
+        "owner": "nasraouiprojects@gmail.com",
+        "created_at": "2026-03-29T22:53:47Z",
+        "created_by": "Ben Nasraoui",
+        "updated_at": "2026-03-29T22:54:01Z",
+        "dependency_type": "parent-child"
+      }
+    ],
+    "parent": "noscope-bsq.1"
+  }
+]
+[0m
+Good, it's already in_progress and claimed. Now let me update my todo list with a detailed plan:
+[0m# [0mTodos
+[x] Phase 1: Understand the codebase - read src/lib.rs and all modules
+[ ] Phase 2: TDD Red - Write failing tests for error convergence
+[ ] Phase 3: TDD Green - Remove NoscopeError, make error::Error the canonical type
+[ ] Phase 4: TDD Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds Review - Brutal self-review
+[ ] Phase 6: Commit with proper message
+[0m
+Now I understand the full picture. Here's the analysis:
+
+**The split-brain problem:**
+- `error::Error` + `ErrorKind` — the well-designed, typed, machine-readable error with `kind()`, `provider_name()`, `errors()`, `exit_code()`, source chaining, multi-error support, and `From` conversions from all module errors.
+- `client::NoscopeError` — a simpler enum with string-only variants: `Usage{message}`, `Config{message}`, `MintFailed{message}`, `Security{message}`, `Profile{message}`. Less capable (no provider name, no multi-error, no source chaining).
+
+**The right choice:** `error::Error` is clearly the canonical type. It's richer, has all the `From` conversions, and is the newer, better-designed type. `NoscopeError` should be replaced.
+
+**What must change:**
+1. `client.rs` — `Client` methods return `error::Error` instead of `NoscopeError`
+2. `cli_adapter.rs` — functions return `error::Error` instead of `NoscopeError`  
+3. `lib.rs` — re-export `error::Error` as `NoscopeError` (type alias for migration compatibility), stop re-exporting the old enum
+4. All `From` conversions from `NoscopeError` become unnecessary since `error::Error` already has them
+5. Exit codes remain identical
+
+**Phase 2: TDD Red — Write failing tests first.**
+
+The tests need to verify:
+1. No split-brain: crate exports a single canonical error type
+2. Facade layer (`Client`) uses `error::Error` 
+3. Adapter layer (`cli_adapter`) uses `error::Error`
+4. `NoscopeError` is a type alias for backward compatibility
+5. Exit-code behavior remains stable
+6. All existing `From` conversions still work through the canonical type
+
+Let me write the tests now. I'll add a new test module in `lib.rs` for the convergence tests, since these are about the public API surface:
+[0m→ [0mRead src/lib.rs
+Now let me write the failing tests. I'll add them to `lib.rs` since they test the public API surface:
+[0m
+[0m← [0mEdit src/lib.rs
+Index: /home/ben/Documents/repos/noscope/src/lib.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/lib.rs
++++ /home/ben/Documents/repos/noscope/src/lib.rs
+@@ -31,4 +31,334 @@
+ pub use token_convert::{
+     provider_output_to_scoped_token, provider_output_to_scoped_token_with_metadata,
+     scoped_token_to_mint_envelope, ConversionResult,
+ };
++
++#[cfg(test)]
++mod convergence_tests {
++    // =========================================================================
++    // noscope-bsq.1.5: Converge on a single public top-level error type.
++    //
++    // Acceptance criteria:
++    // 1. No split-brain error API for new consumers.
++    // 2. Exit-code behavior remains stable and covered by tests.
++    //
++    // Rules tested:
++    // - Choose one canonical public error surface.
++    // - Make facade and adapter layers use that canonical type consistently.
++    // - Provide migration notes/tests for compatibility.
++    // =========================================================================
++
++    // -------------------------------------------------------------------------
++    // Rule: Choose one canonical public error surface.
++    //
++    // error::Error must be the single canonical error type. NoscopeError
++    // must be a type alias for backward compatibility, not a separate type.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn canonical_error_type_is_error_error() {
++        // The canonical public error type is error::Error.
++        // It must be re-exported from the crate root.
++        let err: crate::Error = crate::error::Error::usage("test");
++        assert_eq!(err.kind(), crate::ErrorKind::Usage);
++    }
++
++    #[test]
++    fn noscope_error_is_alias_for_canonical_type() {
++        // NoscopeError must be a type alias for error::Error, not a separate enum.
++        // This proves they are the same type by assigning one to the other.
++        let err: crate::NoscopeError = crate::error::Error::usage("test");
++        let _back: crate::Error = err;
++    }
++
++    #[test]
++    fn noscope_error_alias_has_kind_method() {
++        // NoscopeError (alias) must expose the kind() method from error::Error.
++        let err: crate::NoscopeError = crate::error::Error::config("malformed");
++        assert_eq!(err.kind(), crate::ErrorKind::Config);
++    }
++
++    #[test]
++    fn noscope_error_alias_has_provider_name_method() {
++        // NoscopeError (alias) must expose provider_name() from error::Error.
++        let err: crate::NoscopeError = crate::error::Error::provider("aws", "expired");
++        assert_eq!(err.provider_name(), Some("aws"));
++    }
++
++    #[test]
++    fn noscope_error_alias_has_errors_method() {
++        // NoscopeError (alias) must expose multi-error support from error::Error.
++        let multi: crate::NoscopeError = crate::error::Error::multi(vec![
++            crate::error::Error::provider("aws", "expired"),
++            crate::error::Error::provider("gcp", "timeout"),
++        ]);
++        assert_eq!(multi.errors().len(), 2);
++    }
++
++    #[test]
++    fn noscope_error_alias_has_exit_code_method() {
++        // NoscopeError (alias) must expose exit_code() from error::Error.
++        let err: crate::NoscopeError = crate::error::Error::usage("bad flag");
++        assert_eq!(err.exit_code(), 64);
++    }
++
++    #[test]
++    fn no_duplicate_error_type_in_crate_root() {
++        // Both crate::NoscopeError and crate::Error must refer to the same type.
++        // Prove this by creating one and consuming it as the other.
++        fn accepts_error(_e: crate::Error) {}
++        let err: crate::NoscopeError = crate::error::Error::usage("test");
++        accepts_error(err);
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Make facade layer (Client) use that canonical type consistently.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn client_new_returns_canonical_error() {
++        // Client::new must return Result<Client, error::Error>.
++        let result: Result<crate::Client, crate::Error> =
++            crate::Client::new(crate::ClientOptions::default());
++        assert!(result.is_ok());
++    }
++
++    #[test]
++    fn client_validate_mint_returns_canonical_error() {
++        let client = crate::Client::new(crate::ClientOptions::default()).unwrap();
++        let req = crate::MintRequest {
++            providers: vec![],
++            role: "admin".to_string(),
++            ttl_secs: 3600,
++        };
++        let result: Result<(), crate::Error> = client.validate_mint(&req);
++        assert!(result.is_err());
++        // The error must have a kind — proving it's the canonical type.
++        let err = result.unwrap_err();
++        assert_eq!(err.kind(), crate::ErrorKind::Usage);
++    }
++
++    #[test]
++    fn client_check_stdout_returns_canonical_error() {
++        let client = crate::Client::new(crate::ClientOptions::default()).unwrap();
++        let result: Result<(), crate::Error> = client.check_stdout_not_terminal(true);
++        assert!(result.is_err());
++        let err = result.unwrap_err();
++        assert_eq!(err.kind(), crate::ErrorKind::Usage);
++    }
++
++    #[test]
++    fn client_resolve_provider_returns_canonical_error() {
++        let client = crate::Client::new(crate::ClientOptions::default()).unwrap();
++        let result: Result<crate::provider::ResolvedProvider, crate::Error> =
++            client.resolve_provider("nonexistent", &crate::ProviderOverrides::default());
++        assert!(result.is_err());
++        let err = result.unwrap_err();
++        assert_eq!(err.kind(), crate::ErrorKind::Config);
++    }
++
++    #[test]
++    fn revoke_request_from_mint_json_returns_canonical_error() {
++        let result: Result<crate::RevokeRequest, crate::Error> =
++            crate::RevokeRequest::from_mint_json("not json {{{");
++        assert!(result.is_err());
++        let err = result.unwrap_err();
++        assert_eq!(err.kind(), crate::ErrorKind::Usage);
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Make adapter layer (cli_adapter) use that canonical type consistently.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn cli_adapter_validate_revoke_argv_returns_canonical_error() {
++        let args = vec![
++            "noscope".to_string(),
++            "revoke".to_string(),
++            "--token".to_string(),
++            "secret".to_string(),
++        ];
++        let result: Result<(), crate::Error> = crate::cli_adapter::validate_revoke_argv(&args);
++        assert!(result.is_err());
++        let err = result.unwrap_err();
++        assert_eq!(err.kind(), crate::ErrorKind::Usage);
++    }
++
++    #[test]
++    fn cli_adapter_validate_mint_flags_returns_canonical_error() {
++        let result: Result<crate::MintRequest, crate::Error> =
++            crate::cli_adapter::validate_mint_flags(None, &["aws".to_string()], "admin");
++        assert!(result.is_err());
++        let err = result.unwrap_err();
++        assert_eq!(err.kind(), crate::ErrorKind::Usage);
++    }
++
++    #[test]
++    fn cli_adapter_check_profile_flag_exclusion_returns_canonical_error() {
++        let result: Result<(), crate::Error> =
++            crate::cli_adapter::check_profile_flag_exclusion(Some("dev"), Some("aws"), None, None);
++        assert!(result.is_err());
++        let err = result.unwrap_err();
++        assert_eq!(err.kind(), crate::ErrorKind::Profile);
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Exit-code behavior remains stable.
++    //
++    // All existing exit codes must be preserved through the canonical type.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn exit_code_usage_is_64_through_canonical() {
++        let err = crate::Error::usage("bad flag");
++        assert_eq!(err.exit_code(), 64);
++    }
++
++    #[test]
++    fn exit_code_config_is_78_through_canonical() {
++        let err = crate::Error::config("malformed");
++        assert_eq!(err.exit_code(), 78);
++    }
++
++    #[test]
++    fn exit_code_provider_is_65_through_canonical() {
++        let err = crate::Error::provider("aws", "expired");
++        assert_eq!(err.exit_code(), 65);
++    }
++
++    #[test]
++    fn exit_code_security_is_64_through_canonical() {
++        let err = crate::Error::security("token in args");
++        assert_eq!(err.exit_code(), 64);
++    }
++
++    #[test]
++    fn exit_code_profile_is_66_through_canonical() {
++        let err = crate::Error::profile("not found");
++        assert_eq!(err.exit_code(), 66);
++    }
++
++    #[test]
++    fn exit_code_internal_is_70_through_canonical() {
++        let err = crate::Error::internal("bug");
++        assert_eq!(err.exit_code(), 70);
++    }
++
++    #[test]
++    fn exit_code_multi_is_65_through_canonical() {
++        let multi = crate::Error::multi(vec![
++            crate::Error::provider("aws", "expired"),
++            crate::Error::provider("gcp", "timeout"),
++        ]);
++        assert_eq!(multi.exit_code(), 65);
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Facade error conversions from module errors preserve exit codes.
++    //
++    // After convergence, Client returns error::Error which has From impls
++    // for all module errors. The exit codes must match previous NoscopeError
++    // behavior.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn facade_mint_error_exit_code_preserved() {
++        // MintError → error::Error, usage exit code (64).
++        let client = crate::Client::new(crate::ClientOptions::default()).unwrap();
++        let req = crate::MintRequest {
++            providers: vec!["aws".to_string()],
++            role: "admin".to_string(),
++            ttl_secs: 0, // triggers mint validation error
++        };
++        let err = client.validate_mint(&req).unwrap_err();
++        assert_eq!(err.exit_code(), 64, "MintError must map to usage (64)");
++    }
++
++    #[test]
++    fn facade_provider_error_exit_code_preserved() {
++        // ProviderConfigError → error::Error, config exit code (78).
++        let client = crate::Client::new(crate::ClientOptions::default()).unwrap();
++        let err = client
++            .resolve_provider("nonexistent", &crate::ProviderOverrides::default())
++            .unwrap_err();
++        assert_eq!(
++            err.exit_code(),
++            78,
++            "ProviderConfigError must map to config error (78)"
++        );
++    }
++
++    #[test]
++    fn facade_security_error_exit_code_preserved() {
++        // SecurityError → error::Error, security/usage exit code (64).
++        let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(
++            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "mock"),
++        );
++        let err: crate::Error = sec_err.into();
++        assert_eq!(
++            err.exit_code(),
++            64,
++            "SecurityError must map to usage (64)"
++        );
++    }
++
++    #[test]
++    fn facade_profile_error_exit_code_preserved() {
++        // ProfileError → error::Error, profile exit code (66).
++        let prof_err = crate::profile::ProfileError::NotFound {
++            path: std::path::PathBuf::from("/missing.toml"),
++        };
++        let err: crate::Error = prof_err.into();
++        assert_eq!(
++            err.exit_code(),
++            66,
++            "ProfileError must map to config not found (66)"
++        );
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Provide migration notes/tests for compatibility.
++    //
++    // Existing code using NoscopeError must continue to compile.
++    // The type alias ensures backward compatibility.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn migration_noscope_error_pattern_match_still_works() {
++        // Existing code that matches on NoscopeError variants must still work.
++        // With the type alias, matching uses error::Error's kind() instead.
++        let err: crate::NoscopeError = crate::error::Error::usage("test");
++        // New consumer pattern: use kind() for programmatic matching.
++        match err.kind() {
++            crate::ErrorKind::Usage => {} // ok
++            _ => panic!("Expected Usage kind"),
++        }
++    }
++
++    #[test]
++    fn migration_noscope_error_display_still_works() {
++        // Display must still produce human-readable output.
++        let err: crate::NoscopeError = crate::error::Error::usage("missing --ttl flag");
++        let display = format!("{}", err);
++        assert!(display.contains("missing --ttl flag"));
++    }
++
++    #[test]
++    fn migration_noscope_error_exit_code_still_works() {
++        // exit_code() method must still be available on NoscopeError.
++        let err: crate::NoscopeError = crate::error::Error::config("malformed");
++        assert_eq!(err.exit_code(), 78);
++    }
++
++    #[test]
++    fn migration_noscope_error_is_std_error() {
++        // NoscopeError must still implement std::error::Error.
++        fn assert_error<T: std::error::Error>() {}
++        assert_error::<crate::NoscopeError>();
++    }
++
++    #[test]
++    fn migration_noscope_error_is_send_sync() {
++        static_assertions::assert_impl_all!(crate::NoscopeError: Send, Sync);
++    }
++}
+
+[0m
+Now let's verify all the new tests fail (because `NoscopeError` is currently a separate enum, not a type alias):
+[0m$ [0mcargo test convergence_tests 2>&1 | head -100
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+error[E0308]: mismatched types
+  --> src/lib.rs:70:40
+   |
+70 |         let err: crate::NoscopeError = crate::error::Error::usage("test");
+   |                  -------------------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `NoscopeError`, found `Error`
+   |                  |
+   |                  expected due to this
+
+error[E0308]: mismatched types
+  --> src/lib.rs:71:35
+   |
+71 |         let _back: crate::Error = err;
+   |                    ------------   ^^^ expected `Error`, found `NoscopeError`
+   |                    |
+   |                    expected due to this
+
+error[E0308]: mismatched types
+  --> src/lib.rs:77:40
+   |
+77 |         let err: crate::NoscopeError = crate::error::Error::config("malformed");
+   |                  -------------------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `NoscopeError`, found `Error`
+   |                  |
+   |                  expected due to this
+
+error[E0599]: no method named `kind` found for enum `NoscopeError` in the current scope
+   --> src/lib.rs:78:24
+    |
+ 78 |         assert_eq!(err.kind(), crate::ErrorKind::Config);
+    |                        ^^^^ method not found in `NoscopeError`
+    |
+   ::: src/client.rs:284:1
+    |
+284 | pub enum NoscopeError {
+    | --------------------- method `kind` not found for this enum
+
+error[E0308]: mismatched types
+  --> src/lib.rs:84:40
+   |
+84 |         let err: crate::NoscopeError = crate::error::Error::provider("aws", "expired");
+   |                  -------------------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `NoscopeError`, found `Error`
+   |                  |
+   |                  expected due to this
+
+error[E0599]: no method named `provider_name` found for enum `NoscopeError` in the current scope
+   --> src/lib.rs:85:24
+    |
+ 85 |         assert_eq!(err.provider_name(), Some("aws"));
+    |                        ^^^^^^^^^^^^^ method not found in `NoscopeError`
+    |
+   ::: src/client.rs:284:1
+    |
+284 | pub enum NoscopeError {
+    | --------------------- method `provider_name` not found for this enum
+
+error[E0308]: mismatched types
+  --> src/lib.rs:91:42
+   |
+91 |           let multi: crate::NoscopeError = crate::error::Error::multi(vec![
+   |  ____________________-------------------___^
+   | |                    |
+   | |                    expected due to this
+92 | |             crate::error::Error::provider("aws", "expired"),
+93 | |             crate::error::Error::provider("gcp", "timeout"),
+94 | |         ]);
+   | |__________^ expected `NoscopeError`, found `Error`
+
+error[E0599]: no method named `errors` found for enum `NoscopeError` in the current scope
+   --> src/lib.rs:95:26
+    |
+ 95 |         assert_eq!(multi.errors().len(), 2);
+    |                          ^^^^^^ method not found in `NoscopeError`
+    |
+   ::: src/client.rs:284:1
+    |
+284 | pub enum NoscopeError {
+    | --------------------- method `errors` not found for this enum
+
+error[E0308]: mismatched types
+   --> src/lib.rs:101:40
+    |
+101 |         let err: crate::NoscopeError = crate::error::Error::usage("bad flag");
+    |                  -------------------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `NoscopeError`, found `Error`
+    |                  |
+    |                  expected due to this
+
+error[E0308]: mismatched types
+   --> src/lib.rs:110:40
+    |
+110 |         let err: crate::NoscopeError = crate::error::Error::usage("test");
+    |                  -------------------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `NoscopeError`, found `Error`
+    |                  |
+    |                  expected due to this
+
+error[E0308]: mismatched types
+   --> src/lib.rs:111:23
+    |
+111 |         accepts_error(err);
+    |         ------------- ^^^ expected `Error`, found `NoscopeError`
+    |         |
+[0m
+Tests fail as expected — `NoscopeError` is a separate enum and not compatible with `error::Error`. Let me see the full output:
+[0m$ [0mcargo test convergence_tests 2>&1 | grep "^error" | wc -l
+25
+[0m
+25 compilation errors. All tests fail because `NoscopeError` and `error::Error` are incompatible types. This confirms the tests are testing the right thing.
+[0m# [0mTodos
+[x] Phase 1: Understand the codebase - read src/lib.rs and all modules
+[x] Phase 2: TDD Red - Write failing tests for error convergence
+[ ] Phase 3: TDD Green - Remove NoscopeError, make error::Error the canonical type
+[ ] Phase 4: TDD Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds Review - Brutal self-review
+[ ] Phase 6: Commit with proper message
+[0m
+Now Phase 3: Write the minimal production code to make all tests pass. The plan:
+
+1. **`client.rs`**: Remove the `NoscopeError` enum. Replace all uses with `crate::error::Error`. Update `Client` methods to return `crate::error::Error`.
+2. **`cli_adapter.rs`**: Replace `NoscopeError` usage with `crate::error::Error`.
+3. **`lib.rs`**: Add `pub type NoscopeError = error::Error;` as a type alias. Remove the re-export of the old enum.
+
+Let me start with `client.rs` — the biggest change:
+[0m← [0mEdit src/client.rs
+Index: /home/ben/Documents/repos/noscope/src/client.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/client.rs
++++ /home/ben/Documents/repos/noscope/src/client.rs
+@@ -10,14 +10,18 @@
+ // - NS-019: Memory zeroization on drop
+ // - NS-020: Core dump prevention at construction
+ // - NS-033: Template variable injection prevention (role validation)
+ // - NS-058: Redaction at all log levels
++//
++// noscope-bsq.1.5: This module uses crate::error::Error as the single
++// canonical error type. The old NoscopeError enum has been replaced by a
++// type alias (pub type NoscopeError = crate::error::Error) in lib.rs for
++// backward compatibility.
+ 
+-use std::fmt;
+ use std::path::PathBuf;
+ use std::time::Duration;
+ 
+-use crate::exit_code::NoscopeExitCode;
++use crate::error::{Error, ErrorKind};
+ use crate::mint;
+ use crate::provider;
+ use crate::provider_exec;
+ use crate::security;
+
+[0m
+Now update `Client::new` to return `Error`:
+[0m← [0mEdit src/client.rs
+Index: /home/ben/Documents/repos/noscope/src/client.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/client.rs
++++ /home/ben/Documents/repos/noscope/src/client.rs
+@@ -99,11 +99,11 @@
+ /// [`Client::new_best_effort`] instead.
+ ///
+ /// # Errors
+ ///
+-/// Returns [`NoscopeError::Security`] if `setrlimit(RLIMIT_CORE, 0)`
+-/// fails (e.g., insufficient privileges on the platform).
+-pub fn new(opts: ClientOptions) -> Result<Self, NoscopeError> {
++/// Returns [`Error`] with [`ErrorKind::Security`] if
++/// `setrlimit(RLIMIT_CORE, 0)` fails (e.g., insufficient privileges).
++pub fn new(opts: ClientOptions) -> Result<Self, Error> {
+     // NS-020: Fail-fast core dump prevention.
+     security::disable_core_dumps()?;
+     Ok(Self { opts })
+ }
+
+[0m
+Now update `validate_mint`:
+[0m← [0mEdit src/client.rs
+Index: /home/ben/Documents/repos/noscope/src/client.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/client.rs
++++ /home/ben/Documents/repos/noscope/src/client.rs
+@@ -124,23 +124,21 @@
+ /// Validate a mint request before execution.
+ ///
+ /// Checks: providers non-empty, role non-empty and safe (NS-033),
+ /// TTL > 0 (NS-062).
+-pub fn validate_mint(&self, req: &MintRequest) -> Result<(), NoscopeError> {
++pub fn validate_mint(&self, req: &MintRequest) -> Result<(), Error> {
+     // Delegate to existing mint validation.
+     // Pass Some(ttl_secs) directly — validate_mint_args handles zero
+     // TTL with a clear error message, and None for the missing-flag case.
+     let ttl_opt = if req.ttl_secs == 0 {
+         None
+     } else {
+         Some(req.ttl_secs)
+     };
+-    mint::validate_mint_args(ttl_opt, &req.providers, &req.role).map_err(NoscopeError::from)?;
++    mint::validate_mint_args(ttl_opt, &req.providers, &req.role)?;
+ 
+     // NS-033: Validate role for safe characters.
+-    provider_exec::validate_role(&req.role).map_err(|e| NoscopeError::Usage {
+-        message: format!("{}", e),
+-    })?;
++    provider_exec::validate_role(&req.role).map_err(|e| Error::usage(&format!("{}", e)))?;
+ 
+     Ok(())
+ }
+ 
+
+[0m
+Now update `check_stdout_not_terminal`:
+[0m← [0mEdit src/client.rs
+Index: /home/ben/Documents/repos/noscope/src/client.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/client.rs
++++ /home/ben/Documents/repos/noscope/src/client.rs
+@@ -144,11 +144,11 @@
+ 
+ /// NS-065: Check that stdout is not a terminal before mint output.
+ ///
+ /// Respects `force_terminal` from [`ClientOptions`].
+-pub fn check_stdout_not_terminal(&self, is_tty: bool) -> Result<(), NoscopeError> {
+-    mint::check_stdout_not_terminal(is_tty, self.opts.force_terminal)
+-        .map_err(NoscopeError::from)
++pub fn check_stdout_not_terminal(&self, is_tty: bool) -> Result<(), Error> {
++    mint::check_stdout_not_terminal(is_tty, self.opts.force_terminal)?;
++    Ok(())
+ }
+ 
+ /// Resolve a provider configuration by name, with optional overrides.
+ ///
+
+[0m
+Now update `resolve_provider`:
+[0m← [0mEdit src/client.rs
+Index: /home/ben/Documents/repos/noscope/src/client.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/client.rs
++++ /home/ben/Documents/repos/noscope/src/client.rs
+@@ -157,9 +157,9 @@
+ pub fn resolve_provider(
+     &self,
+     name: &str,
+     overrides: &ProviderOverrides,
+-) -> Result<provider::ResolvedProvider, NoscopeError> {
++) -> Result<provider::ResolvedProvider, Error> {
+     // Convert ProviderOverrides to the internal types.
+     let flags = provider::ProviderFlags {
+         mint_cmd: overrides.mint_cmd.clone(),
+         refresh_cmd: overrides.refresh_cmd.clone(),
+@@ -171,17 +171,21 @@
+         (Some(xdg), _) => provider::provider_config_path(name, Some(xdg)),
+         (None, Some(home)) => provider::provider_config_path_with_home(name, None, home),
+         (None, None) => provider::provider_config_path(name, None),
+     };
+-    let file_config = provider::load_provider_file(&config_path).map_err(NoscopeError::from)?;
++    let file_config = provider::load_provider_file(&config_path)?;
+ 
+     let env = match &self.opts.provider_env {
+         Some(env) => env.clone(),
+         None => provider::provider_env_from_process(),
+     };
+ 
+-    provider::resolve_provider_config(name, &flags, &env, file_config)
+-        .map_err(NoscopeError::from)
++    Ok(provider::resolve_provider_config(
++        name,
++        &flags,
++        &env,
++        file_config,
++    )?)
+ }
+ 
+ /// NS-071: Generate dry-run output for a resolved provider.
+ pub fn dry_run(
+
+[0m
+Now update `RevokeRequest::from_mint_json`:
+[0m← [0mEdit src/client.rs
+Index: /home/ben/Documents/repos/noscope/src/client.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/client.rs
++++ /home/ben/Documents/repos/noscope/src/client.rs
+@@ -238,10 +238,10 @@
+ /// Create a revoke request by parsing a mint JSON envelope.
+ ///
+ /// Extracts only token_id and provider. The raw token field is read
+ /// but never stored (NS-012).
+-pub fn from_mint_json(json_str: &str) -> Result<Self, NoscopeError> {
+-    let inner = mint::RevokeInput::from_mint_json(json_str).map_err(NoscopeError::from)?;
++pub fn from_mint_json(json_str: &str) -> Result<Self, Error> {
++    let inner = mint::RevokeInput::from_mint_json(json_str)?;
+     Ok(Self { inner })
+ }
+ 
+ /// Get the token ID for revocation.
+
+[0m
+Now remove the old `NoscopeError` enum and all its `From` implementations from `client.rs`:
+[0m← [0mEdit src/client.rs
+Index: /home/ben/Documents/repos/noscope/src/client.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/client.rs
++++ /home/ben/Documents/repos/noscope/src/client.rs
+@@ -277,96 +277,22 @@
+     }
+ }
+ 
+ // ---------------------------------------------------------------------------
+-// NoscopeError
++// NoscopeError type alias (noscope-bsq.1.5)
+ // ---------------------------------------------------------------------------
+-
+-/// Unified error type for the noscope facade API.
+-///
+-/// Covers all failure modes a consumer may encounter: usage errors,
+-/// configuration errors, mint failures, and security violations.
+-/// Each variant maps to a noscope exit code (NS-054).
+-#[derive(Debug)]
+-pub enum NoscopeError {
+-    /// Command-line usage error (bad flags, missing args).
+-    Usage { message: String },
+-    /// Configuration error (malformed config, missing provider).
+-    Config { message: String },
+-    /// Credential minting failed.
+-    MintFailed { message: String },
+-    /// Security invariant violated (token in args, etc.).
+-    Security { message: String },
+-    /// Profile error (not found, validation failed, etc.).
+-    Profile { message: String },
+-}
+-
+-impl NoscopeError {
+-    /// Map this error to a process exit code (NS-054).
+-    pub fn exit_code(&self) -> i32 {
+-        match self {
+-            Self::Usage { .. } => NoscopeExitCode::Usage.as_raw(),
+-            Self::Config { .. } => NoscopeExitCode::ConfigError.as_raw(),
+-            Self::MintFailed { .. } => NoscopeExitCode::MintFailure.as_raw(),
+-            Self::Security { .. } => NoscopeExitCode::Usage.as_raw(),
+-            Self::Profile { .. } => NoscopeExitCode::ConfigNotFound.as_raw(),
+-        }
+-    }
+-}
+-
+-impl fmt::Display for NoscopeError {
+-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+-        match self {
+-            Self::Usage { message } => write!(f, "usage error: {}", message),
+-            Self::Config { message } => write!(f, "config error: {}", message),
+-            Self::MintFailed { message } => write!(f, "mint failed: {}", message),
+-            Self::Security { message } => write!(f, "security error: {}", message),
+-            Self::Profile { message } => write!(f, "profile error: {}", message),
+-        }
+-    }
+-}
+-
+-impl std::error::Error for NoscopeError {}
+-
++// The old NoscopeError enum has been replaced by a type alias pointing to
++// the canonical error::Error type. This preserves backward compatibility
++// for existing consumers while converging on a single public error surface.
++//
++// Migration for existing code:
++// - Old: match err { NoscopeError::Usage { message } => ... }
++//   New: match err.kind() { ErrorKind::Usage => ...; use err.message() }
++// - Old: NoscopeError::Usage { message: "bad".to_string() }
++//   New: Error::usage("bad")
++// - exit_code() and Display still work unchanged.
+ // ---------------------------------------------------------------------------
+-// From conversions for internal error types
+-// ---------------------------------------------------------------------------
+ 
+-impl From<mint::MintError> for NoscopeError {
+-    fn from(e: mint::MintError) -> Self {
+-        match e {
+-            mint::MintError::InvalidInput { message } => Self::Usage { message },
+-            mint::MintError::TerminalDetected => Self::Usage {
+-                message: format!("{}", e),
+-            },
+-        }
+-    }
+-}
+-
+-impl From<provider::ProviderConfigError> for NoscopeError {
+-    fn from(e: provider::ProviderConfigError) -> Self {
+-        Self::Config {
+-            message: format!("{}", e),
+-        }
+-    }
+-}
+-
+-impl From<security::SecurityError> for NoscopeError {
+-    fn from(e: security::SecurityError) -> Self {
+-        Self::Security {
+-            message: format!("{}", e),
+-        }
+-    }
+-}
+-
+-impl From<crate::profile::ProfileError> for NoscopeError {
+-    fn from(e: crate::profile::ProfileError) -> Self {
+-        Self::Profile {
+-            message: format!("{}", e),
+-        }
+-    }
+-}
+-
+ #[cfg(test)]
+ mod tests {
+     use std::os::unix::fs::PermissionsExt;
+     use std::time::Duration;
+
+[0m
+Now update the `lib.rs` re-exports to use the type alias instead of the old enum:
+[0m← [0mEdit src/lib.rs
+Index: /home/ben/Documents/repos/noscope/src/lib.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/lib.rs
++++ /home/ben/Documents/repos/noscope/src/lib.rs
+@@ -21,10 +21,27 @@
+ // Consumers can write `use noscope::{Client, MintRequest, NoscopeError}`
+ // instead of importing from individual modules.
+ // ---------------------------------------------------------------------------
+ 
+-pub use client::{Client, ClientOptions, MintRequest, NoscopeError, ProviderOverrides, RevokeRequest};
++pub use client::{Client, ClientOptions, MintRequest, ProviderOverrides, RevokeRequest};
+ pub use error::{Error, ErrorKind};
++
++/// Backward-compatible type alias for the canonical error type.
++///
++/// noscope-bsq.1.5: The crate previously exported both `NoscopeError`
++/// (a simple enum in `client.rs`) and `error::Error`/`ErrorKind` (a richer
++/// typed error). This alias converges on `error::Error` as the single
++/// canonical public error surface.
++///
++/// **Migration guide:**
++/// - Old: `match err { NoscopeError::Usage { message } => ... }`
++///   New: `match err.kind() { ErrorKind::Usage => { let msg = err.message(); ... } }`
++/// - Old: `NoscopeError::Usage { message: "bad".to_string() }`
++///   New: `Error::usage("bad")`
++/// - `exit_code()` and `Display` work unchanged.
++/// - `error::Error` adds `kind()`, `provider_name()`, `errors()` (multi-error),
++///   and `with_source()` for error chaining.
++pub type NoscopeError = Error;
+ pub use event::{Event, EventType, LogFormat};
+ pub use exit_code::{NoscopeExitCode, ProviderExitCode};
+ pub use mint::MintEnvelope;
+ pub use token::ScopedToken;
+
+[0m
+Now update `cli_adapter.rs` to use `crate::error::Error` instead of `NoscopeError`:
+[0m← [0mEdit src/cli_adapter.rs
+Index: /home/ben/Documents/repos/noscope/src/cli_adapter.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/cli_adapter.rs
++++ /home/ben/Documents/repos/noscope/src/cli_adapter.rs
+@@ -16,9 +16,10 @@
+ //
+ // The underlying mint::validate_mint_args and profile::check_profile_flag_exclusion
+ // functions remain available for callers who already have parsed values.
+ 
+-use crate::client::{MintRequest, NoscopeError};
++use crate::client::MintRequest;
++use crate::error::Error;
+ use crate::mint;
+ use crate::profile;
+ 
+ /// NS-012: Validate that revoke CLI arguments do not contain a --token flag.
+
+[0m
+[0m← [0mEdit src/cli_adapter.rs
+Index: /home/ben/Documents/repos/noscope/src/cli_adapter.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/cli_adapter.rs
++++ /home/ben/Documents/repos/noscope/src/cli_adapter.rs
+@@ -30,10 +30,11 @@
+ /// `--token-id` and `--token-id=<value>` are safe (opaque identifiers).
+ ///
+ /// This is a CLI concern: library consumers use `RevokeRequest::from_token_id`
+ /// or `RevokeRequest::from_mint_json` instead, which accept domain types.
+-pub fn validate_revoke_argv(args: &[String]) -> Result<(), NoscopeError> {
+-    mint::validate_revoke_args(args).map_err(NoscopeError::from)
++pub fn validate_revoke_argv(args: &[String]) -> Result<(), Error> {
++    mint::validate_revoke_args(args)?;
++    Ok(())
+ }
+ 
+ /// NS-062: Validate CLI mint flags and produce a domain `MintRequest`.
+ ///
+
+[0m
+[0m← [0mEdit src/cli_adapter.rs
+Index: /home/ben/Documents/repos/noscope/src/cli_adapter.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/cli_adapter.rs
++++ /home/ben/Documents/repos/noscope/src/cli_adapter.rs
+@@ -47,11 +47,10 @@
+ pub fn validate_mint_flags(
+     ttl_secs: Option<u64>,
+     providers: &[String],
+     role: &str,
+-) -> Result<MintRequest, NoscopeError> {
+-    let validated_ttl =
+-        mint::validate_mint_args(ttl_secs, providers, role).map_err(NoscopeError::from)?;
++) -> Result<MintRequest, Error> {
++    let validated_ttl = mint::validate_mint_args(ttl_secs, providers, role)?;
+ 
+     Ok(MintRequest {
+         providers: providers.to_vec(),
+         role: role.to_string(),
+
+[0m
+[0m← [0mEdit src/cli_adapter.rs
+Index: /home/ben/Documents/repos/noscope/src/cli_adapter.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/cli_adapter.rs
++++ /home/ben/Documents/repos/noscope/src/cli_adapter.rs
+@@ -70,10 +70,11 @@
+     profile: Option<&str>,
+     provider: Option<&str>,
+     role: Option<&str>,
+     ttl: Option<u64>,
+-) -> Result<(), NoscopeError> {
+-    profile::check_profile_flag_exclusion(profile, provider, role, ttl).map_err(NoscopeError::from)
++) -> Result<(), Error> {
++    profile::check_profile_flag_exclusion(profile, provider, role, ttl)?;
++    Ok(())
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+
+[0m
+Now let's try to compile and run the tests:
+[0m$ [0mcargo test convergence_tests 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+error[E0412]: cannot find type `NoscopeError` in module `super`
+   --> src/client.rs:345:31
+    |
+345 |         assert_error::<super::NoscopeError>();
+    |                               ^^^^^^^^^^^^ not found in `super`
+    |
+help: consider importing this type alias
+    |
+297 +     use crate::NoscopeError;
+    |
+help: if you import `NoscopeError`, refer to it directly
+    |
+345 -         assert_error::<super::NoscopeError>();
+345 +         assert_error::<NoscopeError>();
+    |
+
+error[E0433]: failed to resolve: could not find `NoscopeError` in `super`
+   --> src/client.rs:351:26
+    |
+351 |         let err = super::NoscopeError::Usage {
+    |                          ^^^^^^^^^^^^ could not find `NoscopeError` in `super`
+    |
+help: consider importing this type alias
+    |
+297 +     use crate::NoscopeError;
+    |
+help: if you import `NoscopeError`, refer to it directly
+    |
+351 -         let err = super::NoscopeError::Usage {
+351 +         let err = NoscopeError::Usage {
+    |
+
+error[E0433]: failed to resolve: could not find `NoscopeError` in `super`
+   --> src/client.rs:361:28
+    |
+361 |         let usage = super::NoscopeError::Usage {
+    |                            ^^^^^^^^^^^^ could not find `NoscopeError` in `super`
+    |
+help: consider importing this type alias
+    |
+297 +     use crate::NoscopeError;
+    |
+help: if you import `NoscopeError`, refer to it directly
+    |
+361 -         let usage = super::NoscopeError::Usage {
+361 +         let usage = NoscopeError::Usage {
+    |
+
+error[E0433]: failed to resolve: could not find `NoscopeError` in `super`
+   --> src/client.rs:367:29
+    |
+367 |         let config = super::NoscopeError::Config {
+    |                             ^^^^^^^^^^^^ could not find `NoscopeError` in `super`
+    |
+help: consider importing this type alias
+    |
+297 +     use crate::NoscopeError;
+    |
+help: if you import `NoscopeError`, refer to it directly
+    |
+367 -         let config = super::NoscopeError::Config {
+367 +         let config = NoscopeError::Config {
+    |
+
+error[E0433]: failed to resolve: could not find `NoscopeError` in `super`
+   --> src/client.rs:373:27
+    |
+373 |         let mint = super::NoscopeError::MintFailed {
+    |                           ^^^^^^^^^^^^ could not find `NoscopeError` in `super`
+    |
+help: consider importing this type alias
+    |
+297 +     use crate::NoscopeError;
+    |
+help: if you import `NoscopeError`, refer to it directly
+    |
+373 -         let mint = super::NoscopeError::MintFailed {
+373 +         let mint = NoscopeError::MintFailed {
+    |
+
+error[E0433]: failed to resolve: could not find `NoscopeError` in `super`
+   --> src/client.rs:379:26
+    |
+379 |         let sec = super::NoscopeError::Security {
+    |                          ^^^^^^^^^^^^ could not find `NoscopeError` in `super`
+    |
+help: consider importing this type alias
+    |
+297 +     use crate::NoscopeError;
+    |
+help: if you import `NoscopeError`, refer to it directly
+    |
+379 -         let sec = super::NoscopeError::Security {
+379 +         let sec = NoscopeError::Security {
+    |
+
+error[E0433]: failed to resolve: could not find `NoscopeError` in `super`
+   --> src/client.rs:388:26
+    |
+388 |         let err = super::NoscopeError::Usage {
+    |                          ^^^^^^^^^^^^ could not find `NoscopeError` in `super`
+    |
+help: consider importing this type alias
+    |
+297 +     use crate::NoscopeError;
+    |
+help: if you import `NoscopeError`, refer to it directly
+    |
+388 -         let err = super::NoscopeError::Usage {
+388 +         let err = NoscopeError::Usage {
+    |
+
+error[E0433]: failed to resolve: could not find `NoscopeError` in `super`
+   --> src/client.rs:402:26
+    |
+402 |         let err = super::NoscopeError::MintFailed {
+    |                          ^^^^^^^^^^^^ could not find `NoscopeError` in `super`
+    |
+help: consider importing this type alias
+    |
+297 +     use crate::NoscopeError;
+    |
+help: if you import `NoscopeError`, refer to it directly
+    |
+402 -         let err = super::NoscopeError::MintFailed {
+402 +         let err = NoscopeError::MintFailed {
+    |
+
+error[E0412]: cannot find type `NoscopeError` in module `super`
+   --> src/client.rs:612:52
+    |
+612 |         static_assertions::assert_impl_all!(super::NoscopeError: Send);
+    |                                                    ^^^^^^^^^^^^ not found in `super`
+    |
+help: consider importing this type alias
+    |
+297 +     use crate::NoscopeError;
+    |
+help: if you import `NoscopeError`, refer to it directly
+    |
+612 -         static_assertions::assert_impl_all!(super::NoscopeError: Send);
+612 +         static_assertions::assert_impl_all!(NoscopeError: Send);
+    |
+
+error[E0412]: cannot find type `NoscopeError` in module `super`
+   --> src/client.rs:617:52
+    |
+617 |         static_assertions::assert_impl_all!(super::NoscopeError: Sync);
+    |                                                    ^^^^^^^^^^^^ not found in `super`
+    |
+help: consider importing this type alias
+    |
+297 +     use crate::NoscopeError;
+    |
+help: if you import `NoscopeError`, refer to it directly
+    |
+617 -         static_assertions::assert_impl_all!(super::NoscopeError: Sync);
+617 +         static_assertions::assert_impl_all!(NoscopeError: Sync);
+    |
+
+error[E0412]: cannot find type `NoscopeError` in module `super`
+   --> src/client.rs:624:56
+    |
+624 |         static_assertions::assert_not_impl_any!(super::NoscopeError: Clone);
+    |                                                        ^^^^^^^^^^^^ not found in `super`
+    |
+help: consider importing this type alias
+    |
+297 +     use crate::NoscopeError;
+    |
+help: if you import `NoscopeError`, refer to it directly
+    |
+624 -         static_assertions::assert_not_impl_any!(super::NoscopeError: Clone);
+624 +         static_assertions::assert_not_impl_any!(NoscopeError: Clone);
+    |
+
+error[E0412]: cannot find type `NoscopeError` in module `super`
+   --> src/client.rs:733:25
+    |
+733 |         let err: super::NoscopeError = mint_err.into();
+    |                         ^^^^^^^^^^^^ not found in `super`
+    |
+help: consider importing this type alias
+    |
+297 +     use crate::NoscopeError;
+    |
+help: if you import `NoscopeError`, refer to it directly
+    |
+733 -         let err: super::NoscopeError = mint_err.into();
+733 +         let err: NoscopeError = mint_err.into();
+    |
+
+error[E0412]: cannot find type `NoscopeError` in module `super`
+   --> src/client.rs:743:25
+    |
+743 |         let err: super::NoscopeError = prov_err.into();
+    |                         ^^^^^^^^^^^^ not found in `super`
+    |
+help: consider importing this type alias
+    |
+297 +     use crate::NoscopeError;
+    |
+help: if you import `NoscopeError`, refer to it directly
+    |
+743 -         let err: super::NoscopeError = prov_err.into();
+743 +         let err: NoscopeError = prov_err.into();
+    |
+
+error[E0412]: cannot find type `NoscopeError` in module `super`
+   --> src/client.rs:755:25
+    |
+755 |         let err: super::NoscopeError = sec_err.into();
+    |                         ^^^^^^^^^^^^ not found in `super`
+    |
+help: consider importing this type alias
+    |
+297 +     use crate::NoscopeError;
+    |
+help: if you import `NoscopeError`, refer to it directly
+    |
+755 -         let err: super::NoscopeError = sec_err.into();
+755 +         let err: NoscopeError = sec_err.into();
+    |
+
+error[E0412]: cannot find type `NoscopeError` in module `super`
+   --> src/client.rs:764:25
+    |
+764 |         let err: super::NoscopeError = prof_err.into();
+    |                         ^^^^^^^^^^^^ not found in `super`
+    |
+help: consider importing this type alias
+    |
+297 +     use crate::NoscopeError;
+    |
+help: if you import `NoscopeError`, refer to it directly
+    |
+764 -         let err: super::NoscopeError = prof_err.into();
+764 +         let err: NoscopeError = prof_err.into();
+    |
+
+error[E0412]: cannot find type `NoscopeError` in module `super`
+    --> src/client.rs:1033:50
+     |
+1033 |         let result: Result<super::Client, super::NoscopeError> =
+     |                                                  ^^^^^^^^^^^^ not found in `super`
+     |
+help: consider importing this type alias
+     |
+ 297 +     use crate::NoscopeError;
+     |
+help: if you import `NoscopeError`, refer to it directly
+     |
+1033 -         let result: Result<super::Client, super::NoscopeError> =
+1033 +         let result: Result<super::Client, NoscopeError> =
+     |
+
+error[E0412]: cannot find type `NoscopeError` in module `super`
+    --> src/client.rs:1064:33
+     |
+1064 |         let noscope_err: super::NoscopeError = sec_err.into();
+     |                                 ^^^^^^^^^^^^ not found in `super`
+     |
+help: consider importing this type alias
+     |
+ 297 +     use crate::NoscopeError;
+     |
+help: if you import `NoscopeError`, refer to it directly
+     |
+1064 -         let noscope_err: super::NoscopeError = sec_err.into();
+1064 +         let noscope_err: NoscopeError = sec_err.into();
+     |
+
+error[E0433]: failed to resolve: could not find `NoscopeError` in `super`
+    --> src/client.rs:1066:20
+     |
+1066 |             super::NoscopeError::Security { message } => {
+     |                    ^^^^^^^^^^^^ could not find `NoscopeError` in `super`
+     |
+help: consider importing this type alias
+     |
+ 297 +     use crate::NoscopeError;
+     |
+help: if you import `NoscopeError`, refer to it directly
+     |
+1066 -             super::NoscopeError::Security { message } => {
+1066 +             NoscopeError::Security { message } => {
+     |
+
+error[E0412]: cannot find type `NoscopeError` in module `super`
+    --> src/client.rs:1087:33
+     |
+1087 |         let noscope_err: super::NoscopeError = sec_err.into();
+     |                                 ^^^^^^^^^^^^ not found in `super`
+     |
+help: consider importing this type alias
+     |
+ 297 +     use crate::NoscopeError;
+     |
+help: if you import `NoscopeError`, refer to it directly
+     |
+1087 -         let noscope_err: super::NoscopeError = sec_err.into();
+1087 +         let noscope_err: NoscopeError = sec_err.into();
+     |
+
+error[E0412]: cannot find type `NoscopeError` in module `super`
+    --> src/client.rs:1155:25
+     |
+1155 |         let err: super::NoscopeError = sec_err.into();
+     |                         ^^^^^^^^^^^^ not found in `super`
+     |
+help: consider importing this type alias
+     |
+ 297 +     use crate::NoscopeError;
+     |
+help: if you import `NoscopeError`, refer to it directly
+     |
+1155 -         let err: super::NoscopeError = sec_err.into();
+1155 +         let err: NoscopeError = sec_err.into();
+     |
+
+error[E0433]: failed to resolve: could not find `NoscopeError` in `super`
+    --> src/client.rs:1156:46
+     |
+1156 |         let detected = matches!(&err, super::NoscopeError::Security { message } if message.contains("core dump"));
+     |                                              ^^^^^^^^^^^^ could not find `NoscopeError` in `super`
+     |
+help: consider importing this type alias
+     |
+ 297 +     use crate::NoscopeError;
+     |
+help: if you import `NoscopeError`, refer to it directly
+     |
+1156 -         let detected = matches!(&err, super::NoscopeError::Security { message } if message.contains("core dump"));
+1156 +         let detected = matches!(&err, NoscopeError::Security { message } if message.contains("core dump"));
+     |
+
+error[E0412]: cannot find type `NoscopeError` in module `super`
+    --> src/client.rs:1170:25
+     |
+1170 |         let err: super::NoscopeError = sec_err.into();
+     |                         ^^^^^^^^^^^^ not found in `super`
+     |
+help: consider importing this type alias
+     |
+ 297 +     use crate::NoscopeError;
+     |
+help: if you import `NoscopeError`, refer to it directly
+     |
+1170 -         let err: super::NoscopeError = sec_err.into();
+1170 +         let err: NoscopeError = sec_err.into();
+     |
+
+warning: unused import: `ErrorKind`
+  --> src/client.rs:23:27
+   |
+23 | use crate::error::{Error, ErrorKind};
+   |                           ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+error[E0277]: `RevokeRequest` doesn't implement `Debug`
+   --> src/lib.rs:182:26
+    |
+182 |         let err = result.unwrap_err();
+    |                          ^^^^^^^^^^ the trait `Debug` is not implemented for `RevokeRequest`
+    |
+    = note: add `#[derive(Debug)]` to `RevokeRequest` or manually `impl Debug for RevokeRequest`
+note: required by a bound in `Result::<T, E>::unwrap_err`
+   --> /usr/src/debug/rust/rustc-1.92.0-src/library/core/src/result.rs:1324:5
+help: consider annotating `RevokeRequest` with `#[derive(Debug)]`
+   --> src/client.rs:226:1
+    |
+226 + #[derive(Debug)]
+227 | pub struct RevokeRequest {
+    |
+
+Some errors have detailed explanations: E0277, E0412, E0433.
+For more information about an error, try `rustc --explain E0277`.
+warning: `noscope` (lib test) generated 1 warning
+error: could not compile `noscope` (lib test) due to 23 previous errors; 1 warning emitted
+[0m
+Good progress. Now I need to fix the existing tests in `client.rs` that reference `super::NoscopeError`. These tests used the old enum variants — they need to be updated to use the canonical error API. Let me also fix the RevokeRequest Debug issue.
+[0m→ [0mRead src/client.rs[90m [offset=295, limit=100][0m
+I need to update all the existing `client.rs` tests that use the old `NoscopeError` variants. This is a significant but straightforward mechanical change. Let me update them systematically:
+[0m
+[0m← [0mEdit src/client.rs
+Index: /home/ben/Documents/repos/noscope/src/client.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/client.rs
++++ /home/ben/Documents/repos/noscope/src/client.rs
+@@ -341,54 +341,42 @@
+ 
+ #[test]
+ fn facade_error_type_exists_and_is_std_error() {
+     fn assert_error<T: std::error::Error>() {}
+-    assert_error::<super::NoscopeError>();
++    assert_error::<crate::Error>();
+ }
+ 
+ #[test]
+ fn facade_error_has_exit_code() {
+-    // Every error variant must map to an exit code for automation.
+-    let err = super::NoscopeError::Usage {
+-        message: "bad flag".to_string(),
+-    };
++    // Every error kind must map to an exit code for automation.
++    let err = crate::Error::usage("bad flag");
+     let code = err.exit_code();
+     assert_eq!(code, 64);
+ }
+ 
+ #[test]
+ fn facade_error_variants_cover_core_failure_modes() {
+     // Usage errors
+-    let usage = super::NoscopeError::Usage {
+-        message: "missing --ttl".to_string(),
+-    };
++    let usage = crate::Error::usage("missing --ttl");
+     assert_eq!(usage.exit_code(), 64);
+ 
+     // Provider config errors
+-    let config = super::NoscopeError::Config {
+-        message: "malformed TOML".to_string(),
+-    };
++    let config = crate::Error::config("malformed TOML");
+     assert_eq!(config.exit_code(), 78);
+ 
+-    // Mint failure
+-    let mint = super::NoscopeError::MintFailed {
+-        message: "aws auth expired".to_string(),
+-    };
+-    assert_eq!(mint.exit_code(), 65);
++    // Provider failure (replaces MintFailed)
++    let provider = crate::Error::provider("aws", "auth expired");
++    assert_eq!(provider.exit_code(), 65);
+ 
+     // Security violation
+-    let sec = super::NoscopeError::Security {
+-        message: "token in args".to_string(),
+-    };
+-    // Security violations are internal/usage errors — must not be 0
++    let sec = crate::Error::security("token in args");
++    // Security violations are usage errors — must not be 0
+     assert_ne!(sec.exit_code(), 0);
+ }
+ 
+ #[test]
+ fn facade_error_display_is_informative() {
+-    let err = super::NoscopeError::Usage {
+-        message: "missing --ttl flag".to_string(),
+-    };
++    let err = crate::Error::usage("missing --ttl flag");
+     let msg = format!("{}", err);
+     assert!(
+         msg.contains("missing --ttl flag"),
+         "Display must include the message: {}",
+@@ -398,11 +386,9 @@
+ 
+ #[test]
+ fn facade_error_debug_does_not_contain_secrets() {
+     // Error type must not carry or leak secret values in Debug.
+-    let err = super::NoscopeError::MintFailed {
+-        message: "provider failed".to_string(),
+-    };
++    let err = crate::Error::provider("aws", "provider failed");
+     let debug = format!("{:?}", err);
+     assert!(
+         !debug.contains("secret"),
+         "Debug must not contain secrets: {}",
+
+[0m
+Now update the `NoscopeError` Send/Sync/Clone assertions:
+[0m← [0mEdit src/client.rs
+Index: /home/ben/Documents/repos/noscope/src/client.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/client.rs
++++ /home/ben/Documents/repos/noscope/src/client.rs
+@@ -593,22 +593,22 @@
+     static_assertions::assert_impl_all!(super::Client: Sync);
+ }
+ 
+ #[test]
+-fn facade_noscopeerror_is_send() {
+-    static_assertions::assert_impl_all!(super::NoscopeError: Send);
++fn facade_error_is_send() {
++    static_assertions::assert_impl_all!(crate::Error: Send);
+ }
+ 
+ #[test]
+-fn facade_noscopeerror_is_sync() {
+-    static_assertions::assert_impl_all!(super::NoscopeError: Sync);
++fn facade_error_is_sync() {
++    static_assertions::assert_impl_all!(crate::Error: Sync);
+ }
+ 
+ #[test]
+-fn facade_noscopeerror_is_not_clone() {
++fn facade_error_is_not_clone() {
+     // Error types should not be Clone — they may carry heap-allocated
+     // context and cloning errors is rarely the right pattern.
+-    static_assertions::assert_not_impl_any!(super::NoscopeError: Clone);
++    static_assertions::assert_not_impl_any!(crate::Error: Clone);
+ }
+ 
+ #[test]
+ fn facade_mint_request_is_not_clone() {
+
+[0m
+Now update the `From` conversion tests:
+[0m← [0mEdit src/client.rs
+Index: /home/ben/Documents/repos/noscope/src/client.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/client.rs
++++ /home/ben/Documents/repos/noscope/src/client.rs
+@@ -707,17 +707,17 @@
+     fn _accepts_event_type(_t: &crate::event::EventType) {}
+ }
+ 
+ // =========================================================================
+-// NoscopeError conversion from internal error types.
++// Error conversion from internal error types (via error::Error From impls).
+ // =========================================================================
+ 
+ #[test]
+ fn facade_error_from_mint_error() {
+     let mint_err = crate::mint::MintError::InvalidInput {
+         message: "bad input".to_string(),
+     };
+-    let err: super::NoscopeError = mint_err.into();
++    let err: crate::Error = mint_err.into();
+     let msg = format!("{}", err);
+     assert!(msg.contains("bad input"), "Must carry the message: {}", msg);
+ }
+ 
+@@ -725,9 +725,9 @@
+ fn facade_error_from_provider_config_error() {
+     let prov_err = crate::provider::ProviderConfigError::MalformedConfig {
+         message: "syntax error".to_string(),
+     };
+-    let err: super::NoscopeError = prov_err.into();
++    let err: crate::Error = prov_err.into();
+     let msg = format!("{}", err);
+     assert!(
+         msg.contains("syntax error"),
+         "Must carry the message: {}",
+@@ -737,18 +737,18 @@
+ 
+ #[test]
+ fn facade_error_from_security_error() {
+     let sec_err = crate::security::SecurityError::TokenInArgs { arg_index: 2 };
+-    let err: super::NoscopeError = sec_err.into();
++    let err: crate::Error = sec_err.into();
+     assert_ne!(err.exit_code(), 0, "Security error must not be success");
+ }
+ 
+ #[test]
+ fn facade_error_from_profile_error() {
+     let prof_err = crate::profile::ProfileError::NotFound {
+         path: std::path::PathBuf::from("/missing/profile.toml"),
+     };
+-    let err: super::NoscopeError = prof_err.into();
++    let err: crate::Error = prof_err.into();
+     let msg = format!("{}", err);
+     assert!(msg.contains("profile"), "Must mention profile: {}", msg);
+ }
+ 
+
+[0m
+Now update the hardening tests that reference `NoscopeError`:
+[0m← [0mEdit src/client.rs
+Index: /home/ben/Documents/repos/noscope/src/client.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/client.rs
++++ /home/ben/Documents/repos/noscope/src/client.rs
+@@ -1011,13 +1011,13 @@
+ // 4. Failure detection: callers can match on the error variant.
+ // 5. Documentation: public API docs describe the behavior.
+ // =========================================================================
+ 
+-// Rule 1: Client::new must return Result<Client, NoscopeError>.
++// Rule 1: Client::new must return Result<Client, Error>.
+ #[test]
+ fn hardening_client_new_returns_result() {
+     // Client::new must be fallible — returns Result, not bare Client.
+-    let result: Result<super::Client, super::NoscopeError> =
++    let result: Result<super::Client, crate::Error> =
+         super::Client::new(super::ClientOptions::default());
+     // On Linux, hardening should succeed.
+     assert!(result.is_ok(), "Client::new must succeed on Linux");
+ }
+
+[0m
+[0m← [0mEdit src/client.rs
+Index: /home/ben/Documents/repos/noscope/src/client.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/client.rs
++++ /home/ben/Documents/repos/noscope/src/client.rs
+@@ -1036,32 +1036,29 @@
+     let result = client.validate_mint(&req);
+     assert!(result.is_ok(), "Client from new() must be fully functional");
+ }
+ 
+-// Rule 1: Client::new error is a NoscopeError::Security variant.
++// Rule 1: Client::new error is an Error with SecurityKind.
+ #[test]
+ fn hardening_failure_is_security_error() {
+-    // A hardening failure must surface as NoscopeError::Security.
++    // A hardening failure must surface as Error with ErrorKind::Security.
+     // We can't easily force setrlimit to fail, so we verify the error
+-    // type conversion: SecurityError::CoreDumpDisableFailed → NoscopeError::Security.
++    // type conversion: SecurityError::CoreDumpDisableFailed → Error::Security.
+     let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(std::io::Error::new(
+         std::io::ErrorKind::PermissionDenied,
+         "mock failure",
+     ));
+-    let noscope_err: super::NoscopeError = sec_err.into();
+-    match &noscope_err {
+-        super::NoscopeError::Security { message } => {
+-            assert!(
+-                message.contains("core dump"),
+-                "Security error message must mention core dumps: {}",
+-                message
+-            );
+-        }
+-        other => panic!(
+-            "CoreDumpDisableFailed must map to NoscopeError::Security, got: {:?}",
+-            other
+-        ),
+-    }
++    let err: crate::Error = sec_err.into();
++    assert_eq!(
++        err.kind(),
++        crate::ErrorKind::Security,
++        "CoreDumpDisableFailed must map to ErrorKind::Security"
++    );
++    assert!(
++        err.message().contains("core dump"),
++        "Security error message must mention core dumps: {}",
++        err.message()
++    );
+ }
+ 
+ // Rule 1: Hardening error has a non-zero exit code.
+ #[test]
+
+[0m
+[0m← [0mEdit src/client.rs
+Index: /home/ben/Documents/repos/noscope/src/client.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/client.rs
++++ /home/ben/Documents/repos/noscope/src/client.rs
+@@ -1066,11 +1066,11 @@
+     let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(std::io::Error::new(
+         std::io::ErrorKind::PermissionDenied,
+         "mock",
+     ));
+-    let noscope_err: super::NoscopeError = sec_err.into();
++    let err: crate::Error = sec_err.into();
+     assert_ne!(
+-        noscope_err.exit_code(),
++        err.exit_code(),
+         0,
+         "Hardening failure exit code must be non-zero"
+     );
+ }
+
+[0m
+[0m← [0mEdit src/client.rs
+Index: /home/ben/Documents/repos/noscope/src/client.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/client.rs
++++ /home/ben/Documents/repos/noscope/src/client.rs
+@@ -1129,18 +1129,19 @@
+ 
+ // Rule 4: Callers can programmatically detect hardening failure.
+ #[test]
+ fn hardening_failure_is_detectable_via_pattern_match() {
+-    // Prove that callers can match on NoscopeError::Security to detect
++    // Prove that callers can match on ErrorKind::Security to detect
+     // hardening failures specifically.
+     let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(std::io::Error::other(
+         "simulated",
+     ));
+-    let err: super::NoscopeError = sec_err.into();
+-    let detected = matches!(&err, super::NoscopeError::Security { message } if message.contains("core dump"));
++    let err: crate::Error = sec_err.into();
++    let detected =
++        err.kind() == crate::ErrorKind::Security && err.message().contains("core dump");
+     assert!(
+         detected,
+-        "Callers must be able to detect hardening failure via pattern match"
++        "Callers must be able to detect hardening failure via kind + message"
+     );
+ }
+ 
+ // Rule 4: Hardening failure Display message is human-readable.
+@@ -1149,9 +1150,9 @@
+     let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(std::io::Error::new(
+         std::io::ErrorKind::PermissionDenied,
+         "permission denied",
+     ));
+-    let err: super::NoscopeError = sec_err.into();
++    let err: crate::Error = sec_err.into();
+     let msg = format!("{}", err);
+     assert!(
+         msg.contains("core dump"),
+         "Display must mention 'core dump': {}",
+
+[0m
+Now I also need to fix the `cli_adapter.rs` tests that reference `NoscopeError`. Let me check:
+[0m✱ [0mGrep "NoscopeError"[90m 42 matches[0m
+The remaining `NoscopeError` references in `client.rs` are just comments (lines 16-17, 281-290, 339) — those are fine. The ones in `cli_adapter.rs` tests at lines 313-389 are also comments, not code references. Let me also fix the `cli_adapter.rs` comment about the error on line 68 and update the test that mentions `NoscopeError::Profile`:
+[0m
+[0m← [0mEdit src/cli_adapter.rs
+Index: /home/ben/Documents/repos/noscope/src/cli_adapter.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/cli_adapter.rs
++++ /home/ben/Documents/repos/noscope/src/cli_adapter.rs
+@@ -64,9 +64,9 @@
+ /// argument concern — library consumers work with `Profile` or `MintRequest`
+ /// directly, never both simultaneously.
+ ///
+ /// Delegates to `profile::check_profile_flag_exclusion` and converts the
+-/// error to `NoscopeError` for uniform CLI error handling.
++/// error to `Error` for uniform CLI error handling.
+ pub fn check_profile_flag_exclusion(
+     profile: Option<&str>,
+     provider: Option<&str>,
+     role: Option<&str>,
+
+[0m
+Now let's also fix the `RevokeRequest` missing `Debug` impl — the convergence test calls `unwrap_err()` on a `Result<RevokeRequest, Error>`, which requires `RevokeRequest: Debug`. Let me check the current convergence test:
+
+Actually, looking at the error more carefully, the issue is that my convergence test calls `result.unwrap_err()` but `RevokeRequest` isn't `Debug` (it doesn't derive Debug). Let me look at the test:
+[0m✱ [0mGrep "revoke_request_from_mint_json_returns_canonical_error"[90m 1 match[0m
+[0m→ [0mRead src/lib.rs[90m [offset=177, limit=10][0m
+The issue is `unwrap_err()` requires `T: Debug` (where T = RevokeRequest). I need to either add Debug or avoid unwrap_err. Let me use `match` instead:
+[0m
+[0m← [0mEdit src/lib.rs
+Index: /home/ben/Documents/repos/noscope/src/lib.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/lib.rs
++++ /home/ben/Documents/repos/noscope/src/lib.rs
+@@ -177,11 +177,12 @@
+ #[test]
+ fn revoke_request_from_mint_json_returns_canonical_error() {
+     let result: Result<crate::RevokeRequest, crate::Error> =
+         crate::RevokeRequest::from_mint_json("not json {{{");
+-    assert!(result.is_err());
+-    let err = result.unwrap_err();
+-    assert_eq!(err.kind(), crate::ErrorKind::Usage);
++    match result {
++        Ok(_) => panic!("Expected error for invalid JSON"),
++        Err(err) => assert_eq!(err.kind(), crate::ErrorKind::Usage),
++    }
+ }
+ 
+ // -------------------------------------------------------------------------
+ // Rule: Make adapter layer (cli_adapter) use that canonical type consistently.
+
+[0m
+Now let's try building again:
+[0m$ [0mcargo test convergence_tests 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+warning: unused import: `ErrorKind`
+  --> src/client.rs:23:27
+   |
+23 | use crate::error::{Error, ErrorKind};
+   |                           ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `noscope` (lib test) generated 1 warning (run `cargo fix --lib -p noscope --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.23s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 31 tests
+test convergence_tests::canonical_error_type_is_error_error ... ok
+test convergence_tests::cli_adapter_validate_mint_flags_returns_canonical_error ... ok
+test convergence_tests::cli_adapter_check_profile_flag_exclusion_returns_canonical_error ... ok
+test convergence_tests::cli_adapter_validate_revoke_argv_returns_canonical_error ... ok
+test convergence_tests::client_check_stdout_returns_canonical_error ... ok
+test convergence_tests::client_new_returns_canonical_error ... ok
+test convergence_tests::client_resolve_provider_returns_canonical_error ... ok
+test convergence_tests::client_validate_mint_returns_canonical_error ... ok
+test convergence_tests::exit_code_internal_is_70_through_canonical ... ok
+test convergence_tests::exit_code_config_is_78_through_canonical ... ok
+test convergence_tests::exit_code_profile_is_66_through_canonical ... ok
+test convergence_tests::exit_code_multi_is_65_through_canonical ... ok
+test convergence_tests::exit_code_security_is_64_through_canonical ... ok
+test convergence_tests::exit_code_usage_is_64_through_canonical ... ok
+test convergence_tests::exit_code_provider_is_65_through_canonical ... ok
+test convergence_tests::facade_mint_error_exit_code_preserved ... ok
+test convergence_tests::facade_security_error_exit_code_preserved ... ok
+test convergence_tests::facade_provider_error_exit_code_preserved ... ok
+test convergence_tests::migration_noscope_error_display_still_works ... ok
+test convergence_tests::facade_profile_error_exit_code_preserved ... ok
+test convergence_tests::migration_noscope_error_exit_code_still_works ... ok
+test convergence_tests::migration_noscope_error_is_std_error ... ok
+test convergence_tests::migration_noscope_error_is_send_sync ... ok
+test convergence_tests::migration_noscope_error_pattern_match_still_works ... ok
+test convergence_tests::noscope_error_alias_has_exit_code_method ... ok
+test convergence_tests::noscope_error_alias_has_kind_method ... ok
+test convergence_tests::no_duplicate_error_type_in_crate_root ... ok
+test convergence_tests::noscope_error_alias_has_errors_method ... ok
+test convergence_tests::noscope_error_alias_has_provider_name_method ... ok
+test convergence_tests::noscope_error_is_alias_for_canonical_type ... ok
+test convergence_tests::revoke_request_from_mint_json_returns_canonical_error ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 616 filtered out; finished in 0.00s
+[0m
+All 31 convergence tests pass. Now let's run the full test suite to make sure nothing is broken:
+[0m$ [0mcargo test 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+warning: unused import: `ErrorKind`
+  --> src/client.rs:23:27
+   |
+23 | use crate::error::{Error, ErrorKind};
+   |                           ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `noscope` (lib test) generated 1 warning (run `cargo fix --lib -p noscope --tests` to apply 1 suggestion)
+warning: `noscope` (lib) generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.68s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 647 tests
+test cli_adapter::tests::backward_compatible_migration_client_does_not_expose_validate_revoke_args ... ok
+test cli_adapter::tests::backward_compatible_migration_adapter_error_maps_to_noscope_error ... ok
+test cli_adapter::tests::backward_compatible_migration_validate_mint_flags_error_is_displayable ... ok
+test cli_adapter::tests::backward_compatible_migration_validate_mint_flags_returns_mint_request ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_allows_no_profile ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_allows_profile_alone ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_neither_set ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_error_names_flags ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_rejects_provider ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_rejects_all_three ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_rejects_role ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_rejects_ttl ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_mint_flags_produces_mint_request ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_mint_flags_rejects_empty_providers ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_mint_flags_rejects_empty_role ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_mint_flags_rejects_missing_ttl ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_mint_flags_rejects_zero_ttl ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_revoke_argv_allows_token_id_combined ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_revoke_argv_allows_token_id ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_revoke_argv_exists_in_adapter ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_revoke_argv_rejects_combined_form ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_revoke_argv_rejects_token_flag ... ok
+test cli_adapter::tests::edge_case_validate_revoke_argv_empty_args ... ok
+test cli_adapter::tests::edge_case_profile_flag_exclusion_error_has_exit_code ... ok
+test cli_adapter::tests::edge_case_validate_revoke_argv_error_has_exit_code ... ok
+test client::tests::env_override_default_client_options_reads_process_env ... ok
+test client::tests::env_override_mint_cmd_observed_from_client ... ok
+test client::tests::env_override_explicit_empty_env_does_not_activate_layer ... ok
+test client::tests::env_override_absent_env_falls_through_to_file ... ok
+test client::tests::env_override_precedence_env_beats_file ... ok
+test client::tests::env_override_precedence_flags_beat_env ... ok
+test client::tests::env_override_refresh_cmd_observed_from_client ... ok
+test client::tests::env_override_revoke_cmd_observed_from_client ... ok
+test client::tests::env_override_single_var_activates_env_layer ... ok
+test client::tests::facade_check_stdout_terminal_allows_pipe ... ok
+test client::tests::facade_check_stdout_terminal_force_overrides ... ok
+test client::tests::facade_check_stdout_terminal_rejects_tty ... ok
+test client::tests::facade_client_disables_core_dumps ... ok
+test client::tests::facade_client_is_not_clone ... ok
+test client::tests::facade_client_is_send ... ok
+test client::tests::facade_client_is_sync ... ok
+test client::tests::facade_client_options_has_default ... ok
+test client::tests::facade_client_type_exists ... ok
+test client::tests::facade_client_options_customizable ... ok
+test client::tests::facade_dry_run_produces_output ... ok
+test client::tests::facade_error_debug_does_not_contain_secrets ... ok
+test client::tests::facade_error_display_is_informative ... ok
+test client::tests::facade_error_from_mint_error ... ok
+test client::tests::facade_error_from_provider_config_error ... ok
+test client::tests::facade_error_from_security_error ... ok
+test client::tests::facade_error_from_profile_error ... ok
+test client::tests::facade_error_has_exit_code ... ok
+test client::tests::facade_error_is_not_clone ... ok
+test client::tests::facade_error_is_send ... ok
+test client::tests::facade_error_is_sync ... ok
+test client::tests::facade_error_type_exists_and_is_std_error ... ok
+test client::tests::facade_error_variants_cover_core_failure_modes ... ok
+test client::tests::facade_mint_request_is_not_clone ... ok
+test client::tests::facade_mint_request_valid_passes ... ok
+test client::tests::facade_mint_request_validates_providers_required ... ok
+test client::tests::facade_mint_request_validates_role_required ... ok
+test client::tests::facade_mint_request_validates_role_safe_characters ... ok
+test client::tests::facade_mint_request_validates_ttl_required ... ok
+test client::tests::facade_provider_overrides_default_is_empty ... ok
+test client::tests::facade_provider_overrides_has_any_detects_set_fields ... ok
+test client::tests::facade_reexports_event_types ... ok
+test client::tests::facade_reexports_mint_envelope ... ok
+test client::tests::facade_reexports_scoped_token_type ... ok
+test client::tests::facade_resolve_provider_delegates_to_provider_module ... ok
+test client::tests::facade_revoke_args_validation_moved_to_cli_adapter ... ok
+test client::tests::facade_revoke_request_from_mint_json ... ok
+test client::tests::facade_revoke_request_from_token_id_and_provider ... ok
+test client::tests::facade_revoke_request_is_not_clone ... ok
+test client::tests::facade_revoke_request_rejects_invalid_json ... ok
+test client::tests::hardening_best_effort_client_is_functional ... ok
+test client::tests::hardening_best_effort_constructor_exists ... ok
+test client::tests::hardening_best_effort_still_disables_core_dumps ... ok
+test client::tests::hardening_client_new_leaves_core_dumps_disabled ... ok
+test client::tests::hardening_client_new_returns_result ... ok
+test client::tests::hardening_failure_display_is_informative ... ok
+test client::tests::hardening_client_new_success_produces_usable_client ... ok
+test client::tests::hardening_failure_is_detectable_via_pattern_match ... ok
+test client::tests::hardening_failure_is_security_error ... ok
+test client::tests::hardening_succeeds_on_linux ... ok
+test convergence_tests::canonical_error_type_is_error_error ... ok
+test convergence_tests::cli_adapter_check_profile_flag_exclusion_returns_canonical_error ... ok
+test convergence_tests::cli_adapter_validate_mint_flags_returns_canonical_error ... ok
+test convergence_tests::cli_adapter_validate_revoke_argv_returns_canonical_error ... ok
+test convergence_tests::client_new_returns_canonical_error ... ok
+test client::tests::hardening_failure_has_nonzero_exit_code ... ok
+test convergence_tests::client_resolve_provider_returns_canonical_error ... ok
+test convergence_tests::client_check_stdout_returns_canonical_error ... ok
+test convergence_tests::client_validate_mint_returns_canonical_error ... ok
+test convergence_tests::exit_code_config_is_78_through_canonical ... ok
+test convergence_tests::exit_code_internal_is_70_through_canonical ... ok
+test convergence_tests::exit_code_multi_is_65_through_canonical ... ok
+test convergence_tests::exit_code_profile_is_66_through_canonical ... ok
+test convergence_tests::exit_code_provider_is_65_through_canonical ... ok
+test convergence_tests::exit_code_security_is_64_through_canonical ... ok
+test convergence_tests::exit_code_usage_is_64_through_canonical ... ok
+test convergence_tests::facade_mint_error_exit_code_preserved ... ok
+test convergence_tests::facade_profile_error_exit_code_preserved ... ok
+test convergence_tests::facade_provider_error_exit_code_preserved ... ok
+test convergence_tests::facade_security_error_exit_code_preserved ... ok
+test convergence_tests::migration_noscope_error_exit_code_still_works ... ok
+test convergence_tests::migration_noscope_error_is_send_sync ... ok
+test convergence_tests::migration_noscope_error_is_std_error ... ok
+test convergence_tests::migration_noscope_error_pattern_match_still_works ... ok
+test convergence_tests::migration_noscope_error_display_still_works ... ok
+test convergence_tests::noscope_error_alias_has_errors_method ... ok
+test convergence_tests::no_duplicate_error_type_in_crate_root ... ok
+test convergence_tests::noscope_error_alias_has_exit_code_method ... ok
+test convergence_tests::noscope_error_alias_has_kind_method ... ok
+test convergence_tests::noscope_error_alias_has_provider_name_method ... ok
+test convergence_tests::noscope_error_is_alias_for_canonical_type ... ok
+test convergence_tests::revoke_request_from_mint_json_returns_canonical_error ... ok
+test credential_set::tests::atomic_multi_credential_minting_all_fail ... ok
+test credential_set::tests::atomic_multi_credential_minting_failure_includes_successful_for_rollback ... ok
+test credential_set::tests::atomic_multi_credential_minting_one_fails_returns_error ... ok
+test credential_set::tests::atomic_rollback_follows_revocation_budget_has_retry_count ... ok
+test credential_set::tests::atomic_multi_credential_minting_all_succeed ... ok
+test credential_set::tests::atomic_multi_credential_minting_failure_reports_which_failed ... ok
+test credential_set::tests::atomic_rollback_follows_revocation_budget_has_timeout ... ok
+test credential_set::tests::atomic_rollback_follows_revocation_budget_log_entry_contains_credential_id_and_ttl ... ok
+test credential_set::tests::atomic_rollback_follows_revocation_budget_log_failure ... ok
+test credential_set::tests::bounded_parallelism_default_is_eight ... ok
+test credential_set::tests::bounded_parallelism_minimum_is_one ... ok
+test credential_set::tests::bounded_parallelism_zero_is_rejected ... ok
+test credential_set::tests::build_refresh_schedules_each_based_on_own_ttl ... ok
+test credential_set::tests::build_refresh_schedules_returns_one_per_credential ... ok
+test credential_set::tests::credential_set_debug_does_not_expose_secrets ... ok
+test credential_set::tests::credential_set_env_map_empty_set ... ok
+test credential_set::tests::bounded_parallelism_configurable ... ok
+test credential_set::tests::compute_refresh_at_already_expired_token_returns_past_time ... ok
+test credential_set::tests::credential_set_error_display_for_duplicate_env_key ... ok
+test credential_set::tests::credential_set_error_display_for_invalid_config ... ok
+test credential_set::tests::credential_set_error_display_for_mint_failed_no_providers ... ok
+test credential_set::tests::credential_set_error_implements_std_error ... ok
+test credential_set::tests::credential_set_is_not_clone ... ok
+test credential_set::tests::credential_set_len ... ok
+test credential_set::tests::credential_set_error_display_for_mint_failed ... ok
+test credential_set::tests::credential_set_provides_env_map ... ok
+test credential_set::tests::credential_set_is_not_serializable ... ok
+test credential_set::tests::credential_set_refresh_schedules_empty_set ... ok
+test credential_set::tests::env_key_uniqueness_allows_distinct_keys ... ok
+test credential_set::tests::env_key_uniqueness_case_sensitive ... ok
+test credential_set::tests::env_key_uniqueness_empty_specs_valid ... ok
+test credential_set::tests::env_key_uniqueness_identifies_conflicting_providers ... ok
+test credential_set::tests::env_key_uniqueness_single_spec_always_valid ... ok
+test credential_set::tests::credential_spec_stores_all_fields ... ok
+test credential_set::tests::env_key_uniqueness_three_way_conflict ... ok
+test credential_set::tests::env_key_uniqueness_rejects_duplicates ... ok
+test credential_set::tests::env_key_uniqueness_validated_before_minting ... ok
+test credential_set::tests::format_timeout_error_sub_second_timeout ... ok
+test credential_set::tests::independent_refresh_scheduling_different_ttls_different_schedules ... ok
+test credential_set::tests::independent_refresh_scheduling_no_batching ... ok
+test credential_set::tests::independent_refresh_scheduling_uses_credential_expires_at ... ok
+test credential_set::tests::mint_config_zero_timeout_is_allowed ... ok
+test credential_set::tests::parallel_minting_timeout_default_is_30_seconds ... ok
+test credential_set::tests::independent_refresh_scheduling_refresh_at_is_before_expiry ... ok
+test credential_set::tests::parallel_minting_timeout_configurable ... ok
+test credential_set::tests::parallel_minting_timeout_error_message_mentions_timeout ... ok
+test credential_set::tests::parallel_minting_timeout_exceeded_is_failure ... ok
+test credential_set::tests::resolve_mint_results_empty_input_returns_empty_set ... ok
+test credential_set::tests::rollback_log_entry_escapes_embedded_quotes ... ok
+test credential_set::tests::single_credential_expiry_does_not_re_mint ... ok
+test credential_set::tests::single_credential_expiry_logs_warning ... ok
+test credential_set::tests::single_credential_expiry_multiple_independent ... ok
+test credential_set::tests::single_credential_expiry_preserves_child ... ok
+test credential_set::tests::single_credential_expiry_warning_contains_provider_and_token_id ... ok
+test credential_set::tests::validate_credential_specs_accepts_valid_set ... ok
+test credential_set::tests::validate_credential_specs_rejects_empty ... ok
+test error::tests::typed_error_taxonomy_config_exit_code_is_78 ... ok
+test error::tests::typed_error_taxonomy_display_includes_category_prefix ... ok
+test error::tests::typed_error_taxonomy_debug_does_not_leak_secrets ... ok
+test credential_set::tests::rollback_budget_timeout_and_retries_are_reasonable ... ok
+test error::tests::typed_error_taxonomy_display_is_human_readable ... ok
+test error::tests::typed_error_taxonomy_from_credential_set_error ... ok
+test error::tests::typed_error_taxonomy_from_provider_config_error_malformed ... ok
+test error::tests::typed_error_taxonomy_from_mint_error ... ok
+test error::tests::typed_error_taxonomy_from_mint_error_terminal ... ok
+test error::tests::typed_error_taxonomy_from_profile_error ... ok
+test error::tests::typed_error_taxonomy_from_provider_config_error_not_found ... ok
+test error::tests::typed_error_taxonomy_has_config_variant ... ok
+test error::tests::typed_error_taxonomy_from_provider_exec_error ... ok
+test error::tests::typed_error_taxonomy_from_security_error ... ok
+test error::tests::typed_error_taxonomy_has_internal_variant ... ok
+test error::tests::typed_error_taxonomy_has_profile_variant ... ok
+test error::tests::typed_error_taxonomy_has_usage_variant ... ok
+test error::tests::typed_error_taxonomy_has_provider_variant ... ok
+test error::tests::typed_error_taxonomy_has_security_variant ... ok
+test error::tests::typed_error_taxonomy_implements_std_error ... ok
+test error::tests::typed_error_taxonomy_internal_exit_code_is_70 ... ok
+test error::tests::typed_error_taxonomy_is_send ... ok
+test error::tests::typed_error_taxonomy_is_sync ... ok
+test error::tests::typed_error_taxonomy_kind_as_str ... ok
+test error::tests::typed_error_taxonomy_kind_is_eq_comparable ... ok
+test error::tests::typed_error_taxonomy_message_is_accessible ... ok
+test error::tests::typed_error_taxonomy_multi_error_empty_display_is_empty ... ok
+test error::tests::typed_error_taxonomy_kind_is_copy ... ok
+test error::tests::typed_error_taxonomy_kind_is_machine_readable ... ok
+test error::tests::typed_error_taxonomy_multi_error_display_includes_all ... ok
+test error::tests::typed_error_taxonomy_multi_error_empty_is_representable ... ok
+test error::tests::typed_error_taxonomy_multi_error_preserves_individual_kinds ... ok
+test error::tests::typed_error_taxonomy_multi_error_exit_code_is_65 ... ok
+test error::tests::typed_error_taxonomy_multi_error_holds_multiple_errors ... ok
+test error::tests::typed_error_taxonomy_multi_error_provider_names_accessible ... ok
+test error::tests::typed_error_taxonomy_non_provider_error_has_no_provider ... ok
+test error::tests::typed_error_taxonomy_multi_error_single_item_still_works ... ok
+test error::tests::typed_error_taxonomy_no_source_by_default ... ok
+test error::tests::typed_error_taxonomy_profile_exit_code_is_66 ... ok
+test error::tests::typed_error_taxonomy_provider_display_includes_provider_name ... ok
+test error::tests::typed_error_taxonomy_provider_error_carries_provider_name ... ok
+test error::tests::typed_error_taxonomy_provider_exit_code_is_65 ... ok
+test error::tests::typed_error_taxonomy_usage_exit_code_is_64 ... ok
+test event::tests::structured_event_logging_child_exit_event ... ok
+test error::tests::typed_error_taxonomy_security_exit_code_is_64 ... ok
+test error::tests::typed_error_taxonomy_source_chaining ... ok
+test event::tests::structured_event_logging_child_spawn_event ... ok
+test event::tests::structured_event_logging_child_exit_includes_exit_code ... ok
+test event::tests::structured_event_logging_emitter_json_format_output ... ok
+test event::tests::structured_event_logging_emitter_json_single_line ... ok
+test event::tests::structured_event_logging_empty_provider_name ... ok
+test event::tests::structured_event_logging_emitter_text_format_output ... ok
+test event::tests::structured_event_logging_error_null_when_not_set ... ok
+test event::tests::structured_event_logging_event_type_display_matches_as_str ... ok
+test event::tests::structured_event_logging_event_type_names ... ok
+test event::tests::structured_event_logging_fail_event_includes_error_message ... ok
+test event::tests::structured_event_logging_json_contains_duration ... ok
+test event::tests::structured_event_logging_json_contains_provider ... ok
+test event::tests::structured_event_logging_json_contains_redacted_token_id ... ok
+test event::tests::structured_event_logging_json_contains_timestamp ... ok
+test event::tests::structured_event_logging_json_contains_type ... ok
+test event::tests::structured_event_logging_json_duration_null_when_absent ... ok
+test event::tests::structured_event_logging_json_error_with_quotes ... ok
+test event::tests::structured_event_logging_json_is_single_line ... ok
+test event::tests::structured_event_logging_json_never_contains_raw_secret ... ok
+test event::tests::structured_event_logging_all_fields_set_simultaneously ... ok
+test event::tests::structured_event_logging_json_is_valid_json ... ok
+test event::tests::structured_event_logging_json_token_id_null_when_absent ... ok
+test event::tests::structured_event_logging_log_format_text ... ok
+test event::tests::structured_event_logging_large_duration_does_not_panic ... ok
+test event::tests::structured_event_logging_log_format_json ... ok
+test event::tests::structured_event_logging_log_format_unknown_returns_none ... ok
+test event::tests::structured_event_logging_mint_start_event ... ok
+test event::tests::structured_event_logging_mint_fail_event ... ok
+test event::tests::structured_event_logging_mint_success_event ... ok
+test event::tests::structured_event_logging_negative_exit_code ... ok
+test event::tests::structured_event_logging_refresh_fail_event ... ok
+test event::tests::structured_event_logging_refresh_start_event ... ok
+test event::tests::structured_event_logging_refresh_success_event ... ok
+test event::tests::structured_event_logging_revoke_fail_event ... ok
+test event::tests::structured_event_logging_revoke_start_event ... ok
+test event::tests::structured_event_logging_revoke_success_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_event ... ok
+test event::tests::structured_event_logging_log_format_parse_is_case_sensitive ... ok
+test event::tests::structured_event_logging_signal_forwarded_includes_signal ... ok
+test event::tests::structured_event_logging_signal_received_event ... ok
+test event::tests::structured_event_logging_signal_received_includes_signal ... ok
+test event::tests::structured_event_logging_token_id_is_redacted_not_raw ... ok
+test event::tests::structured_event_logging_text_format_escapes_quotes_in_error ... ok
+test event::tests::structured_event_logging_timestamp_is_current ... ok
+test exit_code::tests::exit_129_is_signal_1_sighup ... ok
+test event::tests::structured_event_logging_zero_duration ... ok
+test exit_code::tests::exit_exactly_128_is_not_signal_terminated ... ok
+test exit_code::tests::known_provider_exit_codes_interpreted_directly ... ok
+test exit_code::tests::multi_provider_report_can_filter_retryable_failures ... ok
+test exit_code::tests::multi_provider_report_collects_all_failures ... ok
+test exit_code::tests::multi_provider_report_empty_has_zero_failures ... ok
+test exit_code::tests::multi_provider_report_exit_code_is_65_mint_failure ... ok
+test exit_code::tests::multi_provider_report_first_failure_not_shadowed ... ok
+test exit_code::tests::multi_provider_report_failures_are_accessible ... ok
+test exit_code::tests::exit_255_is_signal_127 ... ok
+test exit_code::tests::multi_provider_report_format_stderr_empty_when_no_failures ... ok
+test exit_code::tests::multi_provider_report_stderr_contains_all_providers_in_order ... ok
+test exit_code::tests::multi_provider_report_successes_are_accessible ... ok
+test exit_code::tests::multi_provider_report_tracks_successes_too ... ok
+test exit_code::tests::multi_provider_report_with_no_failures_returns_success_not_child_exit ... ok
+test exit_code::tests::negative_exit_code_maps_to_general_error_no_signal ... ok
+test exit_code::tests::non_signal_stderr_message_shows_provider_exit_code ... ok
+test exit_code::tests::noscope_exit_code_child_exit_passes_through_any_value ... ok
+test exit_code::tests::noscope_exit_code_child_exit_preserves_child_code ... ok
+test exit_code::tests::noscope_exit_code_child_exit_zero_is_success ... ok
+test exit_code::tests::noscope_exit_code_config_error_is_78 ... ok
+test exit_code::tests::noscope_exit_code_config_not_found_is_66 ... ok
+test exit_code::tests::noscope_exit_code_display_child_exit_mentions_child ... ok
+test exit_code::tests::noscope_exit_code_display_includes_meaning ... ok
+test exit_code::tests::multi_provider_report_stderr_includes_exit_code_per_provider ... ok
+test exit_code::tests::noscope_exit_code_display_success_mentions_success ... ok
+test exit_code::tests::noscope_exit_code_internal_is_70 ... ok
+test exit_code::tests::noscope_exit_code_mint_failure_is_65 ... ok
+test exit_code::tests::noscope_exit_code_permission_is_77 ... ok
+test exit_code::tests::noscope_exit_code_success_is_zero ... ok
+test exit_code::tests::noscope_exit_code_unavailable_is_69 ... ok
+test exit_code::tests::noscope_exit_code_usage_is_64 ... ok
+test exit_code::tests::noscope_exit_codes_do_not_overlap_with_provider_codes ... ok
+test exit_code::tests::noscope_success_is_semantically_distinct_from_child_exit_zero ... ok
+test exit_code::tests::provider_exit_code_auth_failure_is_two ... ok
+test exit_code::tests::provider_exit_code_display_includes_code_number_and_meaning ... ok
+test exit_code::tests::provider_exit_code_from_raw_returns_none_for_unknown ... ok
+test exit_code::tests::provider_exit_code_from_raw_roundtrips_all_known_codes ... ok
+test exit_code::tests::provider_exit_code_general_error_is_one ... ok
+test exit_code::tests::provider_exit_code_non_zero_are_errors ... ok
+test exit_code::tests::provider_exit_code_role_not_found_is_three ... ok
+test exit_code::tests::provider_exit_code_success_is_not_error ... ok
+test exit_code::tests::provider_exit_code_unavailable_is_four ... ok
+test exit_code::tests::provider_exit_code_success_is_zero ... ok
+test exit_code::tests::provider_exit_result_is_eq_comparable ... ok
+test exit_code::tests::signal_terminated_provider_includes_signal_number ... ok
+test exit_code::tests::signal_terminated_provider_maps_to_general_error ... ok
+test exit_code::tests::signal_terminated_provider_stderr_message_contains_signal ... ok
+test exit_code::tests::unknown_non_signal_exit_code_maps_to_general_error ... ok
+test mint::tests::mint_envelope_debug_does_not_expose_raw_token ... ok
+test exit_code::tests::provider_exit_result_implements_display ... ok
+test mint::tests::mint_envelope_debug_shows_metadata ... ok
+test mint::tests::format_mint_output_handles_special_characters_in_token ... ok
+test mint::tests::mint_envelope_from_scoped_token_without_token_id ... ok
+test mint::tests::mint_error_implements_std_error ... ok
+test mint::tests::mint_envelope_is_not_clone ... ok
+test mint::tests::mint_error_display_for_invalid_input ... ok
+test mint::tests::mint_multi_provider_atomicity_empty_on_failure ... ok
+test mint::tests::mint_multi_provider_atomicity_multiple_providers_returns_array ... ok
+test mint::tests::mint_multi_provider_atomicity_no_partial_stdout ... ok
+test mint::tests::mint_multi_provider_atomicity_output_is_single_line ... ok
+test mint::tests::mint_multi_provider_atomicity_single_provider_returns_object ... ok
+test mint::tests::mint_output_envelope_contains_expires_at_iso8601 ... ok
+test mint::tests::mint_output_envelope_contains_provider ... ok
+test mint::tests::mint_output_envelope_contains_role ... ok
+test mint::tests::mint_output_envelope_contains_token_field ... ok
+test mint::tests::mint_output_envelope_contains_token_id ... ok
+test mint::tests::mint_output_envelope_from_scoped_token ... ok
+test mint::tests::mint_ttl_requirement_accepts_valid_ttl ... ok
+test mint::tests::mint_ttl_requirement_rejects_empty_providers ... ok
+test mint::tests::mint_output_envelope_has_exactly_five_fields ... ok
+test mint::tests::mint_output_envelope_is_single_line_json ... ok
+test mint::tests::mint_ttl_requirement_rejects_empty_role ... ok
+test mint::tests::mint_ttl_requirement_rejects_zero_ttl ... ok
+test mint::tests::mint_ttl_requirement_ttl_is_mandatory ... ok
+test mint::tests::redaction_exception_log_string_contains_provider_and_role ... ok
+test mint::tests::redaction_exception_mint_stdout_contains_raw_token ... ok
+test mint::tests::revoke_input_allows_token_id_equals_combined_form ... ok
+test mint::tests::redaction_exception_stderr_still_redacted ... ok
+test mint::tests::revoke_input_does_not_store_token_value ... ok
+test mint::tests::revoke_input_from_mint_json_array_element ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_invalid_json ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_missing_provider ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_missing_token_id ... ok
+test mint::tests::revoke_input_from_token_id_and_provider ... ok
+test mint::tests::revoke_input_from_mint_json_stdin ... ok
+test mint::tests::revoke_input_rejects_raw_token_flag ... ok
+test mint::tests::revoke_input_validates_no_token_value_in_cli_args ... ok
+test mint::tests::terminal_detection_allows_pipe_stdout ... ok
+test mint::tests::terminal_detection_error_message_mentions_force_flag ... ok
+test mint::tests::terminal_detection_exit_code_is_64 ... ok
+test mint::tests::terminal_detection_force_overrides_tty_check ... ok
+test mint::tests::terminal_detection_pipe_with_force_also_works ... ok
+test mint::tests::revoke_input_rejects_combined_token_equals_value_flag ... ok
+test mint::tests::terminal_detection_rejects_tty_stdout ... ok
+test mint::tests::validate_mint_args_returns_validated_ttl ... ok
+test profile::tests::profile_cli_mutual_exclusion_error_includes_profile_name ... ok
+test profile::tests::profile_cli_mutual_exclusion_error_names_conflicting_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_neither_set ... ok
+test profile::tests::profile_cli_mutual_exclusion_no_profile_allows_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_alone_is_valid ... ok
+test profile::tests::profile_cli_mutual_exclusion_exit_code_is_usage ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_all_three ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_provider ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_role ... ok
+test profile::tests::profile_error_implements_std_error ... ok
+test profile::tests::profile_error_insecure_permissions_display ... ok
+test profile::tests::profile_error_not_found_display ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_ttl ... ok
+test profile::tests::profile_error_validation_failed_display_all_problems ... ok
+test profile::tests::profile_flatness_constraint_no_extends_field ... ok
+test profile::tests::profile_flatness_constraint_no_nested_profiles ... ok
+test profile::tests::profile_flatness_constraint_is_flat_list_of_tuples ... ok
+test profile::tests::profile_load_missing_file_is_error ... ok
+test profile::tests::profile_flatness_constraint_no_overrides_field ... ok
+test profile::tests::profile_path_default_home ... ok
+test profile::tests::profile_path_under_xdg_config ... ok
+test profile::tests::profile_load_secure_permissions_accepted ... ok
+test profile::tests::profile_permissions_allows_0400 ... ok
+test profile::tests::profile_permissions_error_message_mentions_group_writable ... ok
+test profile::tests::profile_permissions_allows_0640 ... ok
+test profile::tests::profile_permissions_rejects_group_writable_0620 ... ok
+test profile::tests::profile_permissions_rejects_group_writable_0660 ... ok
+test profile::tests::profile_schema_empty_credentials_array_is_error ... ok
+test profile::tests::profile_schema_empty_provider_is_error ... ok
+test profile::tests::profile_schema_empty_role_is_error ... ok
+test mint::tests::terminal_detection_error_message_warns_about_scrollback ... ok
+test profile::tests::profile_load_insecure_permissions_rejected ... ok
+test profile::tests::profile_schema_env_key_can_be_set ... ok
+test profile::tests::profile_schema_env_key_is_optional ... ok
+test profile::tests::profile_schema_no_credentials_key_is_error ... ok
+test profile::tests::profile_schema_env_key_wrong_type_is_error ... ok
+test profile::tests::profile_schema_provider_wrong_type_is_error ... ok
+test profile::tests::profile_schema_multiple_unknown_credential_fields_all_reported ... ok
+test profile::tests::profile_schema_requires_provider ... ok
+test profile::tests::profile_schema_requires_role ... ok
+test profile::tests::profile_schema_requires_ttl ... ok
+test profile::tests::profile_schema_ttl_as_string_is_error ... ok
+test profile::tests::profile_schema_ttl_must_be_positive_integer ... ok
+test profile::tests::profile_schema_ttl_must_not_be_negative ... ok
+test profile::tests::profile_schema_unknown_credential_field_is_error ... ok
+test profile::tests::profile_validation_distinct_exit_code ... ok
+test profile::tests::profile_validation_all_errors_reported_together ... ok
+test profile::tests::profile_schema_unknown_top_level_fields_ignored ... ok
+test profile::tests::profile_schema_role_wrong_type_is_error ... ok
+test profile::tests::profile_validation_env_key_uniqueness_none_does_not_conflict ... ok
+test profile::tests::profile_validation_env_key_uniqueness ... ok
+test profile::tests::profile_validation_passes_for_valid_profile ... ok
+test profile::tests::profile_validation_provider_existence ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0604 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0640 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0600 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0400 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0666 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_world_readable ... ok
+test provider::tests::config_follows_xdg_base_directory ... ok
+test provider::tests::config_permissions_allows_0440 ... ok
+test provider::tests::config_permissions_allows_0500 ... ok
+test provider::tests::config_permissions_allows_0700 ... ok
+test provider::tests::config_permissions_allows_0750 ... ok
+test provider::tests::config_permissions_error_message_is_actionable ... ok
+test provider::tests::config_permissions_load_provider_file_rejects_group_writable ... ok
+test provider::tests::config_permissions_rejects_group_writable_0620 ... ok
+test provider::tests::config_permissions_rejects_group_writable_0660 ... ok
+test provider::tests::config_permissions_rejects_group_and_world_writable_0662 ... ok
+test provider::tests::config_permissions_rejects_group_writable_0670 ... ok
+test provider::tests::config_permissions_rejects_world_writable_0602 ... ok
+test provider::tests::config_precedence_flags_without_mint_cmd_still_wins ... ok
+test provider::tests::config_source_eq_works ... ok
+test provider::tests::config_xdg_defaults_to_home_dot_config ... ok
+test provider::tests::consolidate_provider_config_capability_fields_require_bool_values ... ok
+test provider::tests::config_xdg_custom_overrides_default ... ok
+test provider::tests::consolidate_provider_config_capability_validation_owned_by_provider_parser ... ok
+test provider::tests::consolidate_provider_config_typed_precedence_pipeline ... ok
+test provider::tests::dry_run_mode_produces_output ... ok
+test provider::tests::consolidate_provider_config_capability_validation_revoke_requires_command ... ok
+test provider::tests::consolidate_provider_config_single_authoritative_domain_model ... ok
+test provider::tests::dry_run_mode_shows_config_source ... ok
+test provider::tests::dry_run_mode_shows_mint_command ... ok
+test provider::tests::dry_run_mode_shows_role_and_ttl ... ok
+test provider::tests::insecure_permissions_display_contains_path_and_mode ... ok
+test provider::tests::load_provider_file_rejects_insecure_file ... ok
+test provider::tests::malformed_config_empty_mint_cmd_is_error ... ok
+test provider::tests::load_provider_file_reads_secure_file ... ok
+test provider::tests::malformed_config_is_hard_error_missing_required_field ... ok
+test provider::tests::malformed_config_is_hard_error_syntax ... ok
+test provider::tests::parse_provider_toml_rejects_non_string_mint ... ok
+test provider::tests::malformed_config_missing_file_is_not_error ... ok
+test provider::tests::provider_contract_version_accepts_current_version ... ok
+test provider::tests::provider_contract_version_backward_compat_supports_previous ... ok
+test provider::tests::provider_contract_version_current_version_constant_is_one ... ok
+test provider::tests::parse_provider_toml_valid_with_all_commands ... ok
+test provider::tests::provider_contract_version_must_be_present_in_config ... ok
+test provider::tests::provider_contract_version_none_for_flags_and_env_layers ... ok
+test provider::tests::provider_contract_version_propagated_to_resolved_provider ... ok
+test provider::tests::provider_contract_version_rejects_negative_version ... ok
+test provider::tests::provider_contract_version_rejects_non_integer_type ... ok
+test provider::tests::provider_contract_version_rejects_unsupported_future_version ... ok
+test provider::tests::provider_contract_version_rejects_version_zero ... ok
+test provider::tests::provider_contract_version_rejects_float_type ... ok
+test provider::tests::provider_contract_version_supported_versions_includes_current ... ok
+test provider::tests::provider_contract_version_unsupported_error_display ... ok
+test provider::tests::provider_contract_version_stored_in_file_provider_config ... ok
+test provider::tests::provider_contract_version_validate_rejects_zero_directly ... ok
+test provider::tests::provider_contract_version_validate_version_rejects_unsupported ... ok
+test provider::tests::provider_env_from_process_empty_env_contract ... ok
+test provider::tests::provider_env_from_process_returns_valid_struct ... ok
+test provider::tests::provider_not_found_display_contains_provider_name ... ok
+test provider::tests::provider_not_found_enumerates_checked_locations ... ok
+test provider::tests::provider_contract_version_validate_version_accepts_current ... ok
+test provider::tests::provider_not_found_message_is_user_actionable ... ok
+test provider::tests::strict_config_precedence_file_used_when_no_flags_or_env ... ok
+test provider::tests::strict_config_precedence_flags_win_over_env ... ok
+test provider::tests::strict_config_precedence_no_merging_across_layers ... ok
+test provider::tests::strict_config_precedence_env_wins_over_file ... ok
+test provider::tests::validate_provider_checks_mint_cmd_exists ... ok
+test provider::tests::validate_provider_checks_revoke_cmd_if_present ... ok
+test provider::tests::validate_provider_checks_mint_cmd_is_executable ... ok
+test provider::tests::validate_provider_does_not_execute_mint_cmd ... ok
+test provider::tests::validate_provider_checks_refresh_cmd_if_present ... ok
+test provider::tests::validate_provider_succeeds_for_valid_config ... ok
+test provider::tests::validation_failed_display_lists_all_problems ... ok
+test provider_exec::tests::exec_config_is_constructible ... ok
+test provider_exec::tests::missing_expires_at_generates_warning ... ok
+test provider_exec::tests::provided_expires_at_is_used_as_is ... ok
+test provider_exec::tests::provider_capability_declaration_consistent_config_passes ... ok
+test provider_exec::tests::provider_capability_declaration_default_no_refresh_no_revoke ... ok
+test provider_exec::tests::missing_expires_at_computed_from_requested_ttl ... ok
+test provider_exec::tests::provider_capability_declaration_from_config_both_true ... ok
+test provider_exec::tests::provider_capability_declaration_from_config_refresh_only ... ok
+test provider_exec::tests::provider_capability_declaration_revoke_without_revoke_cmd_is_inconsistent ... ok
+test provider_exec::tests::provider_capability_declaration_defaults_when_absent_in_toml ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_excludes_other_vars ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_home_is_not_empty ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_only_path_home_lang ... ok
+test provider_exec::tests::provider_capability_declaration_refresh_without_refresh_cmd_is_inconsistent ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_path_is_not_empty ... ok
+test provider_exec::tests::provider_capability_declaration_parsed_from_toml ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_with_credential_vars_for_refresh ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_with_credential_vars_for_revoke ... ok
+test provider_exec::tests::provider_command_execution_timeout_default_is_30_seconds ... ok
+test provider_exec::tests::provider_command_execution_timeout_kill_grace_period_is_5_seconds ... ok
+test provider_exec::tests::provider_command_execution_timeout_treated_as_exit_4 ... ok
+test provider_exec::tests::provider_exec_error_config_parse_variant_exists ... ok
+test provider_exec::tests::provider_exec_error_implements_display ... ok
+test provider_exec::tests::provider_exec_error_implements_std_error ... ok
+test provider_exec::tests::provider_exec_error_invalid_role_display ... ok
+test provider_exec::tests::provider_exec_error_stdout_too_large_display ... ok
+test provider_exec::tests::provider_exec_error_timeout_display ... ok
+test provider_exec::tests::provider_output_contract_empty_token_is_rejected ... ok
+test provider_exec::tests::provider_output_contract_expires_at_in_past_accepted ... ok
+test provider_exec::tests::provider_output_contract_expires_at_must_be_valid_iso8601 ... ok
+test provider_exec::tests::provider_output_contract_expires_at_is_optional ... ok
+test provider_exec::tests::provider_output_contract_expires_at_null_treated_as_absent ... ok
+test provider_exec::tests::provider_output_contract_extra_fields_are_ignored ... ok
+test provider_exec::tests::provider_output_contract_parses_valid_json_with_token_and_expires_at ... ok
+test provider_exec::tests::provider_output_contract_token_is_required ... ok
+test provider_exec::tests::provider_output_contract_rejects_invalid_json ... ok
+test provider_exec::tests::provider_output_has_chrono_datetime ... ok
+test provider_exec::tests::provider_output_contract_token_must_be_string ... ok
+test provider_exec::tests::provider_output_token_is_zeroized_on_drop ... ok
+test provider_exec::tests::provider_stderr_handling_capture_limit_is_4096_bytes ... ok
+test provider_exec::tests::provider_stderr_handling_discard_on_success_default ... ok
+test provider_exec::tests::provider_stderr_handling_keep_on_failure ... ok
+test provider_exec::tests::provider_stderr_handling_keep_on_success_verbose ... ok
+test provider_exec::tests::provider_stderr_handling_no_tokens_no_change ... ok
+test provider_exec::tests::provider_stderr_handling_preserves_short_stderr ... ok
+test provider_exec::tests::provider_stderr_handling_redacts_known_token ... ok
+test provider_exec::tests::provider_stderr_handling_redacts_multiple_tokens ... ok
+test provider_exec::tests::provider_stderr_handling_truncates_to_limit ... ok
+test provider_exec::tests::provider_stderr_handling_truncation_respects_utf8_boundary ... ok
+test provider_exec::tests::provider_stdout_size_limit_accepts_exactly_1_mib ... ok
+test provider_exec::tests::provider_stdout_size_limit_accepts_small_output ... ok
+test provider_exec::tests::provider_stdout_size_limit_constant_is_1_mib ... ok
+test provider_exec::tests::provider_stdout_size_limit_rejects_over_1_mib ... ok
+test provider_exec::tests::provider_stdout_size_limit_zero_is_accepted ... ok
+test provider_exec::tests::refresh_command_env_has_exactly_three_credential_vars ... ok
+test provider_exec::tests::refresh_command_env_vars_include_noscope_token ... ok
+test provider_exec::tests::refresh_command_env_vars_include_noscope_token_id ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_has_exactly_three_base_keys ... ok
+test provider_exec::tests::refresh_command_env_vars_include_noscope_ttl ... ok
+test provider_exec::tests::revoke_command_env_has_exactly_two_credential_vars ... ok
+test provider_exec::tests::revoke_command_env_vars_include_noscope_token ... ok
+test provider_exec::tests::revoke_command_env_vars_include_noscope_token_id ... ok
+test provider_exec::tests::revoke_command_exit_0_for_already_revoked ... ok
+test provider_exec::tests::revoke_command_non_zero_exit_is_failure ... ok
+test provider_exec::tests::template_variable_injection_prevention_argv_substitution ... ok
+test provider_exec::tests::refresh_command_output_same_contract_as_mint ... ok
+test provider_exec::tests::template_variable_injection_prevention_multiple_role_substitutions ... ok
+test provider_exec::tests::template_variable_injection_prevention_no_unknown_vars_expanded ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_rejects_non_ascii ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_rejects_shell_metacharacters ... ok
+test provider_exec::tests::template_variable_injection_prevention_no_shell_expansion ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_rejects_empty ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_rejects_slashes ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_valid_alphanumeric ... ok
+test provider_exec::tests::ttl_format_is_integer_seconds_for_providers ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_rejects_spaces ... ok
+test provider_exec::tests::ttl_format_no_human_duration_suffix ... ok
+test provider_exec::tests::template_variable_injection_prevention_ttl_substituted_as_integer_string ... ok
+test redaction::tests::debug_format_looks_like_debug_output ... ok
+test redaction::tests::debug_never_shows_full_token_value ... ok
+test redaction::tests::display_never_shows_full_token_value ... ok
+test redaction::tests::display_of_empty_token_does_not_panic ... ok
+test redaction::tests::jwt_token_never_shows_prefix_chars ... ok
+test redaction::tests::jwt_token_with_provider_id_uses_provider_id ... ok
+test redaction::tests::debug_format_shows_redacted_form_not_raw ... ok
+test redaction::tests::different_tokens_produce_different_hash_ids ... ok
+test redaction::tests::long_token_shows_first_8_chars_with_ellipsis ... ok
+test redaction::tests::mixed_ascii_multibyte_token_takes_8_chars ... ok
+test redaction::tests::same_token_always_produces_same_hash_id ... ok
+test redaction::tests::multibyte_utf8_token_does_not_panic ... ok
+test redaction::tests::short_token_with_provider_id_uses_that_id ... ok
+test redaction::tests::token_exactly_16_chars_uses_redacted_format ... ok
+test redaction::tests::short_token_without_id_uses_hash_based_id ... ok
+test redaction::tests::token_exactly_17_chars_shows_prefix ... ok
+test refresh::tests::continuous_refresh_after_failure_new_window_after_expiry ... ok
+test refresh::tests::continuous_refresh_after_failure_reset_after_success ... ok
+test refresh::tests::refresh_failure_independence_separate_trackers ... ok
+test refresh::tests::refresh_failure_independence_success_resets_own_tracker ... ok
+test redaction::tests::redaction_cannot_be_bypassed_by_alternate_format ... ok
+test refresh::tests::refresh_failure_independence_tracker_knows_its_credential ... ok
+test refresh::tests::continuous_refresh_after_failure_not_permanently_disabled ... ok
+test refresh::tests::refresh_failure_preserves_child_allows_token_until_expiry ... ok
+test refresh::tests::refresh_failure_preserves_child_logs_warning ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_not_kill ... ok
+test refresh::tests::refresh_failure_preserves_child_never_kills_at_any_attempt ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_retry ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_env_var_point_in_time ... ok
+test refresh::tests::refresh_limitation_documentation_startup_warning ... ok
+test refresh::tests::refresh_retry_parameters_delay_grows_exponentially ... ok
+test refresh::tests::refresh_retry_parameters_jitter_range_is_25_percent ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_environment ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_attempt_2_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_base_delay_is_one_second ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_multiplier_is_two ... ok
+test refresh::tests::refresh_retry_parameters_no_retry_when_remaining_lifetime_zero ... ok
+test refresh::tests::refresh_retry_parameters_large_attempt_does_not_panic ... ok
+test refresh::tests::refresh_retry_parameters_total_window_within_50_percent_remaining ... ok
+test refresh::tests::refresh_retry_parameters_max_retries_is_four ... ok
+test refresh::tests::refresh_retry_parameters_truncates_retries_when_lifetime_short ... ok
+test security::tests::allows_args_without_token_values ... ok
+test refresh::tests::refresh_tracker_failure_count_saturates_instead_of_wrapping ... ok
+test security::tests::disable_core_dumps_sets_rlimit_to_zero ... ok
+test security::tests::disable_core_dumps_succeeds_on_linux ... ok
+test security::tests::empty_known_tokens_always_valid ... ok
+test security::tests::error_message_does_not_contain_token_value ... ok
+test security::tests::rejects_args_containing_known_token_value ... ok
+test token::tests::redacted_value_returns_reference_not_new_computation ... ok
+test security::tests::rejects_token_as_substring_in_arg ... ok
+test token::tests::scoped_token_debug_does_not_expose_secret ... ok
+test token::tests::scoped_token_constructor_takes_secret_string_directly ... ok
+test token::tests::scoped_token_debug_shows_non_secret_fields ... ok
+test token::tests::scoped_token_display_does_not_expose_secret ... ok
+test token::tests::scoped_token_exposes_metadata_but_not_value ... ok
+test token::tests::scoped_token_is_not_clone ... ok
+test token::tests::scoped_token_expose_secret_returns_value ... ok
+test token::tests::scoped_token_is_not_serializable ... ok
+test token::tests::scoped_token_is_send ... ok
+test token::tests::scoped_token_is_sync ... ok
+test token::tests::scoped_token_requires_expires_at ... ok
+test security::tests::empty_args_always_valid ... ok
+test token::tests::string_zeroize_actually_clears_data ... ok
+test token_convert::tests::centralized_provider_output_to_scoped_token_computed_expiry ... ok
+test token_convert::tests::centralized_provider_output_to_scoped_token_with_token_id ... ok
+test token_convert::tests::centralized_full_pipeline_provider_output_to_envelope ... ok
+test token_convert::tests::centralized_provider_output_to_scoped_token ... ok
+test token_convert::tests::centralized_scoped_token_to_mint_envelope_without_token_id ... ok
+test token_convert::tests::conversion_result_token_accessible ... ok
+test token_convert::tests::pipeline_preserves_special_characters_in_token ... ok
+test token_convert::tests::provider_output_expires_at_provided_flag_accessible ... ok
+test token_convert::tests::provider_output_expires_at_provided_true_when_supplied ... ok
+test token_convert::tests::secret_boundary_envelope_debug_does_not_expose_secret ... ok
+test token_convert::tests::secret_boundary_envelope_zeroizes_on_drop ... ok
+test token_convert::tests::secret_boundary_provider_output_to_token_does_not_log_secret ... ok
+test token_convert::tests::secret_boundary_provider_output_consumed ... ok
+test token_convert::tests::secret_boundary_provider_output_zeroizes_on_drop ... ok
+test token_convert::tests::centralized_provider_output_to_scoped_token_without_token_id ... ok
+test token_convert::tests::secret_boundary_scoped_token_not_serializable ... ok
+test token_convert::tests::secret_boundary_scoped_token_not_consumed_by_envelope ... ok
+test token_convert::tests::centralized_scoped_token_to_mint_envelope ... ok
+test token_convert::tests::unified_serialization_single_envelope_field_set ... ok
+test token_convert::tests::unified_serialization_multi_envelope_uses_same_shape ... ok
+
+test result: ok. 647 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+   Doc-tests noscope
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+[0m
+All 647 tests pass. Now let's run clippy:
+[0m$ [0mcargo clippy --all-targets 2>&1
+Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+warning: unused import: `ErrorKind`
+  --> src/client.rs:23:27
+   |
+23 | use crate::error::{Error, ErrorKind};
+   |                           ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `noscope` (lib) generated 1 warning (run `cargo clippy --fix --lib -p noscope` to apply 1 suggestion)
+warning: `noscope` (lib test) generated 1 warning (1 duplicate)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.18s
+[0m
+One warning — unused import of `ErrorKind` in `client.rs`. Let me fix that:
+[0m← [0mEdit src/client.rs
+Index: /home/ben/Documents/repos/noscope/src/client.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/client.rs
++++ /home/ben/Documents/repos/noscope/src/client.rs
+@@ -19,9 +19,9 @@
+ 
+ use std::path::PathBuf;
+ use std::time::Duration;
+ 
+-use crate::error::{Error, ErrorKind};
++use crate::error::Error;
+ use crate::mint;
+ use crate::provider;
+ use crate::provider_exec;
+ use crate::security;
+
+[0m
+[0m$ [0mcargo clippy --all-targets 2>&1
+Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.44s
+[0m
+Zero warnings. Let me also run `cargo test` one more time to confirm everything still passes after removing the import:
+[0m$ [0mcargo test 2>&1 | tail -5
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+[0m
+[0m$ [0mcargo test 2>&1 | grep "test result"
+test result: ok. 647 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+[0m
+647 tests pass, zero warnings. Now Phase 4 — Refactor:
+[0m# [0mTodos
+[x] Phase 1: Understand the codebase - read src/lib.rs and all modules
+[x] Phase 2: TDD Red - Write failing tests for error convergence
+[x] Phase 3: TDD Green - Remove NoscopeError, make error::Error the canonical type
+[ ] Phase 4: TDD Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds Review - Brutal self-review
+[ ] Phase 6: Commit with proper message
+[0m
+Let me review the changed files for cleanup opportunities:
+[0m→ [0mRead src/client.rs[90m [offset=1, limit=30][0m
+[0m→ [0mRead src/client.rs[90m [offset=270, limit=30][0m
+The code looks clean. The migration comment block in `client.rs` is fine since it's just a comment that replaces what was the whole `NoscopeError` enum + impls. Let me also check the `cli_adapter.rs` code flow is clean:
+[0m→ [0mRead src/cli_adapter.rs[90m [offset=1, limit=80][0m
+Good. Now let me also check the `lib.rs` re-export is clean:
+[0m→ [0mRead src/lib.rs[90m [offset=1, limit=50][0m
+The code is clean and readable. Let me also update the re-exports comment to be accurate:
+[0m
+[0m← [0mEdit src/lib.rs
+Index: /home/ben/Documents/repos/noscope/src/lib.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/lib.rs
++++ /home/ben/Documents/repos/noscope/src/lib.rs
+@@ -17,10 +17,13 @@
+ 
+ // ---------------------------------------------------------------------------
+ // Re-exports: stable, ergonomic types from crate root (noscope-cg8.1).
+ //
+-// Consumers can write `use noscope::{Client, MintRequest, NoscopeError}`
++// Consumers can write `use noscope::{Client, MintRequest, Error, ErrorKind}`
+ // instead of importing from individual modules.
++//
++// NoscopeError is a backward-compatible type alias for Error
++// (noscope-bsq.1.5).
+ // ---------------------------------------------------------------------------
+ 
+ pub use client::{Client, ClientOptions, MintRequest, ProviderOverrides, RevokeRequest};
+ pub use error::{Error, ErrorKind};
+
+[0m
+Let me run `cargo test && cargo clippy` again to confirm refactoring didn't break anything:
+[0m$ [0mcargo test 2>&1 | grep "test result" && cargo clippy --all-targets 2>&1
+test result: ok. 647 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.56s
+[0m
+647 tests pass, zero clippy warnings.
+[0m# [0mTodos
+[x] Phase 1: Understand the codebase - read src/lib.rs and all modules
+[x] Phase 2: TDD Red - Write failing tests for error convergence
+[x] Phase 3: TDD Green - Remove NoscopeError, make error::Error the canonical type
+[x] Phase 4: TDD Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds Review - Brutal self-review
+[ ] Phase 6: Commit with proper message
+[0m
+## Phase 5: Linus Torvalds Review
+
+Let me review the entire changeset as if I were Linus Torvalds reading it on LKML:
+[0m$ [0mgit diff --stat 2>&1
+.gitignore         |   4 +
+ src/cli_adapter.rs |  20 +--
+ src/client.rs      | 250 +++++++++++++------------------------
+ src/lib.rs         | 355 ++++++++++++++++++++++++++++++++++++++++++++++++++++-
+ 4 files changed, 451 insertions(+), 178 deletions(-)
+[0m
+[0m$ [0mgit diff src/client.rs 2>&1 | head -400
+diff --git a/src/client.rs b/src/client.rs
+index a20dedc..3350844 100644
+--- a/src/client.rs
++++ b/src/client.rs
+@@ -11,12 +11,16 @@
+ // - NS-020: Core dump prevention at construction
+ // - NS-033: Template variable injection prevention (role validation)
+ // - NS-058: Redaction at all log levels
++//
++// noscope-bsq.1.5: This module uses crate::error::Error as the single
++// canonical error type. The old NoscopeError enum has been replaced by a
++// type alias (pub type NoscopeError = crate::error::Error) in lib.rs for
++// backward compatibility.
+ 
+-use std::fmt;
+ use std::path::PathBuf;
+ use std::time::Duration;
+ 
+-use crate::exit_code::NoscopeExitCode;
++use crate::error::Error;
+ use crate::mint;
+ use crate::provider;
+ use crate::provider_exec;
+@@ -96,9 +100,9 @@ impl Client {
+     ///
+     /// # Errors
+     ///
+-    /// Returns [`NoscopeError::Security`] if `setrlimit(RLIMIT_CORE, 0)`
+-    /// fails (e.g., insufficient privileges on the platform).
+-    pub fn new(opts: ClientOptions) -> Result<Self, NoscopeError> {
++    /// Returns [`Error`] with [`ErrorKind::Security`] if
++    /// `setrlimit(RLIMIT_CORE, 0)` fails (e.g., insufficient privileges).
++    pub fn new(opts: ClientOptions) -> Result<Self, Error> {
+         // NS-020: Fail-fast core dump prevention.
+         security::disable_core_dumps()?;
+         Ok(Self { opts })
+@@ -121,7 +125,7 @@ impl Client {
+     ///
+     /// Checks: providers non-empty, role non-empty and safe (NS-033),
+     /// TTL > 0 (NS-062).
+-    pub fn validate_mint(&self, req: &MintRequest) -> Result<(), NoscopeError> {
++    pub fn validate_mint(&self, req: &MintRequest) -> Result<(), Error> {
+         // Delegate to existing mint validation.
+         // Pass Some(ttl_secs) directly — validate_mint_args handles zero
+         // TTL with a clear error message, and None for the missing-flag case.
+@@ -130,12 +134,10 @@ impl Client {
+         } else {
+             Some(req.ttl_secs)
+         };
+-        mint::validate_mint_args(ttl_opt, &req.providers, &req.role).map_err(NoscopeError::from)?;
++        mint::validate_mint_args(ttl_opt, &req.providers, &req.role)?;
+ 
+         // NS-033: Validate role for safe characters.
+-        provider_exec::validate_role(&req.role).map_err(|e| NoscopeError::Usage {
+-            message: format!("{}", e),
+-        })?;
++        provider_exec::validate_role(&req.role).map_err(|e| Error::usage(&format!("{}", e)))?;
+ 
+         Ok(())
+     }
+@@ -143,9 +145,9 @@ impl Client {
+     /// NS-065: Check that stdout is not a terminal before mint output.
+     ///
+     /// Respects `force_terminal` from [`ClientOptions`].
+-    pub fn check_stdout_not_terminal(&self, is_tty: bool) -> Result<(), NoscopeError> {
+-        mint::check_stdout_not_terminal(is_tty, self.opts.force_terminal)
+-            .map_err(NoscopeError::from)
++    pub fn check_stdout_not_terminal(&self, is_tty: bool) -> Result<(), Error> {
++        mint::check_stdout_not_terminal(is_tty, self.opts.force_terminal)?;
++        Ok(())
+     }
+ 
+     /// Resolve a provider configuration by name, with optional overrides.
+@@ -156,7 +158,7 @@ impl Client {
+         &self,
+         name: &str,
+         overrides: &ProviderOverrides,
+-    ) -> Result<provider::ResolvedProvider, NoscopeError> {
++    ) -> Result<provider::ResolvedProvider, Error> {
+         // Convert ProviderOverrides to the internal types.
+         let flags = provider::ProviderFlags {
+             mint_cmd: overrides.mint_cmd.clone(),
+@@ -170,15 +172,19 @@ impl Client {
+             (None, Some(home)) => provider::provider_config_path_with_home(name, None, home),
+             (None, None) => provider::provider_config_path(name, None),
+         };
+-        let file_config = provider::load_provider_file(&config_path).map_err(NoscopeError::from)?;
++        let file_config = provider::load_provider_file(&config_path)?;
+ 
+         let env = match &self.opts.provider_env {
+             Some(env) => env.clone(),
+             None => provider::provider_env_from_process(),
+         };
+ 
+-        provider::resolve_provider_config(name, &flags, &env, file_config)
+-            .map_err(NoscopeError::from)
++        Ok(provider::resolve_provider_config(
++            name,
++            &flags,
++            &env,
++            file_config,
++        )?)
+     }
+ 
+     /// NS-071: Generate dry-run output for a resolved provider.
+@@ -233,8 +239,8 @@ impl RevokeRequest {
+     ///
+     /// Extracts only token_id and provider. The raw token field is read
+     /// but never stored (NS-012).
+-    pub fn from_mint_json(json_str: &str) -> Result<Self, NoscopeError> {
+-        let inner = mint::RevokeInput::from_mint_json(json_str).map_err(NoscopeError::from)?;
++    pub fn from_mint_json(json_str: &str) -> Result<Self, Error> {
++        let inner = mint::RevokeInput::from_mint_json(json_str)?;
+         Ok(Self { inner })
+     }
+ 
+@@ -272,94 +278,20 @@ impl ProviderOverrides {
+ }
+ 
+ // ---------------------------------------------------------------------------
+-// NoscopeError
++// NoscopeError type alias (noscope-bsq.1.5)
+ // ---------------------------------------------------------------------------
+-
+-/// Unified error type for the noscope facade API.
+-///
+-/// Covers all failure modes a consumer may encounter: usage errors,
+-/// configuration errors, mint failures, and security violations.
+-/// Each variant maps to a noscope exit code (NS-054).
+-#[derive(Debug)]
+-pub enum NoscopeError {
+-    /// Command-line usage error (bad flags, missing args).
+-    Usage { message: String },
+-    /// Configuration error (malformed config, missing provider).
+-    Config { message: String },
+-    /// Credential minting failed.
+-    MintFailed { message: String },
+-    /// Security invariant violated (token in args, etc.).
+-    Security { message: String },
+-    /// Profile error (not found, validation failed, etc.).
+-    Profile { message: String },
+-}
+-
+-impl NoscopeError {
+-    /// Map this error to a process exit code (NS-054).
+-    pub fn exit_code(&self) -> i32 {
+-        match self {
+-            Self::Usage { .. } => NoscopeExitCode::Usage.as_raw(),
+-            Self::Config { .. } => NoscopeExitCode::ConfigError.as_raw(),
+-            Self::MintFailed { .. } => NoscopeExitCode::MintFailure.as_raw(),
+-            Self::Security { .. } => NoscopeExitCode::Usage.as_raw(),
+-            Self::Profile { .. } => NoscopeExitCode::ConfigNotFound.as_raw(),
+-        }
+-    }
+-}
+-
+-impl fmt::Display for NoscopeError {
+-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+-        match self {
+-            Self::Usage { message } => write!(f, "usage error: {}", message),
+-            Self::Config { message } => write!(f, "config error: {}", message),
+-            Self::MintFailed { message } => write!(f, "mint failed: {}", message),
+-            Self::Security { message } => write!(f, "security error: {}", message),
+-            Self::Profile { message } => write!(f, "profile error: {}", message),
+-        }
+-    }
+-}
+-
+-impl std::error::Error for NoscopeError {}
+-
+-// ---------------------------------------------------------------------------
+-// From conversions for internal error types
++// The old NoscopeError enum has been replaced by a type alias pointing to
++// the canonical error::Error type. This preserves backward compatibility
++// for existing consumers while converging on a single public error surface.
++//
++// Migration for existing code:
++// - Old: match err { NoscopeError::Usage { message } => ... }
++//   New: match err.kind() { ErrorKind::Usage => ...; use err.message() }
++// - Old: NoscopeError::Usage { message: "bad".to_string() }
++//   New: Error::usage("bad")
++// - exit_code() and Display still work unchanged.
+ // ---------------------------------------------------------------------------
+ 
+-impl From<mint::MintError> for NoscopeError {
+-    fn from(e: mint::MintError) -> Self {
+-        match e {
+-            mint::MintError::InvalidInput { message } => Self::Usage { message },
+-            mint::MintError::TerminalDetected => Self::Usage {
+-                message: format!("{}", e),
+-            },
+-        }
+-    }
+-}
+-
+-impl From<provider::ProviderConfigError> for NoscopeError {
+-    fn from(e: provider::ProviderConfigError) -> Self {
+-        Self::Config {
+-            message: format!("{}", e),
+-        }
+-    }
+-}
+-
+-impl From<security::SecurityError> for NoscopeError {
+-    fn from(e: security::SecurityError) -> Self {
+-        Self::Security {
+-            message: format!("{}", e),
+-        }
+-    }
+-}
+-
+-impl From<crate::profile::ProfileError> for NoscopeError {
+-    fn from(e: crate::profile::ProfileError) -> Self {
+-        Self::Profile {
+-            message: format!("{}", e),
+-        }
+-    }
+-}
+-
+ #[cfg(test)]
+ mod tests {
+     use std::os::unix::fs::PermissionsExt;
+@@ -410,15 +342,13 @@ mod tests {
+     #[test]
+     fn facade_error_type_exists_and_is_std_error() {
+         fn assert_error<T: std::error::Error>() {}
+-        assert_error::<super::NoscopeError>();
++        assert_error::<crate::Error>();
+     }
+ 
+     #[test]
+     fn facade_error_has_exit_code() {
+-        // Every error variant must map to an exit code for automation.
+-        let err = super::NoscopeError::Usage {
+-            message: "bad flag".to_string(),
+-        };
++        // Every error kind must map to an exit code for automation.
++        let err = crate::Error::usage("bad flag");
+         let code = err.exit_code();
+         assert_eq!(code, 64);
+     }
+@@ -426,36 +356,26 @@ mod tests {
+     #[test]
+     fn facade_error_variants_cover_core_failure_modes() {
+         // Usage errors
+-        let usage = super::NoscopeError::Usage {
+-            message: "missing --ttl".to_string(),
+-        };
++        let usage = crate::Error::usage("missing --ttl");
+         assert_eq!(usage.exit_code(), 64);
+ 
+         // Provider config errors
+-        let config = super::NoscopeError::Config {
+-            message: "malformed TOML".to_string(),
+-        };
++        let config = crate::Error::config("malformed TOML");
+         assert_eq!(config.exit_code(), 78);
+ 
+-        // Mint failure
+-        let mint = super::NoscopeError::MintFailed {
+-            message: "aws auth expired".to_string(),
+-        };
+-        assert_eq!(mint.exit_code(), 65);
++        // Provider failure (replaces MintFailed)
++        let provider = crate::Error::provider("aws", "auth expired");
++        assert_eq!(provider.exit_code(), 65);
+ 
+         // Security violation
+-        let sec = super::NoscopeError::Security {
+-            message: "token in args".to_string(),
+-        };
+-        // Security violations are internal/usage errors — must not be 0
++        let sec = crate::Error::security("token in args");
++        // Security violations are usage errors — must not be 0
+         assert_ne!(sec.exit_code(), 0);
+     }
+ 
+     #[test]
+     fn facade_error_display_is_informative() {
+-        let err = super::NoscopeError::Usage {
+-            message: "missing --ttl flag".to_string(),
+-        };
++        let err = crate::Error::usage("missing --ttl flag");
+         let msg = format!("{}", err);
+         assert!(
+             msg.contains("missing --ttl flag"),
+@@ -467,9 +387,7 @@ mod tests {
+     #[test]
+     fn facade_error_debug_does_not_contain_secrets() {
+         // Error type must not carry or leak secret values in Debug.
+-        let err = super::NoscopeError::MintFailed {
+-            message: "provider failed".to_string(),
+-        };
++        let err = crate::Error::provider("aws", "provider failed");
+         let debug = format!("{:?}", err);
+         assert!(
+             !debug.contains("secret"),
+@@ -676,20 +594,20 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn facade_noscopeerror_is_send() {
+-        static_assertions::assert_impl_all!(super::NoscopeError: Send);
++    fn facade_error_is_send() {
++        static_assertions::assert_impl_all!(crate::Error: Send);
+     }
+ 
+     #[test]
+-    fn facade_noscopeerror_is_sync() {
+-        static_assertions::assert_impl_all!(super::NoscopeError: Sync);
++    fn facade_error_is_sync() {
++        static_assertions::assert_impl_all!(crate::Error: Sync);
+     }
+ 
+     #[test]
+-    fn facade_noscopeerror_is_not_clone() {
++    fn facade_error_is_not_clone() {
+         // Error types should not be Clone — they may carry heap-allocated
+         // context and cloning errors is rarely the right pattern.
+-        static_assertions::assert_not_impl_any!(super::NoscopeError: Clone);
++        static_assertions::assert_not_impl_any!(crate::Error: Clone);
+     }
+ 
+     #[test]
+@@ -790,7 +708,7 @@ mod tests {
+     }
+ 
+     // =========================================================================
+-    // NoscopeError conversion from internal error types.
++    // Error conversion from internal error types (via error::Error From impls).
+     // =========================================================================
+ 
+     #[test]
+@@ -798,7 +716,7 @@ mod tests {
+         let mint_err = crate::mint::MintError::InvalidInput {
+             message: "bad input".to_string(),
+         };
+-        let err: super::NoscopeError = mint_err.into();
++        let err: crate::Error = mint_err.into();
+         let msg = format!("{}", err);
+         assert!(msg.contains("bad input"), "Must carry the message: {}", msg);
+     }
+@@ -808,7 +726,7 @@ mod tests {
+         let prov_err = crate::provider::ProviderConfigError::MalformedConfig {
+             message: "syntax error".to_string(),
+         };
+-        let err: super::NoscopeError = prov_err.into();
++        let err: crate::Error = prov_err.into();
+         let msg = format!("{}", err);
+         assert!(
+             msg.contains("syntax error"),
+@@ -820,7 +738,7 @@ mod tests {
+     #[test]
+     fn facade_error_from_security_error() {
+         let sec_err = crate::security::SecurityError::TokenInArgs { arg_index: 2 };
+-        let err: super::NoscopeError = sec_err.into();
++        let err: crate::Error = sec_err.into();
+         assert_ne!(err.exit_code(), 0, "Security error must not be success");
+     }
+ 
+@@ -829,7 +747,7 @@ mod tests {
+         let prof_err = crate::profile::ProfileError::NotFound {
+             path: std::path::PathBuf::from("/missing/profile.toml"),
+         };
+-        let err: super::NoscopeError = prof_err.into();
++        let err: crate::Error = prof_err.into();
+         let msg = format!("{}", err);
+         assert!(msg.contains("profile"), "Must mention profile: {}", msg);
+     }
+@@ -1094,11 +1012,11 @@ mint = "/from/file/mint"
+     // 5. Documentation: public API docs describe the behavior.
+     // =========================================================================
+ 
+-    // Rule 1: Client::new must return Result<Client, NoscopeError>.
++    // Rule 1: Client::new must return Result<Client, Error>.
+     #[test]
+     fn hardening_client_new_returns_result() {
+         // Client::new must be fallible — returns Result, not bare Client.
+-        let result: Result<super::Client, super::NoscopeError> =
++        let result: Result<super::Client, crate::Error> =
+             super::Client::new(super::ClientOptions::default());
+         // On Linux, hardening should succeed.
+         assert!(result.is_ok(), "Client::new must succeed on Linux");
+@@ -1119,30 +1037,27 @@ mint = "/from/file/mint"
+         assert!(result.is_ok(), "Client from new() must be fully functional");
+     }
+ 
+-    // Rule 1: Client::new error is a NoscopeError::Security variant.
++    // Rule 1: Client::new error is an Error with SecurityKind.
+     #[test]
+     fn hardening_failure_is_security_error() {
+-        // A hardening failure must surface as NoscopeError::Security.
++        // A hardening failure must surface as Error with ErrorKind::Security.
+         // We can't easily force setrlimit to fail, so we verify the error
+-        // type conversion: SecurityError::CoreDumpDisableFailed → NoscopeError::Security.
++        // type conversion: SecurityError::CoreDumpDisableFailed → Error::Security.
+         let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(std::io::Error::new(
+             std::io::ErrorKind::PermissionDenied,
+             "mock failure",
+         ));
+[0m
+Now let me do the brutal Linus review:
+
+**LINUS REVIEW:**
+
+1. **Type alias vs. newtype**: Using `pub type NoscopeError = Error` is the right call. A newtype wrapper would force consumers to unwrap, and a type alias is zero-cost with perfect backward compat for the name. No issue here.
+
+2. **`ProviderExecError` not converted through `error::Error` in `validate_role`**: In `client.rs:136`, we do `provider_exec::validate_role(&req.role).map_err(|e| Error::usage(&format!("{}", e)))`. This is correct because `validate_role` returns a `ProviderExecError` which has a `From` impl to `Error` in `error.rs`. But wait — let me check if the `?` operator could just be used instead of the manual `map_err`:
+[0m→ [0mRead src/error.rs[90m [offset=280, limit=10][0m
+Hmm. The `From<ProviderExecError>` maps to `ErrorKind::Provider`, but the `validate_role` error in `client.rs` is being mapped to `Error::usage(...)` — which is `ErrorKind::Usage`. This is actually *intentional* — a bad role string is a usage error (the user gave bad input), not a provider error (the provider didn't fail). So the explicit `map_err` is correct. The `?` operator would give `ErrorKind::Provider` which would be semantically wrong.
+
+3. **`check_stdout_not_terminal` pattern**: The code does:
+```rust
+mint::check_stdout_not_terminal(is_tty, self.opts.force_terminal)?;
+Ok(())
+```
+This is slightly awkward — `?` already converts `MintError` to `Error` via `From`, and if the function succeeds it returns `Ok(())`. The `Ok(())` after `?` is idiomatic Rust for "convert the error, pass through success". This is fine.
+
+4. **Missing edge case test**: What about the old `NoscopeError::MintFailed` variant? The old type had a dedicated `MintFailed` variant with exit code 65. In the new `error::Error`, this is handled by `ErrorKind::Provider` (also exit code 65). The convergence tests already test `exit_code_provider_is_65_through_canonical`. But I should verify there's no behavioral difference — the old `MintFailed` was a generic "mint failed" message, while the new `ErrorKind::Provider` carries a provider name. Since multi-error cases use `Error::multi()`, this is fine. No issue.
+
+5. **`resolve_provider` awkward `Ok(... ?)`**: The code does:
+```rust
+Ok(provider::resolve_provider_config(name, &flags, &env, file_config)?)
+```
+This is a common Rust pattern for "convert the error type and re-wrap in Ok". It's idiomatic. No issue.
+
+6. **Old tests referencing `NoscopeError` in comments**: Some old test comments in `cli_adapter.rs` still say "NoscopeError" (lines 313, 323, 381, 385, 389). These comments describe the *old* behavior. They should be updated to reference the new type.
+
+Let me fix that:
+[0m→ [0mRead src/cli_adapter.rs[90m [offset=309, limit=30][0m
+[0m→ [0mRead src/cli_adapter.rs[90m [offset=370, limit=25][0m
+[0m
+[0m← [0mEdit src/cli_adapter.rs
+Index: /home/ben/Documents/repos/noscope/src/cli_adapter.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/cli_adapter.rs
++++ /home/ben/Documents/repos/noscope/src/cli_adapter.rs
+@@ -308,20 +308,18 @@
+     assert!(result.is_ok());
+ }
+ 
+ #[test]
+-fn backward_compatible_migration_adapter_error_maps_to_noscope_error() {
+-    // Errors from the CLI adapter must convert to NoscopeError for
+-    // backward compatibility with existing CLI error handling.
++fn backward_compatible_migration_adapter_error_maps_to_error() {
++    // Errors from the CLI adapter must be error::Error (the canonical type).
+     let args = vec![
+         "noscope".to_string(),
+         "revoke".to_string(),
+         "--token".to_string(),
+         "secret".to_string(),
+     ];
+     let result = super::validate_revoke_argv(&args);
+     assert!(result.is_err());
+-    // The error type must be convertible to NoscopeError or be NoscopeError.
+     let err = result.unwrap_err();
+     let _msg = format!("{}", err); // Must implement Display
+ }
+ 
+
+[0m
+[0m← [0mEdit src/cli_adapter.rs
+Index: /home/ben/Documents/repos/noscope/src/cli_adapter.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/cli_adapter.rs
++++ /home/ben/Documents/repos/noscope/src/cli_adapter.rs
+@@ -375,16 +375,15 @@
+     }
+ 
+     #[test]
+     fn edge_case_profile_flag_exclusion_error_has_exit_code() {
+-        // NS-054: Profile flag conflict maps through NoscopeError::Profile.
+-        // The From<ProfileError> conversion wraps all profile errors under
+-        // the Profile variant (exit 66), even FlagConflict which the underlying
+-        // ProfileError maps to Usage (64). The adapter preserves the existing
+-        // NoscopeError mapping behavior for backward compatibility.
++        // NS-054: Profile flag conflict maps through error::Error with
++        // ErrorKind::Profile. The From<ProfileError> conversion wraps all
++        // profile errors under Profile (exit 66), even FlagConflict which
++        // the underlying ProfileError maps to Usage (64).
+         let err =
+             super::check_profile_flag_exclusion(Some("dev"), Some("aws"), None, None).unwrap_err();
+         let code = err.exit_code();
+-        // NoscopeError::Profile maps to exit 66 (ConfigNotFound) per existing behavior.
++        // ErrorKind::Profile maps to exit 66 (ConfigNotFound).
+         assert_ne!(code, 0, "Profile flag conflict must not be success");
+     }
+ }
+
+[0m
+7. **One more review concern**: The old `NoscopeError` had a `MintFailed` variant that doesn't exist in `error::Error`. Any code in the wild that `match`ed on `NoscopeError::MintFailed { .. }` would now need to use `err.kind() == ErrorKind::Provider`. This is a source-level breaking change, but the bead description says this is intentional — "no split-brain error API for new consumers." The migration guide in the type alias doc covers this.
+
+8. **Potential test gap**: I should verify the `cli_adapter` test for the exit code from profile exclusion now uses `ErrorKind::Profile`. Let me check what exit code this actually returns:
+[0m$ [0mcargo test edge_case_profile_flag_exclusion_error_has_exit_code 2>&1 | grep -E "ok|FAILED"
+test cli_adapter::tests::edge_case_profile_flag_exclusion_error_has_exit_code ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 646 filtered out; finished in 0.00s
+[0m
+Good. Now run the full suite again to confirm my review fixes didn't break anything:
+[0m$ [0mcargo test 2>&1 | grep "test result" && cargo clippy --all-targets 2>&1
+test result: ok. 647 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+    Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.52s
+[0m
+647 tests pass, zero clippy warnings. The review is complete.
+
+**Summary of Linus Review findings and fixes:**
+- Fixed stale `NoscopeError` references in `cli_adapter.rs` test comments
+- Verified the `validate_role` error mapping to `ErrorKind::Usage` (not Provider) is intentionally correct
+- Verified no functional edge case gaps exist
+- Confirmed the migration path from old `NoscopeError` variants is documented
+[0m# [0mTodos
+[x] Phase 1: Understand the codebase - read src/lib.rs and all modules
+[x] Phase 2: TDD Red - Write failing tests for error convergence
+[x] Phase 3: TDD Green - Remove NoscopeError, make error::Error the canonical type
+[x] Phase 4: TDD Refactor - Clean up code
+[x] Phase 5: Linus Torvalds Review - Brutal self-review
+[ ] Phase 6: Commit with proper message
+[ ] Write provenance draft
+[0m
+Now Phase 6: Commit. Let me also write the provenance draft first:
+[0m$ [0mls /home/ben/Documents/repos/noscope/.beads/provenance-drafts/ 2>/dev/null || mkdir -p /home/ben/Documents/repos/noscope/.beads/provenance-drafts/
+noscope-2wn.md
+noscope-4mw.md
+noscope-4of.md
+noscope-5wl.md
+noscope-bsq.1.2.md
+noscope-bsq.1.3.md
+noscope-bsq.1.4.md
+noscope-cg8.2.md
+noscope-cg8.3.md
+noscope-cg8.4.md
+noscope-cg8.5.md
+noscope-ia2.md
+noscope-pmr.md
+noscope-ydn.md
+[0m
+[0m← [0mWrite .beads/provenance-drafts/noscope-bsq.1.5.md
+Wrote file successfully.
+[0m
+Now let me stage and commit:
+[0m$ [0mgit status
+On branch main
+Your branch is ahead of 'origin/main' by 3 commits.
+  (use "git push" to publish your local commits)
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   .gitignore
+	modified:   src/cli_adapter.rs
+	modified:   src/client.rs
+	modified:   src/lib.rs
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.beads/provenance-drafts/noscope-4mw.md
+	.beads/provenance-drafts/noscope-bsq.1.5.md
+	.beads/provenance-drafts/noscope-cg8.3.md
+	.beads/provenance-drafts/noscope-cg8.4.md
+	.beads/provenance-drafts/noscope-ydn.md
+	.beads/session-logs/
+	docs/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+[0m
+[0m$ [0mgit log --oneline -5
+5a9785f feat: surface core-dump hardening failures from Client construction (noscope-bsq.1.4)
+c91222d feat: tighten Unix config permission checks for provider/profile files (noscope-bsq.1.3)
+2d19243 feat: wire NOSCOPE_* env overrides in Client::resolve_provider (noscope-bsq.1.2)
+d2418a3 feat: unify token envelope and conversion boundaries (noscope-cg8.3)
+590d7aa feat: separate CLI argument concerns from core library (noscope-cg8.2)
+[0m
+[0m$ [0mgit add src/cli_adapter.rs src/client.rs src/lib.rs .beads/provenance-drafts/noscope-bsq.1.5.md && git commit -m "feat: converge on a single public top-level error type (noscope-bsq.1.5)
+
+Replace the split-brain error API (NoscopeError enum + error::Error/ErrorKind)
+with a single canonical error surface: error::Error is now the sole public
+error type. NoscopeError is retained as a type alias for backward compatibility.
+
+Changes:
+- Remove NoscopeError enum and From impls from client.rs
+- Update Client, cli_adapter to return error::Error consistently
+- Add pub type NoscopeError = Error with migration documentation
+- Add 31 convergence tests covering: no split-brain, facade/adapter
+  consistency, exit-code stability, and backward compatibility
+- Update existing tests to use canonical error API
+
+All exit codes preserved: Usage=64, Config=78, Provider=65, Security=64,
+Profile=66, Internal=70."
+[main 52444e4] feat: converge on a single public top-level error type (noscope-bsq.1.5)
+ 4 files changed, 486 insertions(+), 188 deletions(-)
+ create mode 100644 .beads/provenance-drafts/noscope-bsq.1.5.md
+[0m
+[0m$ [0mgit status
+On branch main
+Your branch is ahead of 'origin/main' by 4 commits.
+  (use "git push" to publish your local commits)
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   .gitignore
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.beads/provenance-drafts/noscope-4mw.md
+	.beads/provenance-drafts/noscope-cg8.3.md
+	.beads/provenance-drafts/noscope-cg8.4.md
+	.beads/provenance-drafts/noscope-ydn.md
+	.beads/session-logs/
+	docs/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+[0m
+[0m# [0mTodos
+[x] Phase 1: Understand the codebase - read src/lib.rs and all modules
+[x] Phase 2: TDD Red - Write failing tests for error convergence
+[x] Phase 3: TDD Green - Remove NoscopeError, make error::Error the canonical type
+[x] Phase 4: TDD Refactor - Clean up code
+[x] Phase 5: Linus Torvalds Review - Brutal self-review
+[x] Phase 6: Commit with proper message
+[x] Write provenance draft
+[0m
+All phases complete. Here's a summary of what was done:
+
+## Summary: noscope-bsq.1.5 — Converge on a single public top-level error type
+
+### Problem
+The crate exported two competing error types:
+- `client::NoscopeError` — simple enum with string-only variants
+- `error::Error` + `ErrorKind` — richer typed error with machine-readable categories, provider names, multi-error support, and source chaining
+
+### Solution
+`error::Error` became the sole canonical error type. `NoscopeError` was replaced with `pub type NoscopeError = Error` for backward compatibility.
+
+### Files changed
+- **`src/client.rs`** — Removed `NoscopeError` enum and its 4 `From` impls (~80 lines deleted). Updated all `Client` methods to return `error::Error`. Updated all existing tests.
+- **`src/cli_adapter.rs`** — Updated 3 public functions to return `error::Error` instead of `NoscopeError`.
+- **`src/lib.rs`** — Added `pub type NoscopeError = Error` with migration documentation. Added 31 convergence tests.
+- **`.beads/provenance-drafts/noscope-bsq.1.5.md`** — Provenance draft.
+
+### Test coverage
+- **31 new convergence tests** covering: single canonical type, facade/adapter consistency, all exit codes, From conversions, and backward compatibility
+- **647 total tests pass**, zero clippy warnings
+- No push per instructions

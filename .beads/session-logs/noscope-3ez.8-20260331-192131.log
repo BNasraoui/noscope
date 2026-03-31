@@ -1,0 +1,107 @@
+[0m
+> build · gpt-5.3-codex
+[0m
+[0m$ [0mbd show noscope-3ez.8 --json
+[
+  {
+    "id": "noscope-3ez.8",
+    "title": "Make profile mode first-class in mint and parser",
+    "description": "Align CLI parse semantics and runtime behavior so --profile is a true alternative to --provider/--role/--ttl, including cmd_mint profile flow and mutual-exclusion validation.",
+    "status": "in_progress",
+    "priority": 1,
+    "issue_type": "feature",
+    "assignee": "Ben Nasraoui",
+    "owner": "nasraouiprojects@gmail.com",
+    "created_at": "2026-03-31T08:49:01Z",
+    "created_by": "Ben Nasraoui",
+    "updated_at": "2026-03-31T09:21:31Z",
+    "labels": [
+      "cli",
+      "product",
+      "quality",
+      "review-backlog",
+      "review-ives",
+      "ux"
+    ],
+    "dependencies": [
+      {
+        "id": "noscope-3ez",
+        "title": "Post-review hardening and product polish backlog (Torvalds + Ive)",
+        "description": "Track all follow-up recommendations from strict code-quality and product-ergonomics reviews, including signal-path hardening tests, CLI trust fixes, onboarding, and UX polish.",
+        "status": "open",
+        "priority": 1,
+        "issue_type": "epic",
+        "owner": "nasraouiprojects@gmail.com",
+        "created_at": "2026-03-31T08:48:58Z",
+        "created_by": "Ben Nasraoui",
+        "updated_at": "2026-03-31T08:48:58Z",
+        "dependency_type": "parent-child"
+      }
+    ],
+    "parent": "noscope-3ez"
+  }
+]
+[0m
+[0m$ [0mbd show noscope-3ez.8
+◐ noscope-3ez.8 · Make profile mode first-class in mint and parser   [● P1 · IN_PROGRESS]
+Owner: Ben Nasraoui · Assignee: Ben Nasraoui · Type: feature
+Created: 2026-03-31 · Updated: 2026-03-31
+
+DESCRIPTION
+Align CLI parse semantics and runtime behavior so --profile is a true alternative to --provider/--role/--ttl, including cmd_mint profile flow and mutual-exclusion validation.
+
+LABELS: cli, product, quality, review-backlog, review-ives, ux
+
+PARENT
+  ↑ ○ noscope-3ez: (EPIC) Post-review hardening and product polish backlog (Torvalds + Ive) ● P1
+[0m
+[0m✱ [0mGlob "**/*noscope-3ez.8*"[90m in . · 2 matches[0m
+[0m✱ [0mGrep "noscope-3ez\.8|NS-[0-9]{3}"[90m in . · 2562 matches[0m
+[0m✱ [0mGrep ""id":"noscope-3ez\.8"|noscope-3ez\.8","title"|Rules:|NS-"[90m in .beads/backup · 103 matches[0m
+[0m✱ [0mGlob ".beads/provenance-drafts/*.md"[90m in . · 32 matches[0m
+[0m✱ [0mGlob "src/*.rs"[90m in . · 28 matches[0m
+[0m→ [0mRead src/lib.rs[90m [offset=1, limit=400][0m
+[0m→ [0mRead src/token.rs[90m [offset=1, limit=400][0m
+[0m→ [0mRead src/security.rs[90m [offset=1, limit=400][0m
+[0m→ [0mRead src/redaction.rs[90m [offset=1, limit=400][0m
+[0m→ [0mRead src/cli.rs[90m [offset=1, limit=400][0m
+[0m→ [0mRead src/cli_adapter.rs[90m [offset=1, limit=500][0m
+[0m→ [0mRead src/lib.rs[90m [offset=401, limit=300][0m
+[0m→ [0mRead src/cli.rs[90m [offset=401, limit=500][0m
+[0m→ [0mRead src/client.rs[90m [offset=1, limit=500][0m
+[0m→ [0mRead src/mint.rs[90m [offset=1, limit=500][0m
+[0m→ [0mRead src/profile.rs[90m [offset=1, limit=500][0m
+[0m→ [0mRead src/error.rs[90m [offset=1, limit=500][0m
+[0m→ [0mRead src/orchestrator.rs[90m [offset=1, limit=500][0m
+[0m→ [0mRead src/provider.rs[90m [offset=1, limit=500][0m
+[0m→ [0mRead src/token_provider.rs[90m [offset=1, limit=500][0m
+[0m→ [0mRead src/exit_code.rs[90m [offset=1, limit=500][0m
+[0m→ [0mRead src/config_path.rs[90m [offset=1, limit=500][0m
+[0m→ [0mRead src/token_convert.rs[90m [offset=1, limit=500][0m
+[0m→ [0mRead src/credential_set.rs[90m [offset=1, limit=500][0m
+[0m→ [0mRead src/provider_exec.rs[90m [offset=1, limit=500][0m
+[0m→ [0mRead src/client.rs[90m [offset=501, limit=800][0m
+[0m→ [0mRead src/mint.rs[90m [offset=501, limit=700][0m
+[0m→ [0mRead src/profile.rs[90m [offset=501, limit=900][0m
+[0m→ [0mRead src/error.rs[90m [offset=501, limit=400][0m
+[0m→ [0mRead src/provider.rs[90m [offset=501, limit=900][0m
+[0m→ [0mRead src/orchestrator.rs[90m [offset=501, limit=500][0m
+[0m→ [0mRead src/provider.rs[90m [offset=1401, limit=600][0m
+[0m→ [0mRead src/provider_exec.rs[90m [offset=501, limit=900][0m
+[0m→ [0mRead src/credential_set.rs[90m [offset=501, limit=900][0m
+[0m→ [0mRead src/exit_code.rs[90m [offset=501, limit=400][0m
+[0m→ [0mRead src/token_convert.rs[90m [offset=501, limit=100][0m
+[0m→ [0mRead src/event.rs[90m [offset=1, limit=700][0m
+[0m→ [0mRead src/event.rs[90m [offset=701, limit=300][0m
+[0m→ [0mRead src/provider_exec.rs[90m [offset=1401, limit=900][0m
+[0m→ [0mRead src/agent_process.rs[90m [offset=1, limit=700][0m
+[0m→ [0mRead src/process_group.rs[90m [offset=1, limit=500][0m
+[0m→ [0mRead src/refresh.rs[90m [offset=1, limit=700][0m
+[0m→ [0mRead src/signal_policy.rs[90m [offset=1, limit=700][0m
+[0m→ [0mRead src/refresh.rs[90m [offset=701, limit=700][0m
+[0m→ [0mRead src/run_signal_wiring.rs[90m [offset=1, limit=700][0m
+[0m→ [0mRead src/integration_runtime.rs[90m [offset=1, limit=700][0m
+[0m→ [0mRead src/event_emission_wiring_tests.rs[90m [offset=1, limit=700][0m
+[0m→ [0mRead src/ci_checks.rs[90m [offset=1, limit=500][0m
+[0m→ [0mRead src/main.rs[90m [offset=1, limit=800][0m
+[91m[1mError: [0mInput exceeds context window of this model

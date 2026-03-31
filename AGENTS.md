@@ -148,3 +148,85 @@ For more details, see README.md and docs/QUICKSTART.md.
 - If push fails, resolve and retry until it succeeds
 
 <!-- END BEADS INTEGRATION -->
+
+<!-- BEGIN PROVENANCE INTEGRATION v0.1.0 -->
+# Provenance Knowledge Graph
+
+> Run `statesman provenance prime` after context compaction or at the start of a new session.
+
+## When to Use Provenance
+
+Use Provenance whenever you are:
+
+- **Researching** — Check what's already known before searching the web or codebase
+- **Planning** — Inspect requirements, resolutions, and rules before proposing changes
+- **Analyzing** — Trace why a rule exists, assess change impact, find coverage gaps
+- **Reviewing** — Verify traceability chains are complete before approving changes
+- **Deciding** — Record decisions as resolutions so future agents understand the "why"
+
+## Core Commands
+
+```bash
+# Inspect the graph around a requirement (children, sources, resolutions, rules, threads)
+statesman provenance graph <requirement_id> --json
+
+# Trace why a rule exists (rule -> resolution -> requirement -> source)
+statesman provenance traceability <rule_id> --json
+
+# Post analysis/findings to an artifact's discussion thread
+statesman provenance thread post --parent-type requirement --parent-id <id> "Your analysis here"
+
+# List requirements for the current project
+statesman provenance requirements list --json
+
+# Assess blast radius of a change
+statesman provenance impact --node-type source <node_id> --json
+```
+
+## Agent Protocol
+
+Follow this workflow when working on tasks that touch business logic, rules, or requirements:
+
+1. **Inspect existing state** — Run `statesman provenance graph` or `requirements list` to see what's already captured
+2. **Use context** — Let existing requirements, resolutions, and rules inform your approach
+3. **Contribute findings** — Post research, analysis, and decisions as thread messages
+4. **Explain reasoning** — When creating or modifying artifacts, include rationale
+
+## The `--reason` Convention
+
+A `--reason` flag will be added to Provenance commands to build session trails automatically.
+Until then, embed your reasoning directly in thread messages — this creates the same
+traceability narrative:
+
+```bash
+# Good: include "why" in the message content itself
+statesman provenance thread post --parent-type rule --parent-id <id> \
+  "Investigating coverage gap for PROV-DATA-001 — found missing source link during auth refactor"
+```
+
+When `--reason` lands, it will attach structured context to every write operation.
+
+## Rules
+
+**Do:**
+- Check Provenance BEFORE starting research (avoid rediscovering known context)
+- Post findings as thread messages (durable, attributable, searchable)
+- Link new rules to requirements and resolutions (complete traceability)
+- Use `--json` when piping output to other tools or processing programmatically
+
+**Don't:**
+- Keep research findings only in local files (they vanish after the session)
+- Create rules without traceability to requirements and sources
+- Skip impact analysis before modifying source documents or requirements
+- Duplicate information that already exists in the graph
+
+## Skill Reference
+
+Load the `statesman-provenance` skill for the full command reference, detailed workflows
+(inspect, explain, analyze, create, contribute back), mental model, and troubleshooting.
+
+```
+Load skill: statesman-provenance
+```
+
+<!-- END PROVENANCE INTEGRATION v0.1.0 -->

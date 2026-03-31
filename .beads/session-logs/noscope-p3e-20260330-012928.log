@@ -1,0 +1,2722 @@
+[0m
+> build · claude-opus-4-6
+[0m
+I'll start by understanding the codebase and then follow the TDD workflow strictly.
+[0m# [0mTodos
+[ ] Phase 1: Understand — Read existing codebase (src/lib.rs, all modules)
+[ ] Phase 1: Understand — Read all 4 rules (NS-004, NS-051, NS-052, NS-053)
+[ ] Phase 2: TDD Red — Write tests for all rules (no production code)
+[ ] Phase 2: TDD Red — Verify all tests fail
+[ ] Phase 3: TDD Green — Write minimal production code
+[ ] Phase 3: TDD Green — cargo test passes, cargo clippy clean
+[ ] Phase 4: TDD Refactor — Clean up code
+[ ] Phase 5: Linus Torvalds Review — Brutal self-review
+[ ] Phase 5: Fix review issues, add edge case tests
+[ ] Phase 6: Commit with proper message
+[0m
+## Phase 1: Understand
+
+Let me read the existing codebase to understand patterns.
+[0m→ [0mRead src
+[0m→ [0mRead Cargo.toml
+[0m✱ [0mGlob "src/**/*.rs"[90m 9 matches[0m
+[0m→ [0mRead src/lib.rs
+[0m→ [0mRead src/token.rs
+[0m→ [0mRead src/provider.rs
+[0m→ [0mRead src/security.rs
+[0m→ [0mRead src/exit_code.rs
+[0m→ [0mRead src/mint.rs
+Now let me read the remaining files:
+[0m→ [0mRead src/redaction.rs
+[0m→ [0mRead src/event.rs
+[0m→ [0mRead src/refresh.rs
+Now I have a thorough understanding of the codebase. Let me also check the existing exit codes since NS-052 requires a distinct exit code:
+[0m
+[0m# [0mTodos
+[x] Phase 1: Understand — Read existing codebase (src/lib.rs, all modules)
+[x] Phase 1: Understand — Read all 4 rules (NS-004, NS-051, NS-052, NS-053)
+[ ] Phase 2: TDD Red — Write tests for all rules (no production code)
+[ ] Phase 2: TDD Red — Verify all tests fail
+[ ] Phase 3: TDD Green — Write minimal production code
+[ ] Phase 3: TDD Green — cargo test passes, cargo clippy clean
+[ ] Phase 4: TDD Refactor — Clean up code
+[ ] Phase 5: Linus Torvalds Review — Brutal self-review
+[ ] Phase 5: Fix review issues, add edge case tests
+[ ] Phase 6: Commit with proper message
+[0m
+## Phase 1 Complete - Understanding Summary
+
+**Rules to implement:**
+
+1. **NS-004**: Profile flatness constraint — flat lists of (provider, role, ttl) tuples only; no inheritance/extends/overrides/composition
+2. **NS-051**: Profile schema — `[[credentials]]` entries with `provider` (required), `role` (required), `ttl` (required), `env_key` (optional); unknown top-level fields ignored; unknown credential fields = error; empty array = error
+3. **NS-052**: Profile validation before minting — schema+env_key uniqueness+provider existence validated before any minting; all errors reported together; distinct exit code
+4. **NS-053**: Profile and CLI flag mutual exclusion — `--profile` forbids `--provider`/`--role`/`--ttl`; global flags remain valid
+
+**Codebase patterns observed:**
+- Each module has rule comments at the top
+- Error types are enums with Display/Debug/Error impls
+- Functions are well-documented with NS-xxx references
+- Tests are in `#[cfg(test)] mod tests` with rule-named sections
+- Exit codes use `NoscopeExitCode` enum in `exit_code.rs`
+- Profile files go at `~/.config/noscope/profiles/<name>.toml`
+- Provider config uses XDG Base Directory pattern from `provider.rs`
+
+## Phase 2: TDD Red — Write tests ONLY
+
+Now I'll create the `profile.rs` module with only test code. No production code yet.
+[0m← [0mWrite src/profile.rs
+Wrote file successfully.
+[0m
+Now I need to register the module in `lib.rs` so the tests are discoverable:
+[0m← [0mEdit src/lib.rs
+Index: /home/ben/Documents/repos/noscope/src/lib.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/lib.rs
++++ /home/ben/Documents/repos/noscope/src/lib.rs
+@@ -1,7 +1,8 @@
+ pub mod event;
+ pub mod exit_code;
+ pub mod mint;
++pub mod profile;
+ pub mod provider;
+ pub mod redaction;
+ pub mod refresh;
+ pub mod security;
+
+[0m
+Now let's verify all tests fail (since there's no production code yet):
+[0m$ [0mcargo test --lib profile 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+error[E0433]: failed to resolve: could not find `ProfileError` in `super`
+   --> src/profile.rs:388:32
+    |
+388 |         let exit_code = super::ProfileError::ValidationFailed {
+    |                                ^^^^^^^^^^^^ could not find `ProfileError` in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+  --> src/profile.rs:30:30
+   |
+30 |         let profile = super::parse_profile_toml(toml).unwrap();
+   |                              ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+  --> src/profile.rs:51:29
+   |
+51 |         let result = super::parse_profile_toml(toml);
+   |                             ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+  --> src/profile.rs:68:29
+   |
+68 |         let result = super::parse_profile_toml(toml);
+   |                             ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+  --> src/profile.rs:89:29
+   |
+89 |         let result = super::parse_profile_toml(toml);
+   |                             ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:109:29
+    |
+109 |         let result = super::parse_profile_toml(toml);
+    |                             ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:123:29
+    |
+123 |         let result = super::parse_profile_toml(toml);
+    |                             ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:134:29
+    |
+134 |         let result = super::parse_profile_toml(toml);
+    |                             ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:146:30
+    |
+146 |         let profile = super::parse_profile_toml(toml).unwrap();
+    |                              ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:162:30
+    |
+162 |         let profile = super::parse_profile_toml(toml).unwrap();
+    |                              ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:182:30
+    |
+182 |         let profile = super::parse_profile_toml(toml).unwrap();
+    |                              ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:200:29
+    |
+200 |         let result = super::parse_profile_toml(toml);
+    |                             ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:213:29
+    |
+213 |         let result = super::parse_profile_toml(toml);
+    |                             ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:226:29
+    |
+226 |         let result = super::parse_profile_toml(toml);
+    |                             ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:241:29
+    |
+241 |         let result = super::parse_profile_toml(toml);
+    |                             ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:253:29
+    |
+253 |         let result = super::parse_profile_toml(toml);
+    |                             ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:274:29
+    |
+274 |         let result = super::parse_profile_toml(toml);
+    |                             ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:312:30
+    |
+312 |         let profile = super::parse_profile_toml(toml).unwrap();
+    |                              ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `validate_profile` in module `super`
+   --> src/profile.rs:313:29
+    |
+313 |         let errors = super::validate_profile(&profile, &|_name| true);
+    |                             ^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:339:30
+    |
+339 |         let profile = super::parse_profile_toml(toml).unwrap();
+    |                              ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `validate_profile` in module `super`
+   --> src/profile.rs:341:29
+    |
+341 |         let errors = super::validate_profile(&profile, &|_name| false);
+    |                             ^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:374:30
+    |
+374 |         let profile = super::parse_profile_toml(toml).unwrap();
+    |                              ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `validate_profile` in module `super`
+   --> src/profile.rs:375:29
+    |
+375 |         let errors = super::validate_profile(&profile, &|_name| false);
+    |                             ^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:425:30
+    |
+425 |         let profile = super::parse_profile_toml(toml).unwrap();
+    |                              ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `validate_profile` in module `super`
+   --> src/profile.rs:426:29
+    |
+426 |         let errors = super::validate_profile(&profile, &|_name| true);
+    |                             ^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `parse_profile_toml` in module `super`
+   --> src/profile.rs:448:30
+    |
+448 |         let profile = super::parse_profile_toml(toml).unwrap();
+    |                              ^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `validate_profile` in module `super`
+   --> src/profile.rs:449:29
+    |
+449 |         let errors = super::validate_profile(&profile, &|_name| true);
+    |                             ^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `check_profile_flag_exclusion` in module `super`
+   --> src/profile.rs:465:20
+    |
+465 |             super::check_profile_flag_exclusion(Some("my-profile"), Some("aws"), None, None);
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `check_profile_flag_exclusion` in module `super`
+   --> src/profile.rs:475:20
+    |
+475 |             super::check_profile_flag_exclusion(Some("my-profile"), None, Some("admin"), None);
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `check_profile_flag_exclusion` in module `super`
+   --> src/profile.rs:485:20
+    |
+485 |             super::check_profile_flag_exclusion(Some("my-profile"), None, None, Some(3600));
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `check_profile_flag_exclusion` in module `super`
+   --> src/profile.rs:494:29
+    |
+494 |         let result = super::check_profile_flag_exclusion(
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `check_profile_flag_exclusion` in module `super`
+   --> src/profile.rs:508:29
+    |
+508 |         let result = super::check_profile_flag_exclusion(Some("my-profile"), None, None, None);
+    |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `check_profile_flag_exclusion` in module `super`
+   --> src/profile.rs:516:20
+    |
+516 |             super::check_profile_flag_exclusion(None, Some("aws"), Some("admin"), Some(3600));
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `check_profile_flag_exclusion` in module `super`
+   --> src/profile.rs:526:20
+    |
+526 |             super::check_profile_flag_exclusion(Some("my-profile"), Some("aws"), None, Some(3600));
+    |                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `check_profile_flag_exclusion` in module `super`
+   --> src/profile.rs:544:26
+    |
+544 |         let err = super::check_profile_flag_exclusion(Some("my-profile"), Some("aws"), None, None)
+    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `profile_config_path` in module `super`
+   --> src/profile.rs:560:27
+    |
+560 |         let path = super::profile_config_path("dev", Some(&xdg));
+    |                           ^^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `profile_config_path_with_home` in module `super`
+   --> src/profile.rs:570:27
+    |
+570 |         let path = super::profile_config_path_with_home("staging", None, &home);
+    |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `load_profile` in module `super`
+   --> src/profile.rs:585:29
+    |
+585 |         let result = super::load_profile(Path::new("/nonexistent/profile.toml"));
+    |                             ^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `load_profile` in module `super`
+   --> src/profile.rs:612:29
+    |
+612 |         let result = super::load_profile(&file_path);
+    |                             ^^^^^^^^^^^^ not found in `super`
+
+error[E0425]: cannot find function `load_profile` in module `super`
+   --> src/profile.rs:639:30
+    |
+639 |         let profile = super::load_profile(&file_path).unwrap();
+    |                              ^^^^^^^^^^^^ not found in `super`
+
+Some errors have detailed explanations: E0425, E0433.
+For more information about an error, try `rustc --explain E0425`.
+error: could not compile `noscope` (lib test) due to 40 previous errors
+[0m
+All tests fail to compile because the production code doesn't exist yet. This confirms Phase 2 Red is on track. Now let me proceed to Phase 3 — Green.
+[0m# [0mTodos
+[x] Phase 1: Understand — Read existing codebase (src/lib.rs, all modules)
+[x] Phase 1: Understand — Read all 4 rules (NS-004, NS-051, NS-052, NS-053)
+[x] Phase 2: TDD Red — Write tests for all rules (no production code)
+[x] Phase 2: TDD Red — Verify all tests fail
+[ ] Phase 3: TDD Green — Write minimal production code
+[ ] Phase 3: TDD Green — cargo test passes, cargo clippy clean
+[ ] Phase 4: TDD Refactor — Clean up code
+[ ] Phase 5: Linus Torvalds Review — Brutal self-review
+[ ] Phase 5: Fix review issues, add edge case tests
+[ ] Phase 6: Commit with proper message
+[0m
+## Phase 3: TDD Green — Write minimal production code
+
+First I need to add a distinct exit code for profile validation (NS-052). Then I'll write the profile module production code.
+[0m→ [0mRead src/exit_code.rs[90m [offset=76, limit=40][0m
+I need to add a `ProfileValidation` exit code. The existing sysexits.h codes used: 64, 65, 66, 69, 70, 77, 78. The next unused sysexits-adjacent value is 79 (sysexits goes up to 78 for EX_CONFIG, but custom codes 79+ are common practice).
+[0m
+[0m← [0mEdit src/exit_code.rs
+Index: /home/ben/Documents/repos/noscope/src/exit_code.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/exit_code.rs
++++ /home/ben/Documents/repos/noscope/src/exit_code.rs
+@@ -90,8 +90,10 @@
+     /// 77 — Permission denied (e.g. config file permissions).
+     Permission,
+     /// 78 — Configuration error (malformed config).
+     ConfigError,
++    /// 79 — Profile validation failed (NS-052).
++    ProfileValidation,
+     /// Child process ran — pass through its exit code directly.
+     ChildExit(i32),
+ }
+ 
+
+[0m
+[0m← [0mEdit src/exit_code.rs
+Index: /home/ben/Documents/repos/noscope/src/exit_code.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/exit_code.rs
++++ /home/ben/Documents/repos/noscope/src/exit_code.rs
+@@ -108,8 +108,9 @@
+             Self::Unavailable => 69,
+             Self::Internal => 70,
+             Self::Permission => 77,
+             Self::ConfigError => 78,
++            Self::ProfileValidation => 79,
+             Self::ChildExit(code) => code,
+         }
+     }
+ }
+
+[0m
+Now update the Display impl:
+[0m→ [0mRead src/exit_code.rs[90m [offset=115, limit=20][0m
+[0m
+[0m← [0mEdit src/exit_code.rs
+Index: /home/ben/Documents/repos/noscope/src/exit_code.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/exit_code.rs
++++ /home/ben/Documents/repos/noscope/src/exit_code.rs
+@@ -125,8 +125,9 @@
+             Self::Unavailable => write!(f, "exit 69: service unavailable"),
+             Self::Internal => write!(f, "exit 70: internal error"),
+             Self::Permission => write!(f, "exit 77: permission denied"),
+             Self::ConfigError => write!(f, "exit 78: configuration error"),
++            Self::ProfileValidation => write!(f, "exit 79: profile validation failed"),
+             Self::ChildExit(code) => write!(f, "child process exited with code {}", code),
+         }
+     }
+ }
+
+[0m
+Now I need to update the exit code test that checks for non-overlapping codes:
+[0m← [0mEdit src/exit_code.rs
+Index: /home/ben/Documents/repos/noscope/src/exit_code.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/exit_code.rs
++++ /home/ben/Documents/repos/noscope/src/exit_code.rs
+@@ -480,9 +480,9 @@
+ 
+ #[test]
+ fn noscope_exit_codes_do_not_overlap_with_provider_codes() {
+     // sysexits start at 64, provider codes are 0-4 -- no overlap
+-    let noscope_codes = [0, 64, 65, 66, 69, 70, 77, 78];
++    let noscope_codes = [0, 64, 65, 66, 69, 70, 77, 78, 79];
+     let provider_error_codes = [1, 2, 3, 4]; // exclude 0 (both mean success)
+     for nc in &noscope_codes {
+         if *nc == 0 {
+             continue; // Both namespaces use 0 for success, that's fine
+
+[0m
+Now write the production code in `profile.rs`:
+[0m→ [0mRead src/profile.rs
+Now I'll write the production code above the test module:
+[0m
+[0m← [0mEdit src/profile.rs
+Index: /home/ben/Documents/repos/noscope/src/profile.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/profile.rs
++++ /home/ben/Documents/repos/noscope/src/profile.rs
+@@ -2,8 +2,360 @@
+ // NS-051: Profile schema
+ // NS-052: Profile validation before minting
+ // NS-053: Profile and CLI flag mutual exclusion
+ 
++use std::collections::HashSet;
++use std::fmt;
++use std::fs;
++use std::path::{Path, PathBuf};
++
++use crate::exit_code::NoscopeExitCode;
++use crate::provider::check_config_permissions;
++
++/// Known fields in a [[credentials]] entry.
++/// NS-051: provider (required), role (required), ttl (required), env_key (optional).
++/// NS-004/NS-051: Any field not in this set is an error.
++const KNOWN_CREDENTIAL_FIELDS: &[&str] = &["provider", "role", "ttl", "env_key"];
++
++/// A single credential entry from a profile.
++///
++/// NS-004: Flat tuple of (provider, role, ttl) with optional env_key.
++/// No nesting, no inheritance, no composition.
++#[derive(Debug)]
++pub struct ProfileCredential {
++    pub provider: String,
++    pub role: String,
++    pub ttl: u64,
++    pub env_key: Option<String>,
++}
++
++/// A parsed profile: a flat list of credential entries.
++///
++/// NS-004: This is deliberately flat — no extends, no overrides,
++/// no merge strategy. Just a Vec of credentials.
++#[derive(Debug)]
++pub struct Profile {
++    pub credentials: Vec<ProfileCredential>,
++}
++
++/// Error type for profile operations.
++#[derive(Debug)]
++pub enum ProfileError {
++    /// NS-051: Malformed profile TOML or schema violation.
++    MalformedProfile { message: String },
++    /// NS-052: Profile validation failed (provider existence, env_key
++    /// uniqueness). Contains all problems found in a single pass.
++    ValidationFailed { problems: Vec<String> },
++    /// NS-053: --profile used with forbidden credential flags.
++    FlagConflict { message: String },
++    /// Profile file not found.
++    NotFound { path: PathBuf },
++    /// Insecure file permissions.
++    InsecurePermissions { path: PathBuf, mode: u32 },
++}
++
++impl ProfileError {
++    /// Get the noscope exit code for this error.
++    pub fn exit_code(&self) -> NoscopeExitCode {
++        match self {
++            Self::MalformedProfile { .. } => NoscopeExitCode::ConfigError,
++            Self::ValidationFailed { .. } => NoscopeExitCode::ProfileValidation,
++            Self::FlagConflict { .. } => NoscopeExitCode::Usage,
++            Self::NotFound { .. } => NoscopeExitCode::ConfigNotFound,
++            Self::InsecurePermissions { .. } => NoscopeExitCode::Permission,
++        }
++    }
++}
++
++impl fmt::Display for ProfileError {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        match self {
++            Self::MalformedProfile { message } => {
++                write!(f, "malformed profile: {}", message)
++            }
++            Self::ValidationFailed { problems } => {
++                write!(f, "profile validation failed: ")?;
++                for (i, p) in problems.iter().enumerate() {
++                    if i > 0 {
++                        write!(f, "; ")?;
++                    }
++                    write!(f, "{}", p)?;
++                }
++                Ok(())
++            }
++            Self::FlagConflict { message } => {
++                write!(f, "{}", message)
++            }
++            Self::NotFound { path } => {
++                write!(f, "profile not found: {}", path.display())
++            }
++            Self::InsecurePermissions { path, mode } => {
++                write!(
++                    f,
++                    "profile {:?} has insecure permissions {:04o}; \
++                     world-accessible bits must be 0 (e.g. 0600, 0640)",
++                    path, mode
++                )
++            }
++        }
++    }
++}
++
++impl std::error::Error for ProfileError {}
++
++/// Build the profile TOML path under a given config base directory.
++fn profile_toml_under(base: &Path, name: &str) -> PathBuf {
++    base.join("noscope")
++        .join("profiles")
++        .join(format!("{}.toml", name))
++}
++
++/// Compute the config file path for a named profile.
++///
++/// Uses XDG_CONFIG_HOME if provided, otherwise falls back to
++/// `$HOME/.config`.
++pub fn profile_config_path(name: &str, xdg_config_home: Option<&Path>) -> PathBuf {
++    match xdg_config_home {
++        Some(base) => profile_toml_under(base, name),
++        None => {
++            let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
++            profile_toml_under(&PathBuf::from(home).join(".config"), name)
++        }
++    }
++}
++
++/// Same as `profile_config_path` but with explicit HOME fallback.
++pub fn profile_config_path_with_home(
++    name: &str,
++    xdg_config_home: Option<&Path>,
++    home: &Path,
++) -> PathBuf {
++    match xdg_config_home {
++        Some(base) => profile_toml_under(base, name),
++        None => profile_toml_under(&home.join(".config"), name),
++    }
++}
++
++/// NS-051: Parse profile TOML content into a Profile.
++///
++/// Validates schema: required fields, unknown credential fields = error,
++/// empty credentials = error. Unknown top-level fields are ignored.
++pub fn parse_profile_toml(content: &str) -> Result<Profile, ProfileError> {
++    let table: toml::Table =
++        content
++            .parse()
++            .map_err(|e: toml::de::Error| ProfileError::MalformedProfile {
++                message: e.to_string(),
++            })?;
++
++    // Extract the credentials array.
++    let creds_value = table
++        .get("credentials")
++        .ok_or(ProfileError::MalformedProfile {
++            message: "missing required [[credentials]] section".to_string(),
++        })?;
++
++    let creds_array = creds_value
++        .as_array()
++        .ok_or(ProfileError::MalformedProfile {
++            message: "'credentials' must be an array of tables".to_string(),
++        })?;
++
++    // NS-051: empty array = error.
++    if creds_array.is_empty() {
++        return Err(ProfileError::MalformedProfile {
++            message: "credentials array must not be empty".to_string(),
++        });
++    }
++
++    let mut credentials = Vec::new();
++    let mut problems = Vec::new();
++
++    for (i, entry) in creds_array.iter().enumerate() {
++        let entry_table = match entry.as_table() {
++            Some(t) => t,
++            None => {
++                problems.push(format!(
++                    "credentials[{}]: expected a table, got {}",
++                    i,
++                    entry.type_name()
++                ));
++                continue;
++            }
++        };
++
++        // NS-004/NS-051: Check for unknown credential fields.
++        for key in entry_table.keys() {
++            if !KNOWN_CREDENTIAL_FIELDS.contains(&key.as_str()) {
++                problems.push(format!("credentials[{}]: unknown field '{}'", i, key));
++            }
++        }
++
++        // Extract required fields.
++        let provider = entry_table
++            .get("provider")
++            .and_then(|v| v.as_str())
++            .map(String::from);
++        let role = entry_table
++            .get("role")
++            .and_then(|v| v.as_str())
++            .map(String::from);
++        let ttl_value = entry_table.get("ttl");
++        let env_key = entry_table
++            .get("env_key")
++            .and_then(|v| v.as_str())
++            .map(String::from);
++
++        if provider.is_none() {
++            problems.push(format!(
++                "credentials[{}]: missing required field 'provider'",
++                i
++            ));
++        }
++        if role.is_none() {
++            problems.push(format!("credentials[{}]: missing required field 'role'", i));
++        }
++
++        let ttl = match ttl_value {
++            Some(v) => match v.as_integer() {
++                Some(n) if n > 0 => Some(n as u64),
++                Some(n) => {
++                    problems.push(format!(
++                        "credentials[{}]: ttl must be a positive integer, got {}",
++                        i, n
++                    ));
++                    None
++                }
++                None => {
++                    problems.push(format!("credentials[{}]: ttl must be an integer", i));
++                    None
++                }
++            },
++            None => {
++                problems.push(format!("credentials[{}]: missing required field 'ttl'", i));
++                None
++            }
++        };
++
++        // Only build the credential if all required fields are present.
++        if let (Some(provider), Some(role), Some(ttl)) = (provider, role, ttl) {
++            credentials.push(ProfileCredential {
++                provider,
++                role,
++                ttl,
++                env_key,
++            });
++        }
++    }
++
++    if !problems.is_empty() {
++        return Err(ProfileError::MalformedProfile {
++            message: problems.join("; "),
++        });
++    }
++
++    Ok(Profile { credentials })
++}
++
++/// NS-052: Validate a parsed profile before minting.
++///
++/// Checks:
++/// - env_key uniqueness across all credentials
++/// - Provider existence (via the `provider_exists` callback)
++///
++/// All errors are collected and returned together (no fail-fast).
++/// Returns an empty Vec on success.
++pub fn validate_profile(profile: &Profile, provider_exists: &dyn Fn(&str) -> bool) -> Vec<String> {
++    let mut errors = Vec::new();
++
++    // Check provider existence.
++    for cred in &profile.credentials {
++        if !provider_exists(&cred.provider) {
++            errors.push(format!("provider '{}' not found", cred.provider));
++        }
++    }
++
++    // Check env_key uniqueness.
++    let mut seen_env_keys = HashSet::new();
++    for cred in &profile.credentials {
++        if let Some(ref key) = cred.env_key {
++            if !seen_env_keys.insert(key.clone()) {
++                errors.push(format!("duplicate env_key '{}'", key));
++            }
++        }
++    }
++
++    errors
++}
++
++/// NS-053: Check mutual exclusion between --profile and credential flags.
++///
++/// --profile forbids --provider, --role, and --ttl.
++/// Returns Ok(()) if no conflict, Err with usage error if violated.
++pub fn check_profile_flag_exclusion(
++    profile: Option<&str>,
++    provider: Option<&str>,
++    role: Option<&str>,
++    ttl: Option<u64>,
++) -> Result<(), ProfileError> {
++    let profile_name = match profile {
++        Some(name) => name,
++        None => return Ok(()), // No --profile, no conflict possible.
++    };
++
++    let mut conflicts = Vec::new();
++    if provider.is_some() {
++        conflicts.push("--provider");
++    }
++    if role.is_some() {
++        conflicts.push("--role");
++    }
++    if ttl.is_some() {
++        conflicts.push("--ttl");
++    }
++
++    if conflicts.is_empty() {
++        return Ok(());
++    }
++
++    Err(ProfileError::FlagConflict {
++        message: format!(
++            "--profile '{}' cannot be used with {}",
++            profile_name,
++            conflicts.join(", ")
++        ),
++    })
++}
++
++/// Load a profile from disk.
++///
++/// Unlike provider config (which returns Ok(None) for missing files),
++/// an explicitly requested profile must exist. Returns an error if
++/// the file is missing or has insecure permissions.
++pub fn load_profile(path: &Path) -> Result<Profile, ProfileError> {
++    if !path.exists() {
++        return Err(ProfileError::NotFound {
++            path: path.to_path_buf(),
++        });
++    }
++
++    // Reuse the provider permission check.
++    check_config_permissions(path).map_err(|e| match e {
++        crate::provider::ProviderConfigError::InsecurePermissions { path, mode } => {
++            ProfileError::InsecurePermissions { path, mode }
++        }
++        other => ProfileError::MalformedProfile {
++            message: format!("{}", other),
++        },
++    })?;
++
++    let content = fs::read_to_string(path).map_err(|e| ProfileError::MalformedProfile {
++        message: format!("failed to read {}: {}", path.display(), e),
++    })?;
++
++    parse_profile_toml(&content)
++}
++
+ #[cfg(test)]
+ mod tests {
+     use std::path::{Path, PathBuf};
+ 
+
+[0m
+Now let's run the tests:
+[0m$ [0mcargo test --lib profile 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+error[E0599]: no method named `type_name` found for reference `&toml::Value` in the current scope
+   --> src/profile.rs:180:27
+    |
+180 |                     entry.type_name()
+    |                           ^^^^^^^^^
+    |
+help: there is a method `type_id` with a similar name
+    |
+180 -                     entry.type_name()
+180 +                     entry.type_id()
+    |
+
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `noscope` (lib test) due to 1 previous error
+[0m
+[0m← [0mEdit src/profile.rs
+Index: /home/ben/Documents/repos/noscope/src/profile.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/profile.rs
++++ /home/ben/Documents/repos/noscope/src/profile.rs
+@@ -174,11 +174,10 @@
+ let entry_table = match entry.as_table() {
+     Some(t) => t,
+     None => {
+         problems.push(format!(
+-            "credentials[{}]: expected a table, got {}",
+-            i,
+-            entry.type_name()
++            "credentials[{}]: expected a table, got a non-table value",
++            i
+         ));
+         continue;
+     }
+ };
+
+[0m
+[0m$ [0mcargo test --lib profile 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.18s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 35 tests
+test profile::tests::profile_cli_mutual_exclusion_error_names_conflicting_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_no_profile_allows_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_exit_code_is_usage ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_alone_is_valid ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_role ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_provider ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_ttl ... ok
+test profile::tests::profile_flatness_constraint_is_flat_list_of_tuples ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_all_three ... ok
+test profile::tests::profile_flatness_constraint_no_extends_field ... ok
+test profile::tests::profile_flatness_constraint_no_nested_profiles ... ok
+test profile::tests::profile_load_missing_file_is_error ... ok
+test profile::tests::profile_load_secure_permissions_accepted ... ok
+test profile::tests::profile_path_under_xdg_config ... ok
+test profile::tests::profile_path_default_home ... ok
+test profile::tests::profile_load_insecure_permissions_rejected ... ok
+test profile::tests::profile_flatness_constraint_no_overrides_field ... ok
+test profile::tests::profile_schema_empty_credentials_array_is_error ... ok
+test profile::tests::profile_schema_env_key_can_be_set ... ok
+test profile::tests::profile_schema_env_key_is_optional ... ok
+test profile::tests::profile_schema_multiple_unknown_credential_fields_all_reported ... ok
+test profile::tests::profile_schema_no_credentials_key_is_error ... ok
+test profile::tests::profile_schema_requires_provider ... ok
+test profile::tests::profile_schema_requires_role ... ok
+test profile::tests::profile_schema_ttl_must_be_positive_integer ... ok
+test profile::tests::profile_schema_ttl_must_not_be_negative ... ok
+test profile::tests::profile_schema_unknown_credential_field_is_error ... ok
+test profile::tests::profile_schema_requires_ttl ... ok
+test profile::tests::profile_schema_unknown_top_level_fields_ignored ... ok
+test profile::tests::profile_validation_all_errors_reported_together ... ok
+test profile::tests::profile_validation_distinct_exit_code ... ok
+test profile::tests::profile_validation_env_key_uniqueness_none_does_not_conflict ... ok
+test profile::tests::profile_validation_env_key_uniqueness ... ok
+test profile::tests::profile_validation_provider_existence ... ok
+test profile::tests::profile_validation_passes_for_valid_profile ... ok
+
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.02s
+[0m
+All 35 tests pass. Now let's run the full test suite and clippy:
+[0m$ [0mcargo test 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.66s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 280 tests
+test event::tests::structured_event_logging_all_fields_set_simultaneously ... ok
+test event::tests::structured_event_logging_child_exit_event ... ok
+test event::tests::structured_event_logging_emitter_json_single_line ... ok
+test event::tests::structured_event_logging_child_exit_includes_exit_code ... ok
+test event::tests::structured_event_logging_child_spawn_event ... ok
+test event::tests::structured_event_logging_emitter_json_format_output ... ok
+test event::tests::structured_event_logging_emitter_text_format_output ... ok
+test event::tests::structured_event_logging_empty_provider_name ... ok
+test event::tests::structured_event_logging_error_null_when_not_set ... ok
+test event::tests::structured_event_logging_event_type_names ... ok
+test event::tests::structured_event_logging_event_type_display_matches_as_str ... ok
+test event::tests::structured_event_logging_fail_event_includes_error_message ... ok
+test event::tests::structured_event_logging_json_contains_provider ... ok
+test event::tests::structured_event_logging_json_contains_duration ... ok
+test event::tests::structured_event_logging_json_contains_redacted_token_id ... ok
+test event::tests::structured_event_logging_json_contains_type ... ok
+test event::tests::structured_event_logging_json_duration_null_when_absent ... ok
+test event::tests::structured_event_logging_json_contains_timestamp ... ok
+test event::tests::structured_event_logging_json_error_with_quotes ... ok
+test event::tests::structured_event_logging_json_is_single_line ... ok
+test event::tests::structured_event_logging_json_token_id_null_when_absent ... ok
+test event::tests::structured_event_logging_json_is_valid_json ... ok
+test event::tests::structured_event_logging_json_never_contains_raw_secret ... ok
+test event::tests::structured_event_logging_log_format_json ... ok
+test event::tests::structured_event_logging_log_format_parse_is_case_sensitive ... ok
+test event::tests::structured_event_logging_log_format_text ... ok
+test event::tests::structured_event_logging_large_duration_does_not_panic ... ok
+test event::tests::structured_event_logging_log_format_unknown_returns_none ... ok
+test event::tests::structured_event_logging_mint_fail_event ... ok
+test event::tests::structured_event_logging_mint_start_event ... ok
+test event::tests::structured_event_logging_mint_success_event ... ok
+test event::tests::structured_event_logging_refresh_fail_event ... ok
+test event::tests::structured_event_logging_revoke_fail_event ... ok
+test event::tests::structured_event_logging_refresh_start_event ... ok
+test event::tests::structured_event_logging_refresh_success_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_event ... ok
+test event::tests::structured_event_logging_revoke_start_event ... ok
+test event::tests::structured_event_logging_revoke_success_event ... ok
+test event::tests::structured_event_logging_signal_received_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_includes_signal ... ok
+test event::tests::structured_event_logging_signal_received_includes_signal ... ok
+test event::tests::structured_event_logging_text_format_escapes_quotes_in_error ... ok
+test event::tests::structured_event_logging_timestamp_is_current ... ok
+test event::tests::structured_event_logging_token_id_is_redacted_not_raw ... ok
+test exit_code::tests::exit_129_is_signal_1_sighup ... ok
+test event::tests::structured_event_logging_zero_duration ... ok
+test exit_code::tests::exit_255_is_signal_127 ... ok
+test exit_code::tests::exit_exactly_128_is_not_signal_terminated ... ok
+test exit_code::tests::known_provider_exit_codes_interpreted_directly ... ok
+test exit_code::tests::multi_provider_report_can_filter_retryable_failures ... ok
+test exit_code::tests::multi_provider_report_collects_all_failures ... ok
+test exit_code::tests::multi_provider_report_exit_code_is_65_mint_failure ... ok
+test exit_code::tests::multi_provider_report_failures_are_accessible ... ok
+test exit_code::tests::multi_provider_report_empty_has_zero_failures ... ok
+test exit_code::tests::multi_provider_report_first_failure_not_shadowed ... ok
+test exit_code::tests::multi_provider_report_format_stderr_empty_when_no_failures ... ok
+test exit_code::tests::multi_provider_report_stderr_contains_all_providers_in_order ... ok
+test exit_code::tests::multi_provider_report_stderr_includes_exit_code_per_provider ... ok
+test exit_code::tests::multi_provider_report_tracks_successes_too ... ok
+test exit_code::tests::negative_exit_code_maps_to_general_error_no_signal ... ok
+test exit_code::tests::multi_provider_report_successes_are_accessible ... ok
+test exit_code::tests::multi_provider_report_with_no_failures_returns_success_not_child_exit ... ok
+test exit_code::tests::non_signal_stderr_message_shows_provider_exit_code ... ok
+test exit_code::tests::noscope_exit_code_child_exit_passes_through_any_value ... ok
+test event::tests::structured_event_logging_negative_exit_code ... ok
+test exit_code::tests::noscope_exit_code_child_exit_preserves_child_code ... ok
+test exit_code::tests::noscope_exit_code_child_exit_zero_is_success ... ok
+test exit_code::tests::noscope_exit_code_config_error_is_78 ... ok
+test exit_code::tests::noscope_exit_code_config_not_found_is_66 ... ok
+test exit_code::tests::noscope_exit_code_display_child_exit_mentions_child ... ok
+test exit_code::tests::noscope_exit_code_display_includes_meaning ... ok
+test exit_code::tests::noscope_exit_code_display_success_mentions_success ... ok
+test exit_code::tests::noscope_exit_code_internal_is_70 ... ok
+test exit_code::tests::noscope_exit_code_mint_failure_is_65 ... ok
+test exit_code::tests::noscope_exit_code_permission_is_77 ... ok
+test exit_code::tests::noscope_exit_code_success_is_zero ... ok
+test exit_code::tests::noscope_exit_code_unavailable_is_69 ... ok
+test exit_code::tests::noscope_exit_code_usage_is_64 ... ok
+test exit_code::tests::noscope_exit_codes_do_not_overlap_with_provider_codes ... ok
+test exit_code::tests::noscope_success_is_semantically_distinct_from_child_exit_zero ... ok
+test exit_code::tests::provider_exit_code_auth_failure_is_two ... ok
+test exit_code::tests::provider_exit_code_display_includes_code_number_and_meaning ... ok
+test exit_code::tests::provider_exit_code_from_raw_returns_none_for_unknown ... ok
+test exit_code::tests::provider_exit_code_from_raw_roundtrips_all_known_codes ... ok
+test exit_code::tests::provider_exit_code_general_error_is_one ... ok
+test exit_code::tests::provider_exit_code_non_zero_are_errors ... ok
+test exit_code::tests::provider_exit_code_role_not_found_is_three ... ok
+test exit_code::tests::provider_exit_code_success_is_not_error ... ok
+test exit_code::tests::provider_exit_code_success_is_zero ... ok
+test exit_code::tests::provider_exit_code_unavailable_is_four ... ok
+test exit_code::tests::provider_exit_result_implements_display ... ok
+test exit_code::tests::provider_exit_result_is_eq_comparable ... ok
+test exit_code::tests::signal_terminated_provider_includes_signal_number ... ok
+test exit_code::tests::signal_terminated_provider_maps_to_general_error ... ok
+test exit_code::tests::signal_terminated_provider_stderr_message_contains_signal ... ok
+test exit_code::tests::unknown_non_signal_exit_code_maps_to_general_error ... ok
+test mint::tests::mint_envelope_debug_does_not_expose_raw_token ... ok
+test mint::tests::format_mint_output_handles_special_characters_in_token ... ok
+test mint::tests::mint_envelope_is_not_clone ... ok
+test mint::tests::mint_error_display_for_invalid_input ... ok
+test mint::tests::mint_error_implements_std_error ... ok
+test mint::tests::mint_envelope_debug_shows_metadata ... ok
+test mint::tests::mint_envelope_from_scoped_token_without_token_id ... ok
+test mint::tests::mint_multi_provider_atomicity_empty_on_failure ... ok
+test mint::tests::mint_multi_provider_atomicity_no_partial_stdout ... ok
+test mint::tests::mint_multi_provider_atomicity_multiple_providers_returns_array ... ok
+test mint::tests::mint_multi_provider_atomicity_output_is_single_line ... ok
+test mint::tests::mint_multi_provider_atomicity_single_provider_returns_object ... ok
+test mint::tests::mint_output_envelope_contains_expires_at_iso8601 ... ok
+test mint::tests::mint_output_envelope_contains_provider ... ok
+test mint::tests::mint_output_envelope_contains_token_id ... ok
+test mint::tests::mint_output_envelope_from_scoped_token ... ok
+test mint::tests::mint_output_envelope_contains_role ... ok
+test mint::tests::mint_output_envelope_has_exactly_five_fields ... ok
+test mint::tests::mint_output_envelope_is_single_line_json ... ok
+test mint::tests::mint_ttl_requirement_accepts_valid_ttl ... ok
+test mint::tests::mint_ttl_requirement_rejects_empty_providers ... ok
+test mint::tests::mint_ttl_requirement_rejects_empty_role ... ok
+test mint::tests::mint_ttl_requirement_rejects_zero_ttl ... ok
+test mint::tests::mint_ttl_requirement_ttl_is_mandatory ... ok
+test mint::tests::redaction_exception_log_string_contains_provider_and_role ... ok
+test mint::tests::redaction_exception_mint_stdout_contains_raw_token ... ok
+test mint::tests::revoke_input_allows_token_id_equals_combined_form ... ok
+test mint::tests::revoke_input_does_not_store_token_value ... ok
+test mint::tests::redaction_exception_stderr_still_redacted ... ok
+test mint::tests::revoke_input_from_mint_json_array_element ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_invalid_json ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_missing_token_id ... ok
+test mint::tests::revoke_input_from_mint_json_stdin ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_missing_provider ... ok
+test mint::tests::revoke_input_from_token_id_and_provider ... ok
+test mint::tests::revoke_input_rejects_combined_token_equals_value_flag ... ok
+test mint::tests::revoke_input_rejects_raw_token_flag ... ok
+test mint::tests::revoke_input_validates_no_token_value_in_cli_args ... ok
+test mint::tests::terminal_detection_allows_pipe_stdout ... ok
+test mint::tests::terminal_detection_error_message_mentions_force_flag ... ok
+test mint::tests::terminal_detection_error_message_warns_about_scrollback ... ok
+test mint::tests::terminal_detection_exit_code_is_64 ... ok
+test mint::tests::terminal_detection_force_overrides_tty_check ... ok
+test mint::tests::terminal_detection_pipe_with_force_also_works ... ok
+test mint::tests::validate_mint_args_returns_validated_ttl ... ok
+test mint::tests::mint_output_envelope_contains_token_field ... ok
+test profile::tests::profile_cli_mutual_exclusion_error_names_conflicting_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_exit_code_is_usage ... ok
+test mint::tests::terminal_detection_rejects_tty_stdout ... ok
+test profile::tests::profile_cli_mutual_exclusion_no_profile_allows_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_alone_is_valid ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_all_three ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_provider ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_role ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_ttl ... ok
+test profile::tests::profile_flatness_constraint_no_extends_field ... ok
+test profile::tests::profile_flatness_constraint_is_flat_list_of_tuples ... ok
+test profile::tests::profile_flatness_constraint_no_overrides_field ... ok
+test profile::tests::profile_flatness_constraint_no_nested_profiles ... ok
+test profile::tests::profile_load_missing_file_is_error ... ok
+test profile::tests::profile_load_insecure_permissions_rejected ... ok
+test profile::tests::profile_load_secure_permissions_accepted ... ok
+test profile::tests::profile_path_default_home ... ok
+test profile::tests::profile_path_under_xdg_config ... ok
+test profile::tests::profile_schema_empty_credentials_array_is_error ... ok
+test profile::tests::profile_schema_env_key_is_optional ... ok
+test profile::tests::profile_schema_env_key_can_be_set ... ok
+test profile::tests::profile_schema_multiple_unknown_credential_fields_all_reported ... ok
+test profile::tests::profile_schema_no_credentials_key_is_error ... ok
+test profile::tests::profile_schema_requires_provider ... ok
+test profile::tests::profile_schema_ttl_must_be_positive_integer ... ok
+test profile::tests::profile_schema_requires_role ... ok
+test profile::tests::profile_schema_requires_ttl ... ok
+test profile::tests::profile_schema_ttl_must_not_be_negative ... ok
+test profile::tests::profile_schema_unknown_credential_field_is_error ... ok
+test profile::tests::profile_schema_unknown_top_level_fields_ignored ... ok
+test profile::tests::profile_validation_distinct_exit_code ... ok
+test profile::tests::profile_validation_all_errors_reported_together ... ok
+test profile::tests::profile_validation_env_key_uniqueness ... ok
+test profile::tests::profile_validation_provider_existence ... ok
+test profile::tests::profile_validation_passes_for_valid_profile ... ok
+test provider::tests::config_file_permission_enforcement_allows_0400 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0600 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0640 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0666 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0604 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_world_readable ... ok
+test provider::tests::config_precedence_flags_without_mint_cmd_still_wins ... ok
+test provider::tests::config_follows_xdg_base_directory ... ok
+test profile::tests::profile_validation_env_key_uniqueness_none_does_not_conflict ... ok
+test provider::tests::config_source_eq_works ... ok
+test provider::tests::config_xdg_custom_overrides_default ... ok
+test provider::tests::config_xdg_defaults_to_home_dot_config ... ok
+test provider::tests::dry_run_mode_produces_output ... ok
+test provider::tests::dry_run_mode_shows_role_and_ttl ... ok
+test provider::tests::insecure_permissions_display_contains_path_and_mode ... ok
+test provider::tests::load_provider_file_rejects_insecure_file ... ok
+test provider::tests::malformed_config_empty_mint_cmd_is_error ... ok
+test provider::tests::load_provider_file_reads_secure_file ... ok
+test provider::tests::malformed_config_is_hard_error_missing_required_field ... ok
+test provider::tests::malformed_config_missing_file_is_not_error ... ok
+test provider::tests::malformed_config_is_hard_error_syntax ... ok
+test provider::tests::parse_provider_toml_rejects_non_string_mint ... ok
+test provider::tests::dry_run_mode_shows_config_source ... ok
+test provider::tests::provider_not_found_display_contains_provider_name ... ok
+test provider::tests::parse_provider_toml_valid_with_all_commands ... ok
+test provider::tests::dry_run_mode_shows_mint_command ... ok
+test provider::tests::provider_not_found_enumerates_checked_locations ... ok
+test provider::tests::strict_config_precedence_file_used_when_no_flags_or_env ... ok
+test provider::tests::strict_config_precedence_flags_win_over_env ... ok
+test provider::tests::provider_not_found_message_is_user_actionable ... ok
+test provider::tests::strict_config_precedence_env_wins_over_file ... ok
+test provider::tests::strict_config_precedence_no_merging_across_layers ... ok
+test provider::tests::validate_provider_checks_mint_cmd_exists ... ok
+test provider::tests::validate_provider_checks_mint_cmd_is_executable ... ok
+test provider::tests::validate_provider_checks_revoke_cmd_if_present ... ok
+test provider::tests::validate_provider_does_not_execute_mint_cmd ... ok
+test provider::tests::validate_provider_checks_refresh_cmd_if_present ... ok
+test provider::tests::validate_provider_succeeds_for_valid_config ... ok
+test provider::tests::validation_failed_display_lists_all_problems ... ok
+test redaction::tests::debug_format_looks_like_debug_output ... ok
+test redaction::tests::debug_format_shows_redacted_form_not_raw ... ok
+test redaction::tests::debug_never_shows_full_token_value ... ok
+test redaction::tests::display_never_shows_full_token_value ... ok
+test redaction::tests::jwt_token_never_shows_prefix_chars ... ok
+test redaction::tests::different_tokens_produce_different_hash_ids ... ok
+test redaction::tests::jwt_token_with_provider_id_uses_provider_id ... ok
+test redaction::tests::long_token_shows_first_8_chars_with_ellipsis ... ok
+test redaction::tests::multibyte_utf8_token_does_not_panic ... ok
+test redaction::tests::mixed_ascii_multibyte_token_takes_8_chars ... ok
+test redaction::tests::display_of_empty_token_does_not_panic ... ok
+test redaction::tests::same_token_always_produces_same_hash_id ... ok
+test redaction::tests::redaction_cannot_be_bypassed_by_alternate_format ... ok
+test redaction::tests::short_token_without_id_uses_hash_based_id ... ok
+test redaction::tests::short_token_with_provider_id_uses_that_id ... ok
+test redaction::tests::token_exactly_16_chars_uses_redacted_format ... ok
+test refresh::tests::continuous_refresh_after_failure_new_window_after_expiry ... ok
+test refresh::tests::continuous_refresh_after_failure_reset_after_success ... ok
+test refresh::tests::refresh_failure_independence_success_resets_own_tracker ... ok
+test redaction::tests::token_exactly_17_chars_shows_prefix ... ok
+test refresh::tests::continuous_refresh_after_failure_not_permanently_disabled ... ok
+test refresh::tests::refresh_failure_independence_separate_trackers ... ok
+test refresh::tests::refresh_failure_independence_tracker_knows_its_credential ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_retry ... ok
+test refresh::tests::refresh_failure_preserves_child_logs_warning ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_not_kill ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_env_var_point_in_time ... ok
+test refresh::tests::refresh_failure_preserves_child_allows_token_until_expiry ... ok
+test refresh::tests::refresh_failure_preserves_child_never_kills_at_any_attempt ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_environment ... ok
+test refresh::tests::refresh_retry_parameters_base_delay_is_one_second ... ok
+test refresh::tests::refresh_retry_parameters_jitter_range_is_25_percent ... ok
+test refresh::tests::refresh_limitation_documentation_startup_warning ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_delay_grows_exponentially ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_attempt_2_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_large_attempt_does_not_panic ... ok
+test refresh::tests::refresh_retry_parameters_multiplier_is_two ... ok
+test refresh::tests::refresh_retry_parameters_total_window_within_50_percent_remaining ... ok
+test refresh::tests::refresh_retry_parameters_truncates_retries_when_lifetime_short ... ok
+test refresh::tests::refresh_retry_parameters_max_retries_is_four ... ok
+test security::tests::allows_args_without_token_values ... ok
+test refresh::tests::refresh_retry_parameters_no_retry_when_remaining_lifetime_zero ... ok
+test refresh::tests::refresh_tracker_failure_count_saturates_instead_of_wrapping ... ok
+test security::tests::disable_core_dumps_succeeds_on_linux ... ok
+test security::tests::empty_known_tokens_always_valid ... ok
+test security::tests::disable_core_dumps_sets_rlimit_to_zero ... ok
+test security::tests::rejects_args_containing_known_token_value ... ok
+test security::tests::empty_args_always_valid ... ok
+test security::tests::error_message_does_not_contain_token_value ... ok
+test security::tests::rejects_token_as_substring_in_arg ... ok
+test token::tests::redacted_value_returns_reference_not_new_computation ... ok
+test token::tests::scoped_token_debug_shows_non_secret_fields ... ok
+test token::tests::scoped_token_debug_does_not_expose_secret ... ok
+test token::tests::scoped_token_constructor_takes_secret_string_directly ... ok
+test token::tests::scoped_token_display_does_not_expose_secret ... ok
+test token::tests::scoped_token_is_not_serializable ... ok
+test token::tests::scoped_token_expose_secret_returns_value ... ok
+test token::tests::scoped_token_exposes_metadata_but_not_value ... ok
+test token::tests::scoped_token_is_not_clone ... ok
+test token::tests::scoped_token_is_sync ... ok
+test token::tests::scoped_token_is_send ... ok
+test token::tests::scoped_token_requires_expires_at ... ok
+test token::tests::string_zeroize_actually_clears_data ... ok
+
+test result: ok. 280 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests noscope
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+[0m
+All 280 tests pass (35 new + 245 existing). Now clippy:
+[0m$ [0mcargo clippy -- -D warnings 2>&1
+Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+error: this `if` statement can be collapsed
+   --> src/profile.rs:279:9
+    |
+279 | /         if let Some(ref key) = cred.env_key {
+280 | |             if !seen_env_keys.insert(key.clone()) {
+281 | |                 errors.push(format!("duplicate env_key '{}'", key));
+282 | |             }
+283 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#collapsible_if
+    = note: `-D clippy::collapsible-if` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::collapsible_if)]`
+help: collapse nested if block
+    |
+279 ~         if let Some(ref key) = cred.env_key
+280 ~             && !seen_env_keys.insert(key.clone()) {
+281 |                 errors.push(format!("duplicate env_key '{}'", key));
+282 ~             }
+    |
+
+error: could not compile `noscope` (lib) due to 1 previous error
+[0m
+[0m← [0mEdit src/profile.rs
+Index: /home/ben/Documents/repos/noscope/src/profile.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/profile.rs
++++ /home/ben/Documents/repos/noscope/src/profile.rs
+@@ -275,13 +275,14 @@
+ 
+     // Check env_key uniqueness.
+     let mut seen_env_keys = HashSet::new();
+     for cred in &profile.credentials {
+-        if let Some(ref key) = cred.env_key {
+-            if !seen_env_keys.insert(key.clone()) {
+-                errors.push(format!("duplicate env_key '{}'", key));
+-            }
++        if let Some(ref key) = cred.env_key
++            && !seen_env_keys.insert(key.clone())
++        {
++            errors.push(format!("duplicate env_key '{}'", key));
+         }
++        }
+     }
+ 
+     errors
+ }
+
+[0m
+[0m$ [0mcargo clippy -- -D warnings 2>&1
+Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+error: unexpected closing delimiter: `}`
+   --> src/profile.rs:288:1
+    |
+278 |     for cred in &profile.credentials {
+    |                                      - this delimiter might not be properly closed...
+...
+284 |         }
+    |         - ...as it matches this but it has different indentation
+...
+288 | }
+    | ^ unexpected closing delimiter
+
+error: could not compile `noscope` (lib) due to 1 previous error
+[0m
+Let me fix the formatting issue:
+[0m→ [0mRead src/profile.rs[90m [offset=262, limit=35][0m
+I see the issue — there's an extra closing brace:
+[0m
+[0m← [0mEdit src/profile.rs
+Index: /home/ben/Documents/repos/noscope/src/profile.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/profile.rs
++++ /home/ben/Documents/repos/noscope/src/profile.rs
+@@ -280,9 +280,8 @@
+             && !seen_env_keys.insert(key.clone())
+         {
+             errors.push(format!("duplicate env_key '{}'", key));
+         }
+-        }
+     }
+ 
+     errors
+ }
+
+[0m
+[0m$ [0mcargo test && cargo clippy -- -D warnings 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.70s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 280 tests
+test event::tests::structured_event_logging_child_exit_event ... ok
+test event::tests::structured_event_logging_all_fields_set_simultaneously ... ok
+test event::tests::structured_event_logging_child_spawn_event ... ok
+test event::tests::structured_event_logging_child_exit_includes_exit_code ... ok
+test event::tests::structured_event_logging_emitter_text_format_output ... ok
+test event::tests::structured_event_logging_empty_provider_name ... ok
+test event::tests::structured_event_logging_emitter_json_format_output ... ok
+test event::tests::structured_event_logging_error_null_when_not_set ... ok
+test event::tests::structured_event_logging_event_type_display_matches_as_str ... ok
+test event::tests::structured_event_logging_event_type_names ... ok
+test event::tests::structured_event_logging_fail_event_includes_error_message ... ok
+test event::tests::structured_event_logging_json_contains_duration ... ok
+test event::tests::structured_event_logging_json_contains_provider ... ok
+test event::tests::structured_event_logging_json_contains_redacted_token_id ... ok
+test event::tests::structured_event_logging_json_contains_timestamp ... ok
+test event::tests::structured_event_logging_json_contains_type ... ok
+test event::tests::structured_event_logging_json_duration_null_when_absent ... ok
+test event::tests::structured_event_logging_json_error_with_quotes ... ok
+test event::tests::structured_event_logging_json_is_single_line ... ok
+test event::tests::structured_event_logging_json_is_valid_json ... ok
+test event::tests::structured_event_logging_json_never_contains_raw_secret ... ok
+test event::tests::structured_event_logging_json_token_id_null_when_absent ... ok
+test event::tests::structured_event_logging_large_duration_does_not_panic ... ok
+test event::tests::structured_event_logging_log_format_json ... ok
+test event::tests::structured_event_logging_log_format_parse_is_case_sensitive ... ok
+test event::tests::structured_event_logging_log_format_text ... ok
+test event::tests::structured_event_logging_log_format_unknown_returns_none ... ok
+test event::tests::structured_event_logging_emitter_json_single_line ... ok
+test event::tests::structured_event_logging_mint_fail_event ... ok
+test event::tests::structured_event_logging_mint_start_event ... ok
+test event::tests::structured_event_logging_mint_success_event ... ok
+test event::tests::structured_event_logging_negative_exit_code ... ok
+test event::tests::structured_event_logging_refresh_success_event ... ok
+test event::tests::structured_event_logging_refresh_fail_event ... ok
+test event::tests::structured_event_logging_revoke_fail_event ... ok
+test event::tests::structured_event_logging_refresh_start_event ... ok
+test event::tests::structured_event_logging_revoke_start_event ... ok
+test event::tests::structured_event_logging_revoke_success_event ... ok
+test event::tests::structured_event_logging_signal_received_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_includes_signal ... ok
+test event::tests::structured_event_logging_signal_received_includes_signal ... ok
+test event::tests::structured_event_logging_text_format_escapes_quotes_in_error ... ok
+test exit_code::tests::exit_129_is_signal_1_sighup ... ok
+test event::tests::structured_event_logging_timestamp_is_current ... ok
+test event::tests::structured_event_logging_token_id_is_redacted_not_raw ... ok
+test exit_code::tests::exit_255_is_signal_127 ... ok
+test exit_code::tests::exit_exactly_128_is_not_signal_terminated ... ok
+test exit_code::tests::known_provider_exit_codes_interpreted_directly ... ok
+test exit_code::tests::multi_provider_report_can_filter_retryable_failures ... ok
+test exit_code::tests::multi_provider_report_collects_all_failures ... ok
+test exit_code::tests::multi_provider_report_failures_are_accessible ... ok
+test exit_code::tests::multi_provider_report_empty_has_zero_failures ... ok
+test exit_code::tests::multi_provider_report_exit_code_is_65_mint_failure ... ok
+test exit_code::tests::multi_provider_report_first_failure_not_shadowed ... ok
+test exit_code::tests::multi_provider_report_format_stderr_empty_when_no_failures ... ok
+test exit_code::tests::multi_provider_report_stderr_contains_all_providers_in_order ... ok
+test exit_code::tests::multi_provider_report_stderr_includes_exit_code_per_provider ... ok
+test exit_code::tests::multi_provider_report_with_no_failures_returns_success_not_child_exit ... ok
+test exit_code::tests::multi_provider_report_successes_are_accessible ... ok
+test exit_code::tests::negative_exit_code_maps_to_general_error_no_signal ... ok
+test exit_code::tests::non_signal_stderr_message_shows_provider_exit_code ... ok
+test exit_code::tests::noscope_exit_code_child_exit_passes_through_any_value ... ok
+test exit_code::tests::noscope_exit_code_child_exit_zero_is_success ... ok
+test exit_code::tests::noscope_exit_code_child_exit_preserves_child_code ... ok
+test exit_code::tests::noscope_exit_code_config_error_is_78 ... ok
+test exit_code::tests::noscope_exit_code_config_not_found_is_66 ... ok
+test exit_code::tests::noscope_exit_code_display_child_exit_mentions_child ... ok
+test exit_code::tests::noscope_exit_code_display_includes_meaning ... ok
+test exit_code::tests::multi_provider_report_tracks_successes_too ... ok
+test event::tests::structured_event_logging_zero_duration ... ok
+test exit_code::tests::noscope_exit_code_internal_is_70 ... ok
+test exit_code::tests::noscope_exit_code_mint_failure_is_65 ... ok
+test exit_code::tests::noscope_exit_code_permission_is_77 ... ok
+test exit_code::tests::noscope_exit_code_unavailable_is_69 ... ok
+test exit_code::tests::noscope_exit_code_usage_is_64 ... ok
+test exit_code::tests::noscope_exit_codes_do_not_overlap_with_provider_codes ... ok
+test exit_code::tests::noscope_success_is_semantically_distinct_from_child_exit_zero ... ok
+test exit_code::tests::provider_exit_code_auth_failure_is_two ... ok
+test exit_code::tests::provider_exit_code_display_includes_code_number_and_meaning ... ok
+test exit_code::tests::provider_exit_code_from_raw_returns_none_for_unknown ... ok
+test exit_code::tests::provider_exit_code_from_raw_roundtrips_all_known_codes ... ok
+test exit_code::tests::provider_exit_code_general_error_is_one ... ok
+test exit_code::tests::provider_exit_code_role_not_found_is_three ... ok
+test exit_code::tests::provider_exit_code_non_zero_are_errors ... ok
+test exit_code::tests::provider_exit_code_success_is_not_error ... ok
+test exit_code::tests::provider_exit_code_success_is_zero ... ok
+test exit_code::tests::provider_exit_code_unavailable_is_four ... ok
+test exit_code::tests::provider_exit_result_implements_display ... ok
+test exit_code::tests::provider_exit_result_is_eq_comparable ... ok
+test exit_code::tests::signal_terminated_provider_includes_signal_number ... ok
+test exit_code::tests::signal_terminated_provider_maps_to_general_error ... ok
+test exit_code::tests::signal_terminated_provider_stderr_message_contains_signal ... ok
+test exit_code::tests::unknown_non_signal_exit_code_maps_to_general_error ... ok
+test mint::tests::format_mint_output_handles_special_characters_in_token ... ok
+test mint::tests::mint_envelope_debug_does_not_expose_raw_token ... ok
+test mint::tests::mint_envelope_debug_shows_metadata ... ok
+test mint::tests::mint_envelope_from_scoped_token_without_token_id ... ok
+test mint::tests::mint_envelope_is_not_clone ... ok
+test mint::tests::mint_error_display_for_invalid_input ... ok
+test mint::tests::mint_multi_provider_atomicity_empty_on_failure ... ok
+test exit_code::tests::noscope_exit_code_display_success_mentions_success ... ok
+test mint::tests::mint_error_implements_std_error ... ok
+test exit_code::tests::noscope_exit_code_success_is_zero ... ok
+test mint::tests::mint_multi_provider_atomicity_no_partial_stdout ... ok
+test mint::tests::mint_multi_provider_atomicity_multiple_providers_returns_array ... ok
+test mint::tests::mint_multi_provider_atomicity_output_is_single_line ... ok
+test mint::tests::mint_multi_provider_atomicity_single_provider_returns_object ... ok
+test mint::tests::mint_output_envelope_contains_expires_at_iso8601 ... ok
+test mint::tests::mint_output_envelope_contains_provider ... ok
+test mint::tests::mint_output_envelope_contains_role ... ok
+test mint::tests::mint_output_envelope_contains_token_field ... ok
+test mint::tests::mint_output_envelope_contains_token_id ... ok
+test mint::tests::mint_output_envelope_from_scoped_token ... ok
+test mint::tests::mint_ttl_requirement_accepts_valid_ttl ... ok
+test mint::tests::mint_output_envelope_has_exactly_five_fields ... ok
+test mint::tests::mint_ttl_requirement_rejects_empty_providers ... ok
+test mint::tests::mint_output_envelope_is_single_line_json ... ok
+test mint::tests::mint_ttl_requirement_rejects_zero_ttl ... ok
+test mint::tests::mint_ttl_requirement_rejects_empty_role ... ok
+test mint::tests::redaction_exception_log_string_contains_provider_and_role ... ok
+test mint::tests::mint_ttl_requirement_ttl_is_mandatory ... ok
+test mint::tests::redaction_exception_mint_stdout_contains_raw_token ... ok
+test mint::tests::redaction_exception_stderr_still_redacted ... ok
+test mint::tests::revoke_input_does_not_store_token_value ... ok
+test mint::tests::revoke_input_allows_token_id_equals_combined_form ... ok
+test mint::tests::revoke_input_from_mint_json_array_element ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_invalid_json ... ok
+test mint::tests::revoke_input_from_mint_json_stdin ... ok
+test mint::tests::revoke_input_from_token_id_and_provider ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_missing_provider ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_missing_token_id ... ok
+test mint::tests::revoke_input_rejects_combined_token_equals_value_flag ... ok
+test mint::tests::revoke_input_rejects_raw_token_flag ... ok
+test mint::tests::revoke_input_validates_no_token_value_in_cli_args ... ok
+test mint::tests::terminal_detection_allows_pipe_stdout ... ok
+test mint::tests::terminal_detection_error_message_mentions_force_flag ... ok
+test mint::tests::terminal_detection_error_message_warns_about_scrollback ... ok
+test mint::tests::terminal_detection_force_overrides_tty_check ... ok
+test mint::tests::terminal_detection_pipe_with_force_also_works ... ok
+test mint::tests::terminal_detection_rejects_tty_stdout ... ok
+test mint::tests::validate_mint_args_returns_validated_ttl ... ok
+test profile::tests::profile_cli_mutual_exclusion_error_names_conflicting_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_no_profile_allows_flags ... ok
+test mint::tests::terminal_detection_exit_code_is_64 ... ok
+test profile::tests::profile_cli_mutual_exclusion_exit_code_is_usage ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_alone_is_valid ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_all_three ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_ttl ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_provider ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_role ... ok
+test profile::tests::profile_flatness_constraint_no_extends_field ... ok
+test profile::tests::profile_flatness_constraint_is_flat_list_of_tuples ... ok
+test profile::tests::profile_load_missing_file_is_error ... ok
+test profile::tests::profile_flatness_constraint_no_overrides_field ... ok
+test profile::tests::profile_path_default_home ... ok
+test profile::tests::profile_path_under_xdg_config ... ok
+test profile::tests::profile_flatness_constraint_no_nested_profiles ... ok
+test profile::tests::profile_load_secure_permissions_accepted ... ok
+test profile::tests::profile_schema_empty_credentials_array_is_error ... ok
+test profile::tests::profile_schema_env_key_can_be_set ... ok
+test profile::tests::profile_schema_env_key_is_optional ... ok
+test profile::tests::profile_schema_no_credentials_key_is_error ... ok
+test profile::tests::profile_schema_multiple_unknown_credential_fields_all_reported ... ok
+test profile::tests::profile_schema_requires_role ... ok
+test profile::tests::profile_schema_requires_provider ... ok
+test profile::tests::profile_schema_requires_ttl ... ok
+test profile::tests::profile_load_insecure_permissions_rejected ... ok
+test profile::tests::profile_schema_ttl_must_be_positive_integer ... ok
+test profile::tests::profile_schema_ttl_must_not_be_negative ... ok
+test profile::tests::profile_schema_unknown_credential_field_is_error ... ok
+test profile::tests::profile_schema_unknown_top_level_fields_ignored ... ok
+test profile::tests::profile_validation_distinct_exit_code ... ok
+test profile::tests::profile_validation_all_errors_reported_together ... ok
+test profile::tests::profile_validation_env_key_uniqueness_none_does_not_conflict ... ok
+test profile::tests::profile_validation_passes_for_valid_profile ... ok
+test profile::tests::profile_validation_env_key_uniqueness ... ok
+test provider::tests::config_file_permission_enforcement_allows_0400 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0600 ... ok
+test profile::tests::profile_validation_provider_existence ... ok
+test provider::tests::config_file_permission_enforcement_allows_0640 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0604 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0666 ... ok
+test provider::tests::config_source_eq_works ... ok
+test provider::tests::config_precedence_flags_without_mint_cmd_still_wins ... ok
+test provider::tests::config_file_permission_enforcement_rejects_world_readable ... ok
+test provider::tests::config_xdg_custom_overrides_default ... ok
+test provider::tests::config_xdg_defaults_to_home_dot_config ... ok
+test provider::tests::config_follows_xdg_base_directory ... ok
+test provider::tests::dry_run_mode_produces_output ... ok
+test provider::tests::dry_run_mode_shows_role_and_ttl ... ok
+test provider::tests::dry_run_mode_shows_config_source ... ok
+test provider::tests::dry_run_mode_shows_mint_command ... ok
+test provider::tests::insecure_permissions_display_contains_path_and_mode ... ok
+test provider::tests::malformed_config_empty_mint_cmd_is_error ... ok
+test provider::tests::load_provider_file_reads_secure_file ... ok
+test provider::tests::load_provider_file_rejects_insecure_file ... ok
+test provider::tests::malformed_config_is_hard_error_syntax ... ok
+test provider::tests::malformed_config_is_hard_error_missing_required_field ... ok
+test provider::tests::malformed_config_missing_file_is_not_error ... ok
+test provider::tests::provider_not_found_display_contains_provider_name ... ok
+test provider::tests::parse_provider_toml_rejects_non_string_mint ... ok
+test provider::tests::provider_not_found_message_is_user_actionable ... ok
+test provider::tests::strict_config_precedence_file_used_when_no_flags_or_env ... ok
+test provider::tests::parse_provider_toml_valid_with_all_commands ... ok
+test provider::tests::strict_config_precedence_flags_win_over_env ... ok
+test provider::tests::strict_config_precedence_env_wins_over_file ... ok
+test provider::tests::provider_not_found_enumerates_checked_locations ... ok
+test provider::tests::strict_config_precedence_no_merging_across_layers ... ok
+test provider::tests::validate_provider_checks_mint_cmd_exists ... ok
+test provider::tests::validate_provider_checks_mint_cmd_is_executable ... ok
+test provider::tests::validate_provider_checks_refresh_cmd_if_present ... ok
+test provider::tests::validate_provider_checks_revoke_cmd_if_present ... ok
+test provider::tests::validate_provider_succeeds_for_valid_config ... ok
+test provider::tests::validation_failed_display_lists_all_problems ... ok
+test redaction::tests::debug_format_looks_like_debug_output ... ok
+test provider::tests::validate_provider_does_not_execute_mint_cmd ... ok
+test redaction::tests::debug_format_shows_redacted_form_not_raw ... ok
+test redaction::tests::display_never_shows_full_token_value ... ok
+test redaction::tests::different_tokens_produce_different_hash_ids ... ok
+test redaction::tests::display_of_empty_token_does_not_panic ... ok
+test redaction::tests::jwt_token_never_shows_prefix_chars ... ok
+test redaction::tests::debug_never_shows_full_token_value ... ok
+test redaction::tests::jwt_token_with_provider_id_uses_provider_id ... ok
+test redaction::tests::long_token_shows_first_8_chars_with_ellipsis ... ok
+test redaction::tests::mixed_ascii_multibyte_token_takes_8_chars ... ok
+test redaction::tests::multibyte_utf8_token_does_not_panic ... ok
+test redaction::tests::redaction_cannot_be_bypassed_by_alternate_format ... ok
+test redaction::tests::same_token_always_produces_same_hash_id ... ok
+test redaction::tests::short_token_without_id_uses_hash_based_id ... ok
+test redaction::tests::token_exactly_17_chars_shows_prefix ... ok
+test redaction::tests::short_token_with_provider_id_uses_that_id ... ok
+test redaction::tests::token_exactly_16_chars_uses_redacted_format ... ok
+test refresh::tests::continuous_refresh_after_failure_new_window_after_expiry ... ok
+test refresh::tests::continuous_refresh_after_failure_not_permanently_disabled ... ok
+test refresh::tests::continuous_refresh_after_failure_reset_after_success ... ok
+test refresh::tests::refresh_failure_independence_separate_trackers ... ok
+test refresh::tests::refresh_failure_independence_success_resets_own_tracker ... ok
+test refresh::tests::refresh_failure_independence_tracker_knows_its_credential ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_not_kill ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_retry ... ok
+test refresh::tests::refresh_failure_preserves_child_allows_token_until_expiry ... ok
+test refresh::tests::refresh_failure_preserves_child_logs_warning ... ok
+test refresh::tests::refresh_failure_preserves_child_never_kills_at_any_attempt ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_environment ... ok
+test refresh::tests::refresh_retry_parameters_delay_grows_exponentially ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_env_var_point_in_time ... ok
+test refresh::tests::refresh_limitation_documentation_startup_warning ... ok
+test refresh::tests::refresh_retry_parameters_base_delay_is_one_second ... ok
+test refresh::tests::refresh_retry_parameters_jitter_range_is_25_percent ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_multiplier_is_two ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_attempt_2_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_large_attempt_does_not_panic ... ok
+test refresh::tests::refresh_retry_parameters_max_retries_is_four ... ok
+test refresh::tests::refresh_retry_parameters_no_retry_when_remaining_lifetime_zero ... ok
+test refresh::tests::refresh_retry_parameters_truncates_retries_when_lifetime_short ... ok
+test security::tests::allows_args_without_token_values ... ok
+test security::tests::disable_core_dumps_succeeds_on_linux ... ok
+test refresh::tests::refresh_retry_parameters_total_window_within_50_percent_remaining ... ok
+test refresh::tests::refresh_tracker_failure_count_saturates_instead_of_wrapping ... ok
+test security::tests::disable_core_dumps_sets_rlimit_to_zero ... ok
+test security::tests::empty_args_always_valid ... ok
+test security::tests::empty_known_tokens_always_valid ... ok
+test security::tests::rejects_token_as_substring_in_arg ... ok
+test security::tests::error_message_does_not_contain_token_value ... ok
+test security::tests::rejects_args_containing_known_token_value ... ok
+test token::tests::redacted_value_returns_reference_not_new_computation ... ok
+test token::tests::scoped_token_debug_shows_non_secret_fields ... ok
+test token::tests::scoped_token_constructor_takes_secret_string_directly ... ok
+test token::tests::scoped_token_debug_does_not_expose_secret ... ok
+test token::tests::scoped_token_display_does_not_expose_secret ... ok
+test token::tests::scoped_token_expose_secret_returns_value ... ok
+test token::tests::scoped_token_is_not_clone ... ok
+test token::tests::scoped_token_is_send ... ok
+test token::tests::scoped_token_exposes_metadata_but_not_value ... ok
+test token::tests::scoped_token_requires_expires_at ... ok
+test token::tests::scoped_token_is_sync ... ok
+test token::tests::scoped_token_is_not_serializable ... ok
+test token::tests::string_zeroize_actually_clears_data ... ok
+
+test result: ok. 280 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests noscope
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.60s
+[0m
+280 tests pass, zero clippy warnings. Phase 3 complete.
+[0m# [0mTodos
+[x] Phase 1: Understand — Read existing codebase (src/lib.rs, all modules)
+[x] Phase 1: Understand — Read all 4 rules (NS-004, NS-051, NS-052, NS-053)
+[x] Phase 2: TDD Red — Write tests for all rules (no production code)
+[x] Phase 2: TDD Red — Verify all tests fail
+[x] Phase 3: TDD Green — Write minimal production code
+[x] Phase 3: TDD Green — cargo test passes, cargo clippy clean
+[ ] Phase 4: TDD Refactor — Clean up code
+[ ] Phase 5: Linus Torvalds Review — Brutal self-review
+[ ] Phase 5: Fix review issues, add edge case tests
+[ ] Phase 6: Commit with proper message
+[0m
+## Phase 4: TDD Refactor
+
+Let me review the current production code for cleanup opportunities:
+[0m→ [0mRead src/profile.rs[90m [limit=260][0m
+The code is already clean. The structure follows the patterns in the existing codebase well. Let me verify there's nothing to refactor:
+
+- No duplicated logic
+- Names are descriptive and match the domain
+- Error messages are specific and actionable
+- Doc comments reference NS-xxx rules
+- The `KNOWN_CREDENTIAL_FIELDS` constant is a clean way to enforce the allowlist
+
+The code is in good shape. Let me verify the full suite one more time:
+[0m
+[0m$ [0mcargo test && cargo clippy -- -D warnings 2>&1
+Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 280 tests
+test event::tests::structured_event_logging_child_exit_event ... ok
+test event::tests::structured_event_logging_all_fields_set_simultaneously ... ok
+test event::tests::structured_event_logging_emitter_json_format_output ... ok
+test event::tests::structured_event_logging_emitter_json_single_line ... ok
+test event::tests::structured_event_logging_child_exit_includes_exit_code ... ok
+test event::tests::structured_event_logging_child_spawn_event ... ok
+test event::tests::structured_event_logging_emitter_text_format_output ... ok
+test event::tests::structured_event_logging_empty_provider_name ... ok
+test event::tests::structured_event_logging_error_null_when_not_set ... ok
+test event::tests::structured_event_logging_event_type_display_matches_as_str ... ok
+test event::tests::structured_event_logging_event_type_names ... ok
+test event::tests::structured_event_logging_fail_event_includes_error_message ... ok
+test event::tests::structured_event_logging_json_contains_duration ... ok
+test event::tests::structured_event_logging_json_contains_provider ... ok
+test event::tests::structured_event_logging_json_contains_timestamp ... ok
+test event::tests::structured_event_logging_json_contains_redacted_token_id ... ok
+test event::tests::structured_event_logging_json_contains_type ... ok
+test event::tests::structured_event_logging_json_duration_null_when_absent ... ok
+test event::tests::structured_event_logging_json_is_single_line ... ok
+test event::tests::structured_event_logging_json_error_with_quotes ... ok
+test event::tests::structured_event_logging_json_token_id_null_when_absent ... ok
+test event::tests::structured_event_logging_json_is_valid_json ... ok
+test event::tests::structured_event_logging_json_never_contains_raw_secret ... ok
+test event::tests::structured_event_logging_log_format_parse_is_case_sensitive ... ok
+test event::tests::structured_event_logging_large_duration_does_not_panic ... ok
+test event::tests::structured_event_logging_log_format_json ... ok
+test event::tests::structured_event_logging_log_format_unknown_returns_none ... ok
+test event::tests::structured_event_logging_mint_start_event ... ok
+test event::tests::structured_event_logging_log_format_text ... ok
+test event::tests::structured_event_logging_mint_fail_event ... ok
+test event::tests::structured_event_logging_negative_exit_code ... ok
+test event::tests::structured_event_logging_mint_success_event ... ok
+test event::tests::structured_event_logging_refresh_fail_event ... ok
+test event::tests::structured_event_logging_refresh_start_event ... ok
+test event::tests::structured_event_logging_refresh_success_event ... ok
+test event::tests::structured_event_logging_revoke_fail_event ... ok
+test event::tests::structured_event_logging_revoke_start_event ... ok
+test event::tests::structured_event_logging_revoke_success_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_event ... ok
+test event::tests::structured_event_logging_text_format_escapes_quotes_in_error ... ok
+test event::tests::structured_event_logging_signal_forwarded_includes_signal ... ok
+test event::tests::structured_event_logging_signal_received_event ... ok
+test event::tests::structured_event_logging_signal_received_includes_signal ... ok
+test event::tests::structured_event_logging_timestamp_is_current ... ok
+test event::tests::structured_event_logging_zero_duration ... ok
+test event::tests::structured_event_logging_token_id_is_redacted_not_raw ... ok
+test exit_code::tests::exit_129_is_signal_1_sighup ... ok
+test exit_code::tests::exit_255_is_signal_127 ... ok
+test exit_code::tests::known_provider_exit_codes_interpreted_directly ... ok
+test exit_code::tests::multi_provider_report_collects_all_failures ... ok
+test exit_code::tests::exit_exactly_128_is_not_signal_terminated ... ok
+test exit_code::tests::multi_provider_report_can_filter_retryable_failures ... ok
+test exit_code::tests::multi_provider_report_empty_has_zero_failures ... ok
+test exit_code::tests::multi_provider_report_exit_code_is_65_mint_failure ... ok
+test exit_code::tests::multi_provider_report_first_failure_not_shadowed ... ok
+test exit_code::tests::multi_provider_report_failures_are_accessible ... ok
+test exit_code::tests::multi_provider_report_format_stderr_empty_when_no_failures ... ok
+test exit_code::tests::multi_provider_report_stderr_contains_all_providers_in_order ... ok
+test exit_code::tests::multi_provider_report_stderr_includes_exit_code_per_provider ... ok
+test exit_code::tests::multi_provider_report_with_no_failures_returns_success_not_child_exit ... ok
+test exit_code::tests::negative_exit_code_maps_to_general_error_no_signal ... ok
+test exit_code::tests::multi_provider_report_successes_are_accessible ... ok
+test exit_code::tests::multi_provider_report_tracks_successes_too ... ok
+test exit_code::tests::non_signal_stderr_message_shows_provider_exit_code ... ok
+test exit_code::tests::noscope_exit_code_child_exit_preserves_child_code ... ok
+test exit_code::tests::noscope_exit_code_config_error_is_78 ... ok
+test exit_code::tests::noscope_exit_code_config_not_found_is_66 ... ok
+test exit_code::tests::noscope_exit_code_display_includes_meaning ... ok
+test exit_code::tests::noscope_exit_code_child_exit_passes_through_any_value ... ok
+test exit_code::tests::noscope_exit_code_child_exit_zero_is_success ... ok
+test exit_code::tests::noscope_exit_code_display_success_mentions_success ... ok
+test exit_code::tests::noscope_exit_code_mint_failure_is_65 ... ok
+test exit_code::tests::noscope_exit_code_success_is_zero ... ok
+test exit_code::tests::noscope_exit_code_internal_is_70 ... ok
+test exit_code::tests::noscope_exit_code_permission_is_77 ... ok
+test exit_code::tests::noscope_exit_code_unavailable_is_69 ... ok
+test exit_code::tests::noscope_exit_codes_do_not_overlap_with_provider_codes ... ok
+test exit_code::tests::noscope_exit_code_usage_is_64 ... ok
+test exit_code::tests::noscope_success_is_semantically_distinct_from_child_exit_zero ... ok
+test exit_code::tests::provider_exit_code_auth_failure_is_two ... ok
+test exit_code::tests::provider_exit_code_from_raw_returns_none_for_unknown ... ok
+test exit_code::tests::provider_exit_code_general_error_is_one ... ok
+test exit_code::tests::provider_exit_code_display_includes_code_number_and_meaning ... ok
+test exit_code::tests::provider_exit_code_from_raw_roundtrips_all_known_codes ... ok
+test exit_code::tests::provider_exit_code_non_zero_are_errors ... ok
+test exit_code::tests::provider_exit_code_success_is_not_error ... ok
+test exit_code::tests::provider_exit_code_unavailable_is_four ... ok
+test exit_code::tests::provider_exit_code_role_not_found_is_three ... ok
+test exit_code::tests::provider_exit_code_success_is_zero ... ok
+test exit_code::tests::provider_exit_result_implements_display ... ok
+test exit_code::tests::provider_exit_result_is_eq_comparable ... ok
+test exit_code::tests::signal_terminated_provider_includes_signal_number ... ok
+test exit_code::tests::signal_terminated_provider_maps_to_general_error ... ok
+test exit_code::tests::signal_terminated_provider_stderr_message_contains_signal ... ok
+test exit_code::tests::unknown_non_signal_exit_code_maps_to_general_error ... ok
+test mint::tests::format_mint_output_handles_special_characters_in_token ... ok
+test mint::tests::mint_envelope_debug_shows_metadata ... ok
+test exit_code::tests::noscope_exit_code_display_child_exit_mentions_child ... ok
+test mint::tests::mint_envelope_debug_does_not_expose_raw_token ... ok
+test mint::tests::mint_envelope_from_scoped_token_without_token_id ... ok
+test mint::tests::mint_envelope_is_not_clone ... ok
+test mint::tests::mint_error_display_for_invalid_input ... ok
+test mint::tests::mint_error_implements_std_error ... ok
+test mint::tests::mint_multi_provider_atomicity_empty_on_failure ... ok
+test mint::tests::mint_multi_provider_atomicity_multiple_providers_returns_array ... ok
+test mint::tests::mint_multi_provider_atomicity_no_partial_stdout ... ok
+test mint::tests::mint_multi_provider_atomicity_output_is_single_line ... ok
+test mint::tests::mint_output_envelope_contains_expires_at_iso8601 ... ok
+test mint::tests::mint_output_envelope_contains_provider ... ok
+test mint::tests::mint_multi_provider_atomicity_single_provider_returns_object ... ok
+test mint::tests::mint_output_envelope_contains_token_field ... ok
+test mint::tests::mint_output_envelope_from_scoped_token ... ok
+test mint::tests::mint_output_envelope_contains_role ... ok
+test mint::tests::mint_output_envelope_has_exactly_five_fields ... ok
+test mint::tests::mint_output_envelope_contains_token_id ... ok
+test mint::tests::mint_ttl_requirement_rejects_empty_providers ... ok
+test mint::tests::mint_output_envelope_is_single_line_json ... ok
+test mint::tests::mint_ttl_requirement_accepts_valid_ttl ... ok
+test mint::tests::mint_ttl_requirement_rejects_empty_role ... ok
+test mint::tests::mint_ttl_requirement_rejects_zero_ttl ... ok
+test mint::tests::mint_ttl_requirement_ttl_is_mandatory ... ok
+test mint::tests::redaction_exception_log_string_contains_provider_and_role ... ok
+test mint::tests::redaction_exception_mint_stdout_contains_raw_token ... ok
+test mint::tests::redaction_exception_stderr_still_redacted ... ok
+test mint::tests::revoke_input_from_mint_json_array_element ... ok
+test mint::tests::revoke_input_does_not_store_token_value ... ok
+test mint::tests::revoke_input_allows_token_id_equals_combined_form ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_invalid_json ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_missing_provider ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_missing_token_id ... ok
+test mint::tests::revoke_input_from_mint_json_stdin ... ok
+test mint::tests::revoke_input_from_token_id_and_provider ... ok
+test mint::tests::revoke_input_rejects_combined_token_equals_value_flag ... ok
+test mint::tests::revoke_input_rejects_raw_token_flag ... ok
+test mint::tests::revoke_input_validates_no_token_value_in_cli_args ... ok
+test mint::tests::terminal_detection_allows_pipe_stdout ... ok
+test mint::tests::terminal_detection_error_message_mentions_force_flag ... ok
+test mint::tests::terminal_detection_error_message_warns_about_scrollback ... ok
+test mint::tests::terminal_detection_exit_code_is_64 ... ok
+test mint::tests::terminal_detection_force_overrides_tty_check ... ok
+test mint::tests::terminal_detection_pipe_with_force_also_works ... ok
+test mint::tests::terminal_detection_rejects_tty_stdout ... ok
+test mint::tests::validate_mint_args_returns_validated_ttl ... ok
+test profile::tests::profile_cli_mutual_exclusion_exit_code_is_usage ... ok
+test profile::tests::profile_cli_mutual_exclusion_error_names_conflicting_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_no_profile_allows_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_all_three ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_alone_is_valid ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_provider ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_ttl ... ok
+test profile::tests::profile_flatness_constraint_no_extends_field ... ok
+test profile::tests::profile_flatness_constraint_is_flat_list_of_tuples ... ok
+test profile::tests::profile_flatness_constraint_no_nested_profiles ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_role ... ok
+test profile::tests::profile_load_missing_file_is_error ... ok
+test profile::tests::profile_load_insecure_permissions_rejected ... ok
+test profile::tests::profile_flatness_constraint_no_overrides_field ... ok
+test profile::tests::profile_load_secure_permissions_accepted ... ok
+test profile::tests::profile_path_default_home ... ok
+test profile::tests::profile_path_under_xdg_config ... ok
+test profile::tests::profile_schema_env_key_is_optional ... ok
+test profile::tests::profile_schema_env_key_can_be_set ... ok
+test profile::tests::profile_schema_empty_credentials_array_is_error ... ok
+test profile::tests::profile_schema_multiple_unknown_credential_fields_all_reported ... ok
+test profile::tests::profile_schema_no_credentials_key_is_error ... ok
+test profile::tests::profile_schema_requires_role ... ok
+test profile::tests::profile_schema_requires_provider ... ok
+test profile::tests::profile_schema_requires_ttl ... ok
+test profile::tests::profile_schema_ttl_must_be_positive_integer ... ok
+test profile::tests::profile_schema_ttl_must_not_be_negative ... ok
+test profile::tests::profile_validation_distinct_exit_code ... ok
+test profile::tests::profile_schema_unknown_credential_field_is_error ... ok
+test profile::tests::profile_schema_unknown_top_level_fields_ignored ... ok
+test profile::tests::profile_validation_env_key_uniqueness_none_does_not_conflict ... ok
+test profile::tests::profile_validation_env_key_uniqueness ... ok
+test profile::tests::profile_validation_all_errors_reported_together ... ok
+test provider::tests::config_file_permission_enforcement_allows_0600 ... ok
+test profile::tests::profile_validation_provider_existence ... ok
+test profile::tests::profile_validation_passes_for_valid_profile ... ok
+test provider::tests::config_file_permission_enforcement_allows_0400 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0640 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0604 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0666 ... ok
+test provider::tests::config_precedence_flags_without_mint_cmd_still_wins ... ok
+test provider::tests::config_xdg_custom_overrides_default ... ok
+test provider::tests::config_file_permission_enforcement_rejects_world_readable ... ok
+test provider::tests::config_follows_xdg_base_directory ... ok
+test provider::tests::config_source_eq_works ... ok
+test provider::tests::config_xdg_defaults_to_home_dot_config ... ok
+test provider::tests::dry_run_mode_produces_output ... ok
+test provider::tests::dry_run_mode_shows_config_source ... ok
+test provider::tests::dry_run_mode_shows_mint_command ... ok
+test provider::tests::dry_run_mode_shows_role_and_ttl ... ok
+test provider::tests::insecure_permissions_display_contains_path_and_mode ... ok
+test provider::tests::load_provider_file_rejects_insecure_file ... ok
+test provider::tests::load_provider_file_reads_secure_file ... ok
+test provider::tests::malformed_config_empty_mint_cmd_is_error ... ok
+test provider::tests::malformed_config_is_hard_error_syntax ... ok
+test provider::tests::malformed_config_is_hard_error_missing_required_field ... ok
+test provider::tests::malformed_config_missing_file_is_not_error ... ok
+test provider::tests::parse_provider_toml_rejects_non_string_mint ... ok
+test provider::tests::parse_provider_toml_valid_with_all_commands ... ok
+test provider::tests::provider_not_found_message_is_user_actionable ... ok
+test provider::tests::provider_not_found_display_contains_provider_name ... ok
+test provider::tests::provider_not_found_enumerates_checked_locations ... ok
+test provider::tests::strict_config_precedence_env_wins_over_file ... ok
+test provider::tests::strict_config_precedence_no_merging_across_layers ... ok
+test provider::tests::validate_provider_checks_mint_cmd_exists ... ok
+test provider::tests::validate_provider_checks_mint_cmd_is_executable ... ok
+test provider::tests::validate_provider_checks_refresh_cmd_if_present ... ok
+test provider::tests::validate_provider_checks_revoke_cmd_if_present ... ok
+test provider::tests::validate_provider_does_not_execute_mint_cmd ... ok
+test provider::tests::validate_provider_succeeds_for_valid_config ... ok
+test provider::tests::validation_failed_display_lists_all_problems ... ok
+test provider::tests::strict_config_precedence_file_used_when_no_flags_or_env ... ok
+test provider::tests::strict_config_precedence_flags_win_over_env ... ok
+test redaction::tests::debug_format_looks_like_debug_output ... ok
+test redaction::tests::debug_format_shows_redacted_form_not_raw ... ok
+test redaction::tests::debug_never_shows_full_token_value ... ok
+test redaction::tests::display_never_shows_full_token_value ... ok
+test redaction::tests::display_of_empty_token_does_not_panic ... ok
+test redaction::tests::jwt_token_never_shows_prefix_chars ... ok
+test redaction::tests::jwt_token_with_provider_id_uses_provider_id ... ok
+test redaction::tests::mixed_ascii_multibyte_token_takes_8_chars ... ok
+test redaction::tests::long_token_shows_first_8_chars_with_ellipsis ... ok
+test redaction::tests::different_tokens_produce_different_hash_ids ... ok
+test redaction::tests::redaction_cannot_be_bypassed_by_alternate_format ... ok
+test redaction::tests::same_token_always_produces_same_hash_id ... ok
+test redaction::tests::short_token_with_provider_id_uses_that_id ... ok
+test redaction::tests::short_token_without_id_uses_hash_based_id ... ok
+test redaction::tests::token_exactly_16_chars_uses_redacted_format ... ok
+test redaction::tests::token_exactly_17_chars_shows_prefix ... ok
+test refresh::tests::continuous_refresh_after_failure_new_window_after_expiry ... ok
+test refresh::tests::continuous_refresh_after_failure_not_permanently_disabled ... ok
+test refresh::tests::continuous_refresh_after_failure_reset_after_success ... ok
+test refresh::tests::refresh_failure_independence_separate_trackers ... ok
+test redaction::tests::multibyte_utf8_token_does_not_panic ... ok
+test refresh::tests::refresh_failure_independence_success_resets_own_tracker ... ok
+test refresh::tests::refresh_failure_independence_tracker_knows_its_credential ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_not_kill ... ok
+test refresh::tests::refresh_failure_preserves_child_logs_warning ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_retry ... ok
+test refresh::tests::refresh_failure_preserves_child_allows_token_until_expiry ... ok
+test refresh::tests::refresh_failure_preserves_child_never_kills_at_any_attempt ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_env_var_point_in_time ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_environment ... ok
+test refresh::tests::refresh_limitation_documentation_startup_warning ... ok
+test refresh::tests::refresh_retry_parameters_jitter_range_is_25_percent ... ok
+test refresh::tests::refresh_retry_parameters_base_delay_is_one_second ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_attempt_2_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_large_attempt_does_not_panic ... ok
+test refresh::tests::refresh_retry_parameters_multiplier_is_two ... ok
+test refresh::tests::refresh_retry_parameters_no_retry_when_remaining_lifetime_zero ... ok
+test refresh::tests::refresh_retry_parameters_max_retries_is_four ... ok
+test refresh::tests::refresh_retry_parameters_total_window_within_50_percent_remaining ... ok
+test refresh::tests::refresh_retry_parameters_truncates_retries_when_lifetime_short ... ok
+test refresh::tests::refresh_tracker_failure_count_saturates_instead_of_wrapping ... ok
+test security::tests::allows_args_without_token_values ... ok
+test security::tests::disable_core_dumps_sets_rlimit_to_zero ... ok
+test refresh::tests::refresh_retry_parameters_delay_grows_exponentially ... ok
+test security::tests::empty_known_tokens_always_valid ... ok
+test security::tests::disable_core_dumps_succeeds_on_linux ... ok
+test security::tests::rejects_args_containing_known_token_value ... ok
+test security::tests::empty_args_always_valid ... ok
+test security::tests::error_message_does_not_contain_token_value ... ok
+test security::tests::rejects_token_as_substring_in_arg ... ok
+test token::tests::redacted_value_returns_reference_not_new_computation ... ok
+test token::tests::scoped_token_constructor_takes_secret_string_directly ... ok
+test token::tests::scoped_token_debug_shows_non_secret_fields ... ok
+test token::tests::scoped_token_display_does_not_expose_secret ... ok
+test token::tests::scoped_token_debug_does_not_expose_secret ... ok
+test token::tests::scoped_token_expose_secret_returns_value ... ok
+test token::tests::scoped_token_exposes_metadata_but_not_value ... ok
+test token::tests::scoped_token_is_not_clone ... ok
+test token::tests::scoped_token_is_not_serializable ... ok
+test token::tests::scoped_token_is_sync ... ok
+test token::tests::scoped_token_is_send ... ok
+test token::tests::string_zeroize_actually_clears_data ... ok
+test token::tests::scoped_token_requires_expires_at ... ok
+
+test result: ok. 280 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+   Doc-tests noscope
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.11s
+[0m
+[0m# [0mTodos
+[x] Phase 1: Understand — Read existing codebase (src/lib.rs, all modules)
+[x] Phase 1: Understand — Read all 4 rules (NS-004, NS-051, NS-052, NS-053)
+[x] Phase 2: TDD Red — Write tests for all rules (no production code)
+[x] Phase 2: TDD Red — Verify all tests fail
+[x] Phase 3: TDD Green — Write minimal production code
+[x] Phase 3: TDD Green — cargo test passes, cargo clippy clean
+[x] Phase 4: TDD Refactor — Clean up code
+[ ] Phase 5: Linus Torvalds Review — Brutal self-review
+[ ] Phase 5: Fix review issues, add edge case tests
+[ ] Phase 6: Commit with proper message
+[0m
+## Phase 5: Linus Torvalds Review
+
+Let me re-read the final production code and do a brutal review:
+[0m→ [0mRead src/profile.rs[90m [limit=340][0m
+### Linus Torvalds Review
+
+Here's my brutal self-review:
+
+**1. `provider` field in `ProfileCredential` accepts non-string TOML values silently.** If someone writes `provider = 42` in their profile, `as_str()` returns None and we report "missing required field 'provider'" instead of "provider must be a string". Misleading error message. NEEDS FIX.
+
+**2. Same issue for `role` — non-string values produce "missing field" instead of "wrong type".**
+
+**3. `env_key` as a non-string is silently ignored.** If `env_key = 42`, `as_str()` returns None and we treat it as absent. That's wrong — it should be an error per NS-051 (unknown credential fields are errors, wrong types should be too).
+
+**4. `validate_profile` returns `Vec<String>` — that's a weak type.** The caller has no structured way to distinguish provider-not-found from duplicate-env_key. However, looking at the codebase pattern (ProviderConfigError::ValidationFailed uses `Vec<String>` too), this is consistent. Accept it.
+
+**5. Missing edge case test: `provider = ""` (empty provider string).** Should that be allowed?
+
+**6. Missing edge case test: `role = ""` (empty role string).** Same question.
+
+**7. Missing edge case test: what about `ttl` as a string like `ttl = "3600"`?**
+
+**8. Missing edge case test: `ProfileError` implements `std::error::Error` — no test for it.**
+
+**9. No test for `ProfileError::NotFound` display message.**
+
+**10. No test for `ProfileError::InsecurePermissions` display message.**
+
+**11. `validate_profile` does not validate schema — it assumes `parse_profile_toml` already did that.** This is actually fine — separation of concerns. But the doc comment says "schema + env_key uniqueness + provider existence" which is misleading since schema is handled by the parser. Should clarify.
+
+**12. `check_profile_flag_exclusion` error message includes the profile name — good. But tests don't verify the profile name appears in the error.** Minor.
+
+Let me fix the legitimate issues:
+[0m
+[0m# [0mTodos
+[x] Phase 1: Understand — Read existing codebase (src/lib.rs, all modules)
+[x] Phase 1: Understand — Read all 4 rules (NS-004, NS-051, NS-052, NS-053)
+[x] Phase 2: TDD Red — Write tests for all rules (no production code)
+[x] Phase 2: TDD Red — Verify all tests fail
+[x] Phase 3: TDD Green — Write minimal production code
+[x] Phase 3: TDD Green — cargo test passes, cargo clippy clean
+[x] Phase 4: TDD Refactor — Clean up code
+[x] Phase 5: Linus Torvalds Review — Brutal self-review
+[ ] Phase 5: Fix review issues, add edge case tests
+[ ] Phase 6: Commit with proper message
+[0m
+### Fixing review issues
+
+**Fix 1-3**: Improve type checking for provider, role, and env_key to give proper "wrong type" errors instead of misleading "missing field" errors.
+[0m← [0mEdit src/profile.rs
+Index: /home/ben/Documents/repos/noscope/src/profile.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/profile.rs
++++ /home/ben/Documents/repos/noscope/src/profile.rs
+@@ -188,32 +188,78 @@
+         problems.push(format!("credentials[{}]: unknown field '{}'", i, key));
+     }
+ }
+ 
+-// Extract required fields.
+-let provider = entry_table
+-    .get("provider")
+-    .and_then(|v| v.as_str())
+-    .map(String::from);
+-let role = entry_table
+-    .get("role")
+-    .and_then(|v| v.as_str())
+-    .map(String::from);
++// Extract required fields with proper type checking.
++let provider = match entry_table.get("provider") {
++    Some(v) => match v.as_str() {
++        Some(s) if !s.is_empty() => Some(s.to_string()),
++        Some(_) => {
++            problems.push(format!(
++                "credentials[{}]: provider must not be empty",
++                i
++            ));
++            None
++        }
++        None => {
++            problems.push(format!(
++                "credentials[{}]: provider must be a string",
++                i
++            ));
++            None
++        }
++    },
++    None => {
++        problems.push(format!(
++            "credentials[{}]: missing required field 'provider'",
++            i
++        ));
++        None
++    }
++};
++
++let role = match entry_table.get("role") {
++    Some(v) => match v.as_str() {
++        Some(s) if !s.is_empty() => Some(s.to_string()),
++        Some(_) => {
++            problems.push(format!(
++                "credentials[{}]: role must not be empty",
++                i
++            ));
++            None
++        }
++        None => {
++            problems.push(format!(
++                "credentials[{}]: role must be a string",
++                i
++            ));
++            None
++        }
++    },
++    None => {
++        problems.push(format!(
++            "credentials[{}]: missing required field 'role'",
++            i
++        ));
++        None
++    }
++};
++
+ let ttl_value = entry_table.get("ttl");
+-let env_key = entry_table
+-    .get("env_key")
+-    .and_then(|v| v.as_str())
+-    .map(String::from);
+ 
+-if provider.is_none() {
+-    problems.push(format!(
+-        "credentials[{}]: missing required field 'provider'",
+-        i
+-    ));
+-}
+-if role.is_none() {
+-    problems.push(format!("credentials[{}]: missing required field 'role'", i));
+-}
++let env_key = match entry_table.get("env_key") {
++    Some(v) => match v.as_str() {
++        Some(s) => Some(s.to_string()),
++        None => {
++            problems.push(format!(
++                "credentials[{}]: env_key must be a string",
++                i
++            ));
++            None
++        }
++    },
++    None => None,
++};
+ 
+ let ttl = match ttl_value {
+     Some(v) => match v.as_integer() {
+         Some(n) if n > 0 => Some(n as u64),
+
+[0m
+Now add edge case tests at the end of the test module. Let me read where the tests end:
+[0m→ [0mRead src/profile.rs[90m [offset=990][0m
+[0m
+[0m← [0mEdit src/profile.rs
+Index: /home/ben/Documents/repos/noscope/src/profile.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/profile.rs
++++ /home/ben/Documents/repos/noscope/src/profile.rs
+@@ -1035,5 +1035,174 @@
+ 
+         let profile = super::load_profile(&file_path).unwrap();
+         assert_eq!(profile.credentials.len(), 1);
+     }
++
++    // =========================================================================
++    // Edge cases discovered during Linus review.
++    // =========================================================================
++
++    #[test]
++    fn profile_schema_provider_wrong_type_is_error() {
++        // provider = 42 should say "must be a string", not "missing field"
++        let toml = r#"
++[[credentials]]
++provider = 42
++role = "admin"
++ttl = 3600
++"#;
++        let result = super::parse_profile_toml(toml);
++        assert!(result.is_err());
++        let msg = format!("{}", result.unwrap_err());
++        assert!(
++            msg.contains("string"),
++            "Error must mention wrong type, got: {}",
++            msg
++        );
++    }
++
++    #[test]
++    fn profile_schema_role_wrong_type_is_error() {
++        let toml = r#"
++[[credentials]]
++provider = "aws"
++role = true
++ttl = 3600
++"#;
++        let result = super::parse_profile_toml(toml);
++        assert!(result.is_err());
++        let msg = format!("{}", result.unwrap_err());
++        assert!(
++            msg.contains("string"),
++            "Error must mention wrong type, got: {}",
++            msg
++        );
++    }
++
++    #[test]
++    fn profile_schema_env_key_wrong_type_is_error() {
++        let toml = r#"
++[[credentials]]
++provider = "aws"
++role = "admin"
++ttl = 3600
++env_key = 42
++"#;
++        let result = super::parse_profile_toml(toml);
++        assert!(result.is_err());
++        let msg = format!("{}", result.unwrap_err());
++        assert!(
++            msg.contains("string"),
++            "Error must mention wrong type, got: {}",
++            msg
++        );
++    }
++
++    #[test]
++    fn profile_schema_ttl_as_string_is_error() {
++        let toml = r#"
++[[credentials]]
++provider = "aws"
++role = "admin"
++ttl = "3600"
++"#;
++        let result = super::parse_profile_toml(toml);
++        assert!(result.is_err());
++        let msg = format!("{}", result.unwrap_err());
++        assert!(
++            msg.contains("integer"),
++            "Error must mention wrong type, got: {}",
++            msg
++        );
++    }
++
++    #[test]
++    fn profile_schema_empty_provider_is_error() {
++        let toml = r#"
++[[credentials]]
++provider = ""
++role = "admin"
++ttl = 3600
++"#;
++        let result = super::parse_profile_toml(toml);
++        assert!(result.is_err(), "Empty provider must be rejected");
++    }
++
++    #[test]
++    fn profile_schema_empty_role_is_error() {
++        let toml = r#"
++[[credentials]]
++provider = "aws"
++role = ""
++ttl = 3600
++"#;
++        let result = super::parse_profile_toml(toml);
++        assert!(result.is_err(), "Empty role must be rejected");
++    }
++
++    #[test]
++    fn profile_error_implements_std_error() {
++        fn assert_error<T: std::error::Error>() {}
++        assert_error::<super::ProfileError>();
++    }
++
++    #[test]
++    fn profile_error_not_found_display() {
++        let err = super::ProfileError::NotFound {
++            path: PathBuf::from("/etc/noscope/profiles/missing.toml"),
++        };
++        let msg = format!("{}", err);
++        assert!(
++            msg.contains("missing.toml"),
++            "Display must contain the path: {}",
++            msg
++        );
++    }
++
++    #[test]
++    fn profile_error_insecure_permissions_display() {
++        let err = super::ProfileError::InsecurePermissions {
++            path: PathBuf::from("/etc/noscope/profiles/bad.toml"),
++            mode: 0o644,
++        };
++        let msg = format!("{}", err);
++        assert!(msg.contains("644"), "Display must show mode: {}", msg);
++        assert!(msg.contains("bad.toml"), "Display must show path: {}", msg);
++    }
++
++    #[test]
++    fn profile_error_validation_failed_display_all_problems() {
++        let err = super::ProfileError::ValidationFailed {
++            problems: vec![
++                "provider 'aws' not found".to_string(),
++                "duplicate env_key 'TOKEN'".to_string(),
++            ],
++        };
++        let msg = format!("{}", err);
++        assert!(msg.contains("aws"), "Must list aws problem: {}", msg);
++        assert!(msg.contains("TOKEN"), "Must list TOKEN problem: {}", msg);
++    }
++
++    #[test]
++    fn profile_cli_mutual_exclusion_error_includes_profile_name() {
++        let result = super::check_profile_flag_exclusion(
++            Some("staging"),
++            Some("aws"),
++            None,
++            None,
++        );
++        let err = result.unwrap_err();
++        let msg = format!("{}", err);
++        assert!(
++            msg.contains("staging"),
++            "Error must include profile name: {}",
++            msg
++        );
++    }
++
++    #[test]
++    fn profile_cli_mutual_exclusion_neither_set() {
++        // Both None — should be valid.
++        let result = super::check_profile_flag_exclusion(None, None, None, None);
++        assert!(result.is_ok(), "Neither set should be valid");
++    }
+ }
+
+[0m
+[0m$ [0mcargo test --lib profile 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.24s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 47 tests
+test profile::tests::profile_cli_mutual_exclusion_error_includes_profile_name ... ok
+test profile::tests::profile_cli_mutual_exclusion_error_names_conflicting_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_exit_code_is_usage ... ok
+test profile::tests::profile_cli_mutual_exclusion_neither_set ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_alone_is_valid ... ok
+test profile::tests::profile_cli_mutual_exclusion_no_profile_allows_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_role ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_all_three ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_provider ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_ttl ... ok
+test profile::tests::profile_error_implements_std_error ... ok
+test profile::tests::profile_error_insecure_permissions_display ... ok
+test profile::tests::profile_error_not_found_display ... ok
+test profile::tests::profile_error_validation_failed_display_all_problems ... ok
+test profile::tests::profile_flatness_constraint_no_extends_field ... ok
+test profile::tests::profile_flatness_constraint_is_flat_list_of_tuples ... ok
+test profile::tests::profile_flatness_constraint_no_nested_profiles ... ok
+test profile::tests::profile_load_missing_file_is_error ... ok
+test profile::tests::profile_load_insecure_permissions_rejected ... ok
+test profile::tests::profile_flatness_constraint_no_overrides_field ... ok
+test profile::tests::profile_load_secure_permissions_accepted ... ok
+test profile::tests::profile_path_default_home ... ok
+test profile::tests::profile_path_under_xdg_config ... ok
+test profile::tests::profile_schema_empty_credentials_array_is_error ... ok
+test profile::tests::profile_schema_empty_provider_is_error ... ok
+test profile::tests::profile_schema_empty_role_is_error ... ok
+test profile::tests::profile_schema_env_key_is_optional ... ok
+test profile::tests::profile_schema_env_key_can_be_set ... ok
+test profile::tests::profile_schema_env_key_wrong_type_is_error ... ok
+test profile::tests::profile_schema_no_credentials_key_is_error ... ok
+test profile::tests::profile_schema_multiple_unknown_credential_fields_all_reported ... ok
+test profile::tests::profile_schema_requires_provider ... ok
+test profile::tests::profile_schema_requires_role ... ok
+test profile::tests::profile_schema_provider_wrong_type_is_error ... ok
+test profile::tests::profile_schema_requires_ttl ... ok
+test profile::tests::profile_schema_role_wrong_type_is_error ... ok
+test profile::tests::profile_schema_ttl_as_string_is_error ... ok
+test profile::tests::profile_schema_ttl_must_be_positive_integer ... ok
+test profile::tests::profile_schema_ttl_must_not_be_negative ... ok
+test profile::tests::profile_schema_unknown_credential_field_is_error ... ok
+test profile::tests::profile_schema_unknown_top_level_fields_ignored ... ok
+test profile::tests::profile_validation_all_errors_reported_together ... ok
+test profile::tests::profile_validation_distinct_exit_code ... ok
+test profile::tests::profile_validation_env_key_uniqueness ... ok
+test profile::tests::profile_validation_env_key_uniqueness_none_does_not_conflict ... ok
+test profile::tests::profile_validation_passes_for_valid_profile ... ok
+test profile::tests::profile_validation_provider_existence ... ok
+
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 245 filtered out; finished in 0.01s
+[0m
+All 47 profile tests pass. Let me do the final validation:
+[0m$ [0mcargo test && cargo clippy -- -D warnings 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.38s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 292 tests
+test event::tests::structured_event_logging_child_exit_event ... ok
+test event::tests::structured_event_logging_child_spawn_event ... ok
+test event::tests::structured_event_logging_all_fields_set_simultaneously ... ok
+test event::tests::structured_event_logging_child_exit_includes_exit_code ... ok
+test event::tests::structured_event_logging_emitter_json_format_output ... ok
+test event::tests::structured_event_logging_emitter_json_single_line ... ok
+test event::tests::structured_event_logging_emitter_text_format_output ... ok
+test event::tests::structured_event_logging_empty_provider_name ... ok
+test event::tests::structured_event_logging_error_null_when_not_set ... ok
+test event::tests::structured_event_logging_event_type_display_matches_as_str ... ok
+test event::tests::structured_event_logging_event_type_names ... ok
+test event::tests::structured_event_logging_fail_event_includes_error_message ... ok
+test event::tests::structured_event_logging_json_contains_duration ... ok
+test event::tests::structured_event_logging_json_contains_redacted_token_id ... ok
+test event::tests::structured_event_logging_json_contains_provider ... ok
+test event::tests::structured_event_logging_json_contains_timestamp ... ok
+test event::tests::structured_event_logging_json_contains_type ... ok
+test event::tests::structured_event_logging_json_duration_null_when_absent ... ok
+test event::tests::structured_event_logging_json_is_single_line ... ok
+test event::tests::structured_event_logging_json_is_valid_json ... ok
+test event::tests::structured_event_logging_json_never_contains_raw_secret ... ok
+test event::tests::structured_event_logging_json_token_id_null_when_absent ... ok
+test event::tests::structured_event_logging_log_format_json ... ok
+test event::tests::structured_event_logging_large_duration_does_not_panic ... ok
+test event::tests::structured_event_logging_log_format_parse_is_case_sensitive ... ok
+test event::tests::structured_event_logging_log_format_unknown_returns_none ... ok
+test event::tests::structured_event_logging_mint_fail_event ... ok
+test event::tests::structured_event_logging_log_format_text ... ok
+test event::tests::structured_event_logging_mint_start_event ... ok
+test event::tests::structured_event_logging_mint_success_event ... ok
+test event::tests::structured_event_logging_refresh_fail_event ... ok
+test event::tests::structured_event_logging_negative_exit_code ... ok
+test event::tests::structured_event_logging_refresh_start_event ... ok
+test event::tests::structured_event_logging_refresh_success_event ... ok
+test event::tests::structured_event_logging_revoke_fail_event ... ok
+test event::tests::structured_event_logging_revoke_start_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_event ... ok
+test event::tests::structured_event_logging_signal_received_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_includes_signal ... ok
+test event::tests::structured_event_logging_signal_received_includes_signal ... ok
+test event::tests::structured_event_logging_text_format_escapes_quotes_in_error ... ok
+test event::tests::structured_event_logging_timestamp_is_current ... ok
+test event::tests::structured_event_logging_token_id_is_redacted_not_raw ... ok
+test event::tests::structured_event_logging_json_error_with_quotes ... ok
+test event::tests::structured_event_logging_zero_duration ... ok
+test event::tests::structured_event_logging_revoke_success_event ... ok
+test exit_code::tests::exit_255_is_signal_127 ... ok
+test exit_code::tests::known_provider_exit_codes_interpreted_directly ... ok
+test exit_code::tests::exit_129_is_signal_1_sighup ... ok
+test exit_code::tests::multi_provider_report_can_filter_retryable_failures ... ok
+test exit_code::tests::exit_exactly_128_is_not_signal_terminated ... ok
+test exit_code::tests::multi_provider_report_collects_all_failures ... ok
+test exit_code::tests::multi_provider_report_empty_has_zero_failures ... ok
+test exit_code::tests::multi_provider_report_exit_code_is_65_mint_failure ... ok
+test exit_code::tests::multi_provider_report_failures_are_accessible ... ok
+test exit_code::tests::multi_provider_report_first_failure_not_shadowed ... ok
+test exit_code::tests::multi_provider_report_format_stderr_empty_when_no_failures ... ok
+test exit_code::tests::multi_provider_report_stderr_contains_all_providers_in_order ... ok
+test exit_code::tests::multi_provider_report_stderr_includes_exit_code_per_provider ... ok
+test exit_code::tests::multi_provider_report_successes_are_accessible ... ok
+test exit_code::tests::multi_provider_report_tracks_successes_too ... ok
+test exit_code::tests::multi_provider_report_with_no_failures_returns_success_not_child_exit ... ok
+test exit_code::tests::negative_exit_code_maps_to_general_error_no_signal ... ok
+test exit_code::tests::non_signal_stderr_message_shows_provider_exit_code ... ok
+test exit_code::tests::noscope_exit_code_child_exit_passes_through_any_value ... ok
+test exit_code::tests::noscope_exit_code_child_exit_preserves_child_code ... ok
+test exit_code::tests::noscope_exit_code_child_exit_zero_is_success ... ok
+test exit_code::tests::noscope_exit_code_config_error_is_78 ... ok
+test exit_code::tests::noscope_exit_code_display_child_exit_mentions_child ... ok
+test exit_code::tests::noscope_exit_code_config_not_found_is_66 ... ok
+test exit_code::tests::noscope_exit_code_display_includes_meaning ... ok
+test exit_code::tests::noscope_exit_code_display_success_mentions_success ... ok
+test exit_code::tests::noscope_exit_code_internal_is_70 ... ok
+test exit_code::tests::noscope_exit_code_mint_failure_is_65 ... ok
+test exit_code::tests::noscope_exit_code_permission_is_77 ... ok
+test exit_code::tests::noscope_exit_code_success_is_zero ... ok
+test exit_code::tests::noscope_exit_code_unavailable_is_69 ... ok
+test exit_code::tests::noscope_exit_code_usage_is_64 ... ok
+test exit_code::tests::noscope_exit_codes_do_not_overlap_with_provider_codes ... ok
+test exit_code::tests::noscope_success_is_semantically_distinct_from_child_exit_zero ... ok
+test exit_code::tests::provider_exit_code_auth_failure_is_two ... ok
+test exit_code::tests::provider_exit_code_display_includes_code_number_and_meaning ... ok
+test exit_code::tests::provider_exit_code_from_raw_returns_none_for_unknown ... ok
+test exit_code::tests::provider_exit_code_from_raw_roundtrips_all_known_codes ... ok
+test exit_code::tests::provider_exit_code_general_error_is_one ... ok
+test exit_code::tests::provider_exit_code_non_zero_are_errors ... ok
+test exit_code::tests::provider_exit_code_role_not_found_is_three ... ok
+test exit_code::tests::provider_exit_code_success_is_zero ... ok
+test exit_code::tests::provider_exit_code_unavailable_is_four ... ok
+test exit_code::tests::provider_exit_result_implements_display ... ok
+test exit_code::tests::provider_exit_result_is_eq_comparable ... ok
+test exit_code::tests::signal_terminated_provider_includes_signal_number ... ok
+test exit_code::tests::provider_exit_code_success_is_not_error ... ok
+test exit_code::tests::signal_terminated_provider_stderr_message_contains_signal ... ok
+test exit_code::tests::unknown_non_signal_exit_code_maps_to_general_error ... ok
+test exit_code::tests::signal_terminated_provider_maps_to_general_error ... ok
+test mint::tests::format_mint_output_handles_special_characters_in_token ... ok
+test mint::tests::mint_envelope_debug_does_not_expose_raw_token ... ok
+test mint::tests::mint_envelope_is_not_clone ... ok
+test mint::tests::mint_error_display_for_invalid_input ... ok
+test mint::tests::mint_error_implements_std_error ... ok
+test mint::tests::mint_multi_provider_atomicity_empty_on_failure ... ok
+test mint::tests::mint_multi_provider_atomicity_multiple_providers_returns_array ... ok
+test mint::tests::mint_multi_provider_atomicity_no_partial_stdout ... ok
+test mint::tests::mint_multi_provider_atomicity_output_is_single_line ... ok
+test mint::tests::mint_envelope_debug_shows_metadata ... ok
+test mint::tests::mint_envelope_from_scoped_token_without_token_id ... ok
+test mint::tests::mint_multi_provider_atomicity_single_provider_returns_object ... ok
+test mint::tests::mint_output_envelope_contains_expires_at_iso8601 ... ok
+test mint::tests::mint_output_envelope_contains_provider ... ok
+test mint::tests::mint_output_envelope_contains_role ... ok
+test mint::tests::mint_output_envelope_contains_token_field ... ok
+test mint::tests::mint_output_envelope_contains_token_id ... ok
+test mint::tests::mint_output_envelope_has_exactly_five_fields ... ok
+test mint::tests::mint_output_envelope_is_single_line_json ... ok
+test mint::tests::mint_ttl_requirement_accepts_valid_ttl ... ok
+test mint::tests::mint_ttl_requirement_rejects_empty_providers ... ok
+test mint::tests::mint_ttl_requirement_rejects_empty_role ... ok
+test mint::tests::mint_ttl_requirement_ttl_is_mandatory ... ok
+test mint::tests::mint_ttl_requirement_rejects_zero_ttl ... ok
+test mint::tests::redaction_exception_mint_stdout_contains_raw_token ... ok
+test mint::tests::redaction_exception_stderr_still_redacted ... ok
+test mint::tests::revoke_input_allows_token_id_equals_combined_form ... ok
+test mint::tests::mint_output_envelope_from_scoped_token ... ok
+test mint::tests::revoke_input_does_not_store_token_value ... ok
+test mint::tests::revoke_input_from_mint_json_array_element ... ok
+test mint::tests::redaction_exception_log_string_contains_provider_and_role ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_invalid_json ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_missing_token_id ... ok
+test mint::tests::revoke_input_rejects_combined_token_equals_value_flag ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_missing_provider ... ok
+test mint::tests::revoke_input_from_mint_json_stdin ... ok
+test mint::tests::revoke_input_from_token_id_and_provider ... ok
+test mint::tests::revoke_input_rejects_raw_token_flag ... ok
+test mint::tests::terminal_detection_allows_pipe_stdout ... ok
+test mint::tests::terminal_detection_error_message_warns_about_scrollback ... ok
+test mint::tests::revoke_input_validates_no_token_value_in_cli_args ... ok
+test mint::tests::terminal_detection_error_message_mentions_force_flag ... ok
+test mint::tests::terminal_detection_exit_code_is_64 ... ok
+test mint::tests::terminal_detection_force_overrides_tty_check ... ok
+test mint::tests::terminal_detection_rejects_tty_stdout ... ok
+test mint::tests::terminal_detection_pipe_with_force_also_works ... ok
+test profile::tests::profile_cli_mutual_exclusion_error_includes_profile_name ... ok
+test mint::tests::validate_mint_args_returns_validated_ttl ... ok
+test profile::tests::profile_cli_mutual_exclusion_error_names_conflicting_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_exit_code_is_usage ... ok
+test profile::tests::profile_cli_mutual_exclusion_no_profile_allows_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_all_three ... ok
+test profile::tests::profile_cli_mutual_exclusion_neither_set ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_alone_is_valid ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_provider ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_role ... ok
+test profile::tests::profile_error_implements_std_error ... ok
+test profile::tests::profile_error_not_found_display ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_ttl ... ok
+test profile::tests::profile_error_insecure_permissions_display ... ok
+test profile::tests::profile_error_validation_failed_display_all_problems ... ok
+test profile::tests::profile_flatness_constraint_no_overrides_field ... ok
+test profile::tests::profile_flatness_constraint_no_extends_field ... ok
+test profile::tests::profile_flatness_constraint_no_nested_profiles ... ok
+test profile::tests::profile_flatness_constraint_is_flat_list_of_tuples ... ok
+test profile::tests::profile_load_missing_file_is_error ... ok
+test profile::tests::profile_path_under_xdg_config ... ok
+test profile::tests::profile_path_default_home ... ok
+test profile::tests::profile_load_insecure_permissions_rejected ... ok
+test profile::tests::profile_schema_empty_credentials_array_is_error ... ok
+test profile::tests::profile_load_secure_permissions_accepted ... ok
+test profile::tests::profile_schema_empty_role_is_error ... ok
+test profile::tests::profile_schema_empty_provider_is_error ... ok
+test profile::tests::profile_schema_env_key_can_be_set ... ok
+test profile::tests::profile_schema_env_key_is_optional ... ok
+test profile::tests::profile_schema_env_key_wrong_type_is_error ... ok
+test profile::tests::profile_schema_no_credentials_key_is_error ... ok
+test profile::tests::profile_schema_provider_wrong_type_is_error ... ok
+test profile::tests::profile_schema_multiple_unknown_credential_fields_all_reported ... ok
+test profile::tests::profile_schema_requires_provider ... ok
+test profile::tests::profile_schema_requires_role ... ok
+test profile::tests::profile_schema_requires_ttl ... ok
+test profile::tests::profile_schema_ttl_as_string_is_error ... ok
+test profile::tests::profile_schema_ttl_must_be_positive_integer ... ok
+test profile::tests::profile_schema_role_wrong_type_is_error ... ok
+test profile::tests::profile_schema_ttl_must_not_be_negative ... ok
+test profile::tests::profile_schema_unknown_credential_field_is_error ... ok
+test profile::tests::profile_validation_distinct_exit_code ... ok
+test profile::tests::profile_schema_unknown_top_level_fields_ignored ... ok
+test profile::tests::profile_validation_env_key_uniqueness ... ok
+test profile::tests::profile_validation_provider_existence ... ok
+test profile::tests::profile_validation_passes_for_valid_profile ... ok
+test profile::tests::profile_validation_env_key_uniqueness_none_does_not_conflict ... ok
+test provider::tests::config_file_permission_enforcement_allows_0400 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0640 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0600 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0604 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0666 ... ok
+test provider::tests::config_precedence_flags_without_mint_cmd_still_wins ... ok
+test provider::tests::config_file_permission_enforcement_rejects_world_readable ... ok
+test provider::tests::config_source_eq_works ... ok
+test provider::tests::config_follows_xdg_base_directory ... ok
+test provider::tests::config_xdg_defaults_to_home_dot_config ... ok
+test provider::tests::config_xdg_custom_overrides_default ... ok
+test provider::tests::dry_run_mode_produces_output ... ok
+test provider::tests::dry_run_mode_shows_config_source ... ok
+test provider::tests::dry_run_mode_shows_role_and_ttl ... ok
+test provider::tests::insecure_permissions_display_contains_path_and_mode ... ok
+test provider::tests::dry_run_mode_shows_mint_command ... ok
+test provider::tests::load_provider_file_rejects_insecure_file ... ok
+test provider::tests::malformed_config_empty_mint_cmd_is_error ... ok
+test profile::tests::profile_validation_all_errors_reported_together ... ok
+test provider::tests::load_provider_file_reads_secure_file ... ok
+test provider::tests::malformed_config_is_hard_error_missing_required_field ... ok
+test provider::tests::malformed_config_missing_file_is_not_error ... ok
+test provider::tests::provider_not_found_display_contains_provider_name ... ok
+test provider::tests::malformed_config_is_hard_error_syntax ... ok
+test provider::tests::parse_provider_toml_rejects_non_string_mint ... ok
+test provider::tests::provider_not_found_message_is_user_actionable ... ok
+test provider::tests::provider_not_found_enumerates_checked_locations ... ok
+test provider::tests::parse_provider_toml_valid_with_all_commands ... ok
+test provider::tests::strict_config_precedence_env_wins_over_file ... ok
+test provider::tests::strict_config_precedence_file_used_when_no_flags_or_env ... ok
+test provider::tests::strict_config_precedence_flags_win_over_env ... ok
+test provider::tests::strict_config_precedence_no_merging_across_layers ... ok
+test provider::tests::validate_provider_checks_mint_cmd_is_executable ... ok
+test provider::tests::validate_provider_checks_mint_cmd_exists ... ok
+test provider::tests::validate_provider_checks_refresh_cmd_if_present ... ok
+test provider::tests::validate_provider_checks_revoke_cmd_if_present ... ok
+test provider::tests::validate_provider_does_not_execute_mint_cmd ... ok
+test provider::tests::validation_failed_display_lists_all_problems ... ok
+test provider::tests::validate_provider_succeeds_for_valid_config ... ok
+test redaction::tests::debug_format_looks_like_debug_output ... ok
+test redaction::tests::debug_format_shows_redacted_form_not_raw ... ok
+test redaction::tests::debug_never_shows_full_token_value ... ok
+test redaction::tests::different_tokens_produce_different_hash_ids ... ok
+test redaction::tests::display_never_shows_full_token_value ... ok
+test redaction::tests::display_of_empty_token_does_not_panic ... ok
+test redaction::tests::jwt_token_with_provider_id_uses_provider_id ... ok
+test redaction::tests::jwt_token_never_shows_prefix_chars ... ok
+test redaction::tests::long_token_shows_first_8_chars_with_ellipsis ... ok
+test redaction::tests::multibyte_utf8_token_does_not_panic ... ok
+test redaction::tests::mixed_ascii_multibyte_token_takes_8_chars ... ok
+test redaction::tests::redaction_cannot_be_bypassed_by_alternate_format ... ok
+test redaction::tests::short_token_with_provider_id_uses_that_id ... ok
+test redaction::tests::same_token_always_produces_same_hash_id ... ok
+test redaction::tests::token_exactly_17_chars_shows_prefix ... ok
+test refresh::tests::continuous_refresh_after_failure_new_window_after_expiry ... ok
+test redaction::tests::short_token_without_id_uses_hash_based_id ... ok
+test redaction::tests::token_exactly_16_chars_uses_redacted_format ... ok
+test refresh::tests::continuous_refresh_after_failure_not_permanently_disabled ... ok
+test refresh::tests::continuous_refresh_after_failure_reset_after_success ... ok
+test refresh::tests::refresh_failure_independence_separate_trackers ... ok
+test refresh::tests::refresh_failure_independence_success_resets_own_tracker ... ok
+test refresh::tests::refresh_failure_independence_tracker_knows_its_credential ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_not_kill ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_retry ... ok
+test refresh::tests::refresh_failure_preserves_child_allows_token_until_expiry ... ok
+test refresh::tests::refresh_failure_preserves_child_logs_warning ... ok
+test refresh::tests::refresh_failure_preserves_child_never_kills_at_any_attempt ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_env_var_point_in_time ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_environment ... ok
+test refresh::tests::refresh_limitation_documentation_startup_warning ... ok
+test refresh::tests::refresh_retry_parameters_base_delay_is_one_second ... ok
+test refresh::tests::refresh_retry_parameters_delay_grows_exponentially ... ok
+test refresh::tests::refresh_retry_parameters_jitter_range_is_25_percent ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_attempt_2_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_large_attempt_does_not_panic ... ok
+test refresh::tests::refresh_retry_parameters_multiplier_is_two ... ok
+test refresh::tests::refresh_retry_parameters_no_retry_when_remaining_lifetime_zero ... ok
+test refresh::tests::refresh_retry_parameters_truncates_retries_when_lifetime_short ... ok
+test refresh::tests::refresh_tracker_failure_count_saturates_instead_of_wrapping ... ok
+test refresh::tests::refresh_retry_parameters_max_retries_is_four ... ok
+test security::tests::allows_args_without_token_values ... ok
+test refresh::tests::refresh_retry_parameters_total_window_within_50_percent_remaining ... ok
+test security::tests::disable_core_dumps_sets_rlimit_to_zero ... ok
+test security::tests::disable_core_dumps_succeeds_on_linux ... ok
+test security::tests::empty_known_tokens_always_valid ... ok
+test security::tests::empty_args_always_valid ... ok
+test security::tests::rejects_args_containing_known_token_value ... ok
+test security::tests::rejects_token_as_substring_in_arg ... ok
+test token::tests::redacted_value_returns_reference_not_new_computation ... ok
+test security::tests::error_message_does_not_contain_token_value ... ok
+test token::tests::scoped_token_constructor_takes_secret_string_directly ... ok
+test token::tests::scoped_token_debug_does_not_expose_secret ... ok
+test token::tests::scoped_token_expose_secret_returns_value ... ok
+test token::tests::scoped_token_debug_shows_non_secret_fields ... ok
+test token::tests::scoped_token_display_does_not_expose_secret ... ok
+test token::tests::scoped_token_exposes_metadata_but_not_value ... ok
+test token::tests::scoped_token_is_not_clone ... ok
+test token::tests::scoped_token_is_not_serializable ... ok
+test token::tests::scoped_token_is_send ... ok
+test token::tests::scoped_token_is_sync ... ok
+test token::tests::scoped_token_requires_expires_at ... ok
+test token::tests::string_zeroize_actually_clears_data ... ok
+
+test result: ok. 292 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests noscope
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.52s
+[0m
+292 tests pass, zero clippy warnings.
+[0m# [0mTodos
+[x] Phase 1: Understand — Read existing codebase (src/lib.rs, all modules)
+[x] Phase 1: Understand — Read all 4 rules (NS-004, NS-051, NS-052, NS-053)
+[x] Phase 2: TDD Red — Write tests for all rules (no production code)
+[x] Phase 2: TDD Red — Verify all tests fail
+[x] Phase 3: TDD Green — Write minimal production code
+[x] Phase 3: TDD Green — cargo test passes, cargo clippy clean
+[x] Phase 4: TDD Refactor — Clean up code
+[x] Phase 5: Linus Torvalds Review — Brutal self-review
+[x] Phase 5: Fix review issues, add edge case tests
+[ ] Phase 6: Commit with proper message
+[0m
+## Phase 6: Commit
+[0m$ [0mgit status
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   src/exit_code.rs
+	modified:   src/lib.rs
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.beads/provenance-drafts/noscope-4mw.md
+	.beads/session-logs/
+	src/profile.rs
+
+no changes added to commit (use "git add" and/or "git commit -a")
+[0m
+[0m$ [0mgit diff --stat
+src/exit_code.rs | 6 +++++-
+ src/lib.rs       | 1 +
+ 2 files changed, 6 insertions(+), 1 deletion(-)
+[0m
+[0m$ [0mgit log --oneline -5
+04807ea docs: add project README
+c6482dc feat: standalone mint and revoke subcommands (noscope-5wl)
+27eec9b feat: structured event logging module (noscope-4of)
+a91454e feat: refresh failure policy module (noscope-ia2)
+f65bcb0 feat: provider discovery and configuration module (noscope-4mw)
+[0m
+[0m$ [0mgit add src/profile.rs src/lib.rs src/exit_code.rs && git commit -m "feat: named profiles with flat credential lists (noscope-p3e)
+
+Implement profile support at ~/.config/noscope/profiles/<name>.toml.
+Each profile is a flat [[credentials]] array of (provider, role, ttl)
+tuples with optional env_key.
+
+Rules covered:
+- NS-004: Profile flatness constraint — no extends/overrides/composition
+- NS-051: Profile schema — strict field validation, unknown credential
+  fields are errors, unknown top-level fields are ignored, empty array
+  is an error
+- NS-052: Profile validation before minting — env_key uniqueness and
+  provider existence checked together, all errors reported in one pass,
+  distinct exit code 79 (ProfileValidation)
+- NS-053: Profile and CLI flag mutual exclusion — --profile forbids
+  --provider/--role/--ttl, usage error (64) on conflict
+
+47 tests covering all 4 rules plus edge cases from self-review."
+[main 16c65ce] feat: named profiles with flat credential lists (noscope-p3e)
+ 3 files changed, 1214 insertions(+), 1 deletion(-)
+ create mode 100644 src/profile.rs
+[0m
+[0m$ [0mgit status
+On branch main
+Your branch is ahead of 'origin/main' by 1 commit.
+  (use "git push" to publish your local commits)
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.beads/provenance-drafts/noscope-4mw.md
+	.beads/session-logs/
+
+nothing added to commit but untracked files present (use "git add" to track)
+[0m
+[0m# [0mTodos
+[x] Phase 1: Understand — Read existing codebase (src/lib.rs, all modules)
+[x] Phase 1: Understand — Read all 4 rules (NS-004, NS-051, NS-052, NS-053)
+[x] Phase 2: TDD Red — Write tests for all rules (no production code)
+[x] Phase 2: TDD Red — Verify all tests fail
+[x] Phase 3: TDD Green — Write minimal production code
+[x] Phase 3: TDD Green — cargo test passes, cargo clippy clean
+[x] Phase 4: TDD Refactor — Clean up code
+[x] Phase 5: Linus Torvalds Review — Brutal self-review
+[x] Phase 5: Fix review issues, add edge case tests
+[x] Phase 6: Commit with proper message
+[0m
+All phases complete. Here's a summary of what was implemented:
+
+## Summary
+
+**Bead**: `noscope-p3e` — Named profiles
+
+**Files changed**:
+- `src/profile.rs` (new) — 1,200+ lines: profile parsing, validation, CLI flag exclusion, path resolution, file loading
+- `src/exit_code.rs` — Added `ProfileValidation` exit code (79)
+- `src/lib.rs` — Registered `profile` module
+
+**Rules implemented** (all 4):
+
+| Rule | Description | Tests |
+|------|-------------|-------|
+| NS-004 | Flat credential lists only, no extends/overrides/composition | 4 tests |
+| NS-051 | Profile schema with strict field validation | 15 tests |
+| NS-052 | Pre-mint validation with all errors reported together, exit code 79 | 7 tests |
+| NS-053 | `--profile` forbids `--provider`/`--role`/`--ttl` | 9 tests |
+
+Plus 12 edge case tests from Linus review (wrong types, empty strings, display formatting, error trait impls).
+
+**Total**: 47 new tests, 292 total (zero failures, zero clippy warnings). Commit is local — not pushed per instructions.

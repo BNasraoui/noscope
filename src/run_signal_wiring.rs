@@ -75,6 +75,26 @@ pub fn parent_signal_from_raw(raw: i32) -> Option<ParentSignal> {
     }
 }
 
+pub fn dispatch_pending_parent_signals<I, P, R>(
+    raw_signals: I,
+    wiring: &mut RunSignalWiring,
+    process: &mut P,
+    revoker: &mut R,
+) -> Result<Vec<SignalActionReport>, std::io::Error>
+where
+    I: IntoIterator<Item = i32>,
+    P: SignalProcess,
+    R: SignalRevoker,
+{
+    let mut actions = Vec::new();
+    for raw in raw_signals {
+        if let Some(signal) = parent_signal_from_raw(raw) {
+            actions.push(wiring.on_parent_signal(signal, process, revoker)?);
+        }
+    }
+    Ok(actions)
+}
+
 fn libc_signal(signal: ParentSignal) -> i32 {
     match signal {
         ParentSignal::Sigterm => libc::SIGTERM,
@@ -243,5 +263,41 @@ mod tests {
             .unwrap();
 
         assert!(wiring.revoke_attempted());
+    }
+
+    #[test]
+    fn dispatch_pending_parent_signals_ignores_unmapped_raw_signals() {
+        let mut process = FakeProcess::default();
+        let mut revoker = FakeRevoker::default();
+        let mut wiring = super::RunSignalWiring::default();
+
+        let actions = super::dispatch_pending_parent_signals(
+            [libc::SIGTERM, libc::SIGUSR1],
+            &mut wiring,
+            &mut process,
+            &mut revoker,
+        )
+        .unwrap();
+
+        assert_eq!(actions.len(), 1);
+        assert!(process.forwarded.contains(&libc::SIGTERM));
+    }
+
+    #[test]
+    fn dispatch_pending_parent_signals_reports_sigkill_escalation() {
+        let mut process = FakeProcess::default();
+        let mut revoker = FakeRevoker::default();
+        let mut wiring = super::RunSignalWiring::default();
+
+        let actions = super::dispatch_pending_parent_signals(
+            [libc::SIGTERM, libc::SIGINT],
+            &mut wiring,
+            &mut process,
+            &mut revoker,
+        )
+        .unwrap();
+
+        assert_eq!(actions.len(), 2);
+        assert!(actions.iter().any(|action| action.immediate_sigkill));
     }
 }

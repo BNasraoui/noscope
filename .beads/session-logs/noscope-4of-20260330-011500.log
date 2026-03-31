@@ -1,0 +1,2196 @@
+[0m
+> build · claude-opus-4-6
+[0m
+I'll start by loading the beads skill and understanding the codebase, then follow the TDD workflow strictly.
+[0m→ [0mSkill "beads"
+[0m→ [0mSkill "test-driven-development"
+Good, skills loaded. Now let me understand the codebase and claim the bead.
+[0m
+[0m# [0mTodos
+[ ] Phase 1: Understand - Read codebase (src/lib.rs + all modules)
+[ ] Phase 1: Understand NS-070 rule requirements
+[ ] Phase 2: TDD Red - Write failing tests for NS-070 (structured event logging)
+[ ] Phase 2: TDD Red - Verify all tests fail
+[ ] Phase 3: TDD Green - Write minimal production code
+[ ] Phase 3: TDD Green - cargo test + cargo clippy pass
+[ ] Phase 4: Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds review + fix issues
+[ ] Phase 6: Commit with proper message
+[0m
+[0m$ [0mbd update noscope-4of --claim --json 2>/dev/null || echo "bd claim attempted"
+bd claim attempted
+[0m
+[0m→ [0mRead src
+[0m→ [0mRead src/lib.rs
+[0m→ [0mRead src/token.rs
+[0m→ [0mRead src/security.rs
+[0m→ [0mRead src/redaction.rs
+[0m→ [0mRead src/provider.rs
+[0m→ [0mRead src/refresh.rs
+[0m→ [0mRead src/exit_code.rs
+Now let me check the Cargo.toml for existing dependencies:
+[0m→ [0mRead Cargo.toml
+[0m
+[0m# [0mTodos
+[x] Phase 1: Understand - Read codebase (src/lib.rs + all modules)
+[ ] Phase 1: Understand NS-070 rule requirements
+[ ] Phase 2: TDD Red - Write failing tests for NS-070 (structured event logging)
+[ ] Phase 2: TDD Red - Verify all tests fail
+[ ] Phase 3: TDD Green - Write minimal production code
+[ ] Phase 3: TDD Green - cargo test + cargo clippy pass
+[ ] Phase 4: Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds review + fix issues
+[ ] Phase 6: Commit with proper message
+[0m
+Now I have a thorough understanding of the codebase. Let me analyze NS-070:
+
+**NS-070: Structured event logging** — emit structured events to stderr (JSON-per-line with `--log-format json`) for:
+- mint/refresh/revoke start/success/fail
+- child spawn/exit
+- signal received/forwarded
+
+Each event includes: timestamp, type, provider, redacted token ID, duration.
+
+Key design observations from the codebase:
+- Uses `RedactedToken` for safe display (from `redaction.rs`)
+- No `serde` in production deps (only dev-deps) — I'll need to add `serde` + `serde_json`
+- Follows pattern of separate modules per concern with `#[cfg(test)] mod tests`
+
+Let me now move to Phase 2: TDD Red — write failing tests first.
+[0m# [0mTodos
+[x] Phase 1: Understand - Read codebase (src/lib.rs + all modules)
+[x] Phase 1: Understand NS-070 rule requirements
+[ ] Phase 2: TDD Red - Write failing tests for NS-070 (structured event logging)
+[ ] Phase 2: TDD Red - Verify all tests fail
+[ ] Phase 3: TDD Green - Write minimal production code
+[ ] Phase 3: TDD Green - cargo test + cargo clippy pass
+[ ] Phase 4: Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds review + fix issues
+[ ] Phase 6: Commit with proper message
+[0m
+First, I need to add `serde` and `serde_json` as production dependencies since structured JSON logging is a production feature.
+[0m← [0mEdit Cargo.toml
+Index: /home/ben/Documents/repos/noscope/Cargo.toml
+===================================================================
+--- /home/ben/Documents/repos/noscope/Cargo.toml
++++ /home/ben/Documents/repos/noscope/Cargo.toml
+@@ -8,10 +8,12 @@
+ secrecy = "0.10"
+ zeroize = { version = "1", features = ["derive"] }
+ sha2 = "0.10"
+ libc = "0.2"
+-chrono = "0.4"
++chrono = { version = "0.4", features = ["serde"] }
+ toml = "0.8"
++serde = { version = "1", features = ["derive"] }
++serde_json = "1"
+ 
+ [dev-dependencies]
+ static_assertions = "1.1"
+ serde = "1"
+
+[0m
+Now, create the event logging module with ONLY tests — no production code yet:
+[0m← [0mWrite src/event.rs
+Wrote file successfully.
+[0m
+Now register the module in lib.rs:
+[0m← [0mEdit src/lib.rs
+Index: /home/ben/Documents/repos/noscope/src/lib.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/lib.rs
++++ /home/ben/Documents/repos/noscope/src/lib.rs
+@@ -1,4 +1,5 @@
++pub mod event;
+ pub mod exit_code;
+ pub mod provider;
+ pub mod redaction;
+ pub mod refresh;
+
+[0m
+Now let's verify all tests fail (Phase 2: TDD Red):
+[0m# [0mTodos
+[x] Phase 1: Understand - Read codebase (src/lib.rs + all modules)
+[x] Phase 1: Understand NS-070 rule requirements
+[x] Phase 2: TDD Red - Write failing tests for NS-070 (structured event logging)
+[ ] Phase 2: TDD Red - Verify all tests fail
+[ ] Phase 3: TDD Green - Write minimal production code
+[ ] Phase 3: TDD Green - cargo test + cargo clippy pass
+[ ] Phase 4: Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds review + fix issues
+[ ] Phase 6: Commit with proper message
+[0m
+[0m$ [0mcargo test --lib event 2>&1
+Compiling chrono v0.4.44
+   Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+error[E0433]: failed to resolve: could not find `Event` in `super`
+  --> src/event.rs:29:28
+   |
+29 |         let event = super::Event::new(super::EventType::MintStart, "aws");
+   |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:29:46
+   |
+29 |         let event = super::Event::new(super::EventType::MintStart, "aws");
+   |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:30:48
+   |
+30 |         assert_eq!(event.event_type(), &super::EventType::MintStart);
+   |                                                ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+  --> src/event.rs:36:28
+   |
+36 |         let event = super::Event::new(super::EventType::MintSuccess, "aws");
+   |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:36:46
+   |
+36 |         let event = super::Event::new(super::EventType::MintSuccess, "aws");
+   |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:37:48
+   |
+37 |         assert_eq!(event.event_type(), &super::EventType::MintSuccess);
+   |                                                ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+  --> src/event.rs:42:28
+   |
+42 |         let event = super::Event::new(super::EventType::MintFail, "aws");
+   |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:42:46
+   |
+42 |         let event = super::Event::new(super::EventType::MintFail, "aws");
+   |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:43:48
+   |
+43 |         assert_eq!(event.event_type(), &super::EventType::MintFail);
+   |                                                ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+  --> src/event.rs:48:28
+   |
+48 |         let event = super::Event::new(super::EventType::RefreshStart, "gcp");
+   |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:48:46
+   |
+48 |         let event = super::Event::new(super::EventType::RefreshStart, "gcp");
+   |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:49:48
+   |
+49 |         assert_eq!(event.event_type(), &super::EventType::RefreshStart);
+   |                                                ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+  --> src/event.rs:54:28
+   |
+54 |         let event = super::Event::new(super::EventType::RefreshSuccess, "gcp");
+   |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:54:46
+   |
+54 |         let event = super::Event::new(super::EventType::RefreshSuccess, "gcp");
+   |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:55:48
+   |
+55 |         assert_eq!(event.event_type(), &super::EventType::RefreshSuccess);
+   |                                                ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+  --> src/event.rs:60:28
+   |
+60 |         let event = super::Event::new(super::EventType::RefreshFail, "gcp");
+   |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:60:46
+   |
+60 |         let event = super::Event::new(super::EventType::RefreshFail, "gcp");
+   |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:61:48
+   |
+61 |         assert_eq!(event.event_type(), &super::EventType::RefreshFail);
+   |                                                ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+  --> src/event.rs:66:28
+   |
+66 |         let event = super::Event::new(super::EventType::RevokeStart, "vault");
+   |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:66:46
+   |
+66 |         let event = super::Event::new(super::EventType::RevokeStart, "vault");
+   |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:67:48
+   |
+67 |         assert_eq!(event.event_type(), &super::EventType::RevokeStart);
+   |                                                ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+  --> src/event.rs:72:28
+   |
+72 |         let event = super::Event::new(super::EventType::RevokeSuccess, "vault");
+   |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:72:46
+   |
+72 |         let event = super::Event::new(super::EventType::RevokeSuccess, "vault");
+   |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:73:48
+   |
+73 |         assert_eq!(event.event_type(), &super::EventType::RevokeSuccess);
+   |                                                ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+  --> src/event.rs:78:28
+   |
+78 |         let event = super::Event::new(super::EventType::RevokeFail, "vault");
+   |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:78:46
+   |
+78 |         let event = super::Event::new(super::EventType::RevokeFail, "vault");
+   |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:79:48
+   |
+79 |         assert_eq!(event.event_type(), &super::EventType::RevokeFail);
+   |                                                ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+  --> src/event.rs:84:28
+   |
+84 |         let event = super::Event::new(super::EventType::ChildSpawn, "aws");
+   |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:84:46
+   |
+84 |         let event = super::Event::new(super::EventType::ChildSpawn, "aws");
+   |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:85:48
+   |
+85 |         assert_eq!(event.event_type(), &super::EventType::ChildSpawn);
+   |                                                ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+  --> src/event.rs:90:28
+   |
+90 |         let event = super::Event::new(super::EventType::ChildExit, "aws");
+   |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:90:46
+   |
+90 |         let event = super::Event::new(super::EventType::ChildExit, "aws");
+   |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:91:48
+   |
+91 |         assert_eq!(event.event_type(), &super::EventType::ChildExit);
+   |                                                ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+  --> src/event.rs:96:28
+   |
+96 |         let event = super::Event::new(super::EventType::SignalReceived, "aws");
+   |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:96:46
+   |
+96 |         let event = super::Event::new(super::EventType::SignalReceived, "aws");
+   |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+  --> src/event.rs:97:48
+   |
+97 |         assert_eq!(event.event_type(), &super::EventType::SignalReceived);
+   |                                                ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:102:28
+    |
+102 |         let event = super::Event::new(super::EventType::SignalForwarded, "aws");
+    |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:102:46
+    |
+102 |         let event = super::Event::new(super::EventType::SignalForwarded, "aws");
+    |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:103:48
+    |
+103 |         assert_eq!(event.event_type(), &super::EventType::SignalForwarded);
+    |                                                ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:111:28
+    |
+111 |         let event = super::Event::new(super::EventType::MintStart, "aws");
+    |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:111:46
+    |
+111 |         let event = super::Event::new(super::EventType::MintStart, "aws");
+    |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:128:28
+    |
+128 |         let event = super::Event::new(super::EventType::MintSuccess, "aws");
+    |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:128:46
+    |
+128 |         let event = super::Event::new(super::EventType::MintSuccess, "aws");
+    |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:142:28
+    |
+142 |         let event = super::Event::new(super::EventType::MintStart, "vault");
+    |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:142:46
+    |
+142 |         let event = super::Event::new(super::EventType::MintStart, "vault");
+    |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:155:32
+    |
+155 |         let mut event = super::Event::new(super::EventType::MintSuccess, "aws");
+    |                                ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:155:50
+    |
+155 |         let mut event = super::Event::new(super::EventType::MintSuccess, "aws");
+    |                                                  ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:170:28
+    |
+170 |         let event = super::Event::new(super::EventType::MintStart, "aws");
+    |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:170:46
+    |
+170 |         let event = super::Event::new(super::EventType::MintStart, "aws");
+    |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:183:32
+    |
+183 |         let mut event = super::Event::new(super::EventType::MintSuccess, "aws");
+    |                                ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:183:50
+    |
+183 |         let mut event = super::Event::new(super::EventType::MintSuccess, "aws");
+    |                                                  ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:197:28
+    |
+197 |         let event = super::Event::new(super::EventType::MintStart, "aws");
+    |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:197:46
+    |
+197 |         let event = super::Event::new(super::EventType::MintStart, "aws");
+    |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:210:32
+    |
+210 |         let mut event = super::Event::new(super::EventType::MintSuccess, "aws");
+    |                                ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:210:50
+    |
+210 |         let mut event = super::Event::new(super::EventType::MintSuccess, "aws");
+    |                                                  ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:224:32
+    |
+224 |         let mut event = super::Event::new(super::EventType::RefreshFail, "gcp");
+    |                                ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:224:50
+    |
+224 |         let mut event = super::Event::new(super::EventType::RefreshFail, "gcp");
+    |                                                  ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:242:21
+    |
+242 |             (super::EventType::MintStart, "mint_start"),
+    |                     ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:243:21
+    |
+243 |             (super::EventType::MintSuccess, "mint_success"),
+    |                     ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:244:21
+    |
+244 |             (super::EventType::MintFail, "mint_fail"),
+    |                     ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:245:21
+    |
+245 |             (super::EventType::RefreshStart, "refresh_start"),
+    |                     ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:246:21
+    |
+246 |             (super::EventType::RefreshSuccess, "refresh_success"),
+    |                     ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:247:21
+    |
+247 |             (super::EventType::RefreshFail, "refresh_fail"),
+    |                     ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:248:21
+    |
+248 |             (super::EventType::RevokeStart, "revoke_start"),
+    |                     ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:249:21
+    |
+249 |             (super::EventType::RevokeSuccess, "revoke_success"),
+    |                     ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:250:21
+    |
+250 |             (super::EventType::RevokeFail, "revoke_fail"),
+    |                     ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:251:21
+    |
+251 |             (super::EventType::ChildSpawn, "child_spawn"),
+    |                     ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:252:21
+    |
+252 |             (super::EventType::ChildExit, "child_exit"),
+    |                     ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:253:21
+    |
+253 |             (super::EventType::SignalReceived, "signal_received"),
+    |                     ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:254:21
+    |
+254 |             (super::EventType::SignalForwarded, "signal_forwarded"),
+    |                     ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `LogFormat` in `super`
+   --> src/event.rs:272:29
+    |
+272 |         let format = super::LogFormat::from_str("json");
+    |                             ^^^^^^^^^ could not find `LogFormat` in `super`
+
+error[E0433]: failed to resolve: could not find `LogFormat` in `super`
+   --> src/event.rs:274:42
+    |
+274 |             matches!(format, Some(super::LogFormat::Json)),
+    |                                          ^^^^^^^^^ could not find `LogFormat` in `super`
+
+error[E0433]: failed to resolve: could not find `LogFormat` in `super`
+   --> src/event.rs:282:29
+    |
+282 |         let format = super::LogFormat::from_str("text");
+    |                             ^^^^^^^^^ could not find `LogFormat` in `super`
+
+error[E0433]: failed to resolve: could not find `LogFormat` in `super`
+   --> src/event.rs:284:42
+    |
+284 |             matches!(format, Some(super::LogFormat::Text)),
+    |                                          ^^^^^^^^^ could not find `LogFormat` in `super`
+
+error[E0433]: failed to resolve: could not find `LogFormat` in `super`
+   --> src/event.rs:291:29
+    |
+291 |         let format = super::LogFormat::from_str("xml");
+    |                             ^^^^^^^^^ could not find `LogFormat` in `super`
+
+error[E0433]: failed to resolve: could not find `EventEmitter` in `super`
+   --> src/event.rs:300:30
+    |
+300 |         let emitter = super::EventEmitter::new(super::LogFormat::Json);
+    |                              ^^^^^^^^^^^^ could not find `EventEmitter` in `super`
+
+error[E0433]: failed to resolve: could not find `LogFormat` in `super`
+   --> src/event.rs:300:55
+    |
+300 |         let emitter = super::EventEmitter::new(super::LogFormat::Json);
+    |                                                       ^^^^^^^^^ could not find `LogFormat` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:301:28
+    |
+301 |         let event = super::Event::new(super::EventType::MintStart, "aws");
+    |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:301:46
+    |
+301 |         let event = super::Event::new(super::EventType::MintStart, "aws");
+    |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventEmitter` in `super`
+   --> src/event.rs:314:30
+    |
+314 |         let emitter = super::EventEmitter::new(super::LogFormat::Text);
+    |                              ^^^^^^^^^^^^ could not find `EventEmitter` in `super`
+
+error[E0433]: failed to resolve: could not find `LogFormat` in `super`
+   --> src/event.rs:314:55
+    |
+314 |         let emitter = super::EventEmitter::new(super::LogFormat::Text);
+    |                                                       ^^^^^^^^^ could not find `LogFormat` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:315:28
+    |
+315 |         let event = super::Event::new(super::EventType::MintStart, "aws");
+    |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:315:46
+    |
+315 |         let event = super::Event::new(super::EventType::MintStart, "aws");
+    |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `EventEmitter` in `super`
+   --> src/event.rs:339:30
+    |
+339 |         let emitter = super::EventEmitter::new(super::LogFormat::Json);
+    |                              ^^^^^^^^^^^^ could not find `EventEmitter` in `super`
+
+error[E0433]: failed to resolve: could not find `LogFormat` in `super`
+   --> src/event.rs:339:55
+    |
+339 |         let emitter = super::EventEmitter::new(super::LogFormat::Json);
+    |                                                       ^^^^^^^^^ could not find `LogFormat` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:340:32
+    |
+340 |         let mut event = super::Event::new(super::EventType::RevokeSuccess, "vault");
+    |                                ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:340:50
+    |
+340 |         let mut event = super::Event::new(super::EventType::RevokeSuccess, "vault");
+    |                                                  ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:359:32
+    |
+359 |         let mut event = super::Event::new(super::EventType::MintSuccess, "aws");
+    |                                ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:359:50
+    |
+359 |         let mut event = super::Event::new(super::EventType::MintSuccess, "aws");
+    |                                                  ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:370:32
+    |
+370 |         let mut event = super::Event::new(super::EventType::ChildExit, "aws");
+    |                                ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:370:50
+    |
+370 |         let mut event = super::Event::new(super::EventType::ChildExit, "aws");
+    |                                                  ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:383:32
+    |
+383 |         let mut event = super::Event::new(super::EventType::SignalReceived, "aws");
+    |                                ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:383:50
+    |
+383 |         let mut event = super::Event::new(super::EventType::SignalReceived, "aws");
+    |                                                  ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:396:32
+    |
+396 |         let mut event = super::Event::new(super::EventType::SignalForwarded, "aws");
+    |                                ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:396:50
+    |
+396 |         let mut event = super::Event::new(super::EventType::SignalForwarded, "aws");
+    |                                                  ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:408:28
+    |
+408 |         let event = super::Event::new(super::EventType::MintSuccess, "aws");
+    |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:408:46
+    |
+408 |         let event = super::Event::new(super::EventType::MintSuccess, "aws");
+    |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:430:28
+    |
+430 |         let event = super::Event::new(super::EventType::MintStart, "aws");
+    |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:430:46
+    |
+430 |         let event = super::Event::new(super::EventType::MintStart, "aws");
+    |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:446:32
+    |
+446 |         let mut event = super::Event::new(super::EventType::MintFail, "aws");
+    |                                ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:446:50
+    |
+446 |         let mut event = super::Event::new(super::EventType::MintFail, "aws");
+    |                                                  ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0433]: failed to resolve: could not find `Event` in `super`
+   --> src/event.rs:458:28
+    |
+458 |         let event = super::Event::new(super::EventType::MintStart, "aws");
+    |                            ^^^^^ could not find `Event` in `super`
+
+error[E0433]: failed to resolve: could not find `EventType` in `super`
+   --> src/event.rs:458:46
+    |
+458 |         let event = super::Event::new(super::EventType::MintStart, "aws");
+    |                                              ^^^^^^^^^ could not find `EventType` in `super`
+
+error[E0282]: type annotations needed
+   --> src/event.rs:258:17
+    |
+258 |                 event_type.as_str(),
+    |                 ^^^^^^^^^^ cannot infer type
+
+Some errors have detailed explanations: E0282, E0433.
+For more information about an error, try `rustc --explain E0282`.
+error: could not compile `noscope` (lib test) due to 104 previous errors
+[0m
+All tests fail because the production types don't exist. This is exactly the TDD Red state we want. Every test references `super::Event`, `super::EventType`, `super::LogFormat`, `super::EventEmitter` — none of which exist yet.
+[0m# [0mTodos
+[x] Phase 1: Understand - Read codebase (src/lib.rs + all modules)
+[x] Phase 1: Understand NS-070 rule requirements
+[x] Phase 2: TDD Red - Write failing tests for NS-070 (structured event logging)
+[x] Phase 2: TDD Red - Verify all tests fail
+[ ] Phase 3: TDD Green - Write minimal production code
+[ ] Phase 3: TDD Green - cargo test + cargo clippy pass
+[ ] Phase 4: Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds review + fix issues
+[ ] Phase 6: Commit with proper message
+[0m
+Now Phase 3: TDD Green — write the minimal production code to make all tests pass.
+[0m→ [0mRead src/event.rs
+Now I'll write the production code above the `#[cfg(test)]` block:
+[0m
+[0m← [0mEdit src/event.rs
+Index: /home/ben/Documents/repos/noscope/src/event.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/event.rs
++++ /home/ben/Documents/repos/noscope/src/event.rs
+@@ -6,8 +6,252 @@
+ // - signal received/forwarded
+ //
+ // Each event includes: timestamp, type, provider, redacted token ID, duration.
+ 
++use chrono::{DateTime, Utc};
++use serde::Serialize;
++use std::fmt;
++use std::time::Duration;
++
++/// NS-070: All structured event types emitted by noscope.
++///
++/// Covers the three credential lifecycle operations (mint/refresh/revoke)
++/// in three phases (start/success/fail), plus child process and signal events.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum EventType {
++    MintStart,
++    MintSuccess,
++    MintFail,
++    RefreshStart,
++    RefreshSuccess,
++    RefreshFail,
++    RevokeStart,
++    RevokeSuccess,
++    RevokeFail,
++    ChildSpawn,
++    ChildExit,
++    SignalReceived,
++    SignalForwarded,
++}
++
++impl EventType {
++    /// Return the snake_case string representation of this event type.
++    ///
++    /// Used as the `"type"` field value in JSON output.
++    pub fn as_str(&self) -> &'static str {
++        match self {
++            Self::MintStart => "mint_start",
++            Self::MintSuccess => "mint_success",
++            Self::MintFail => "mint_fail",
++            Self::RefreshStart => "refresh_start",
++            Self::RefreshSuccess => "refresh_success",
++            Self::RefreshFail => "refresh_fail",
++            Self::RevokeStart => "revoke_start",
++            Self::RevokeSuccess => "revoke_success",
++            Self::RevokeFail => "revoke_fail",
++            Self::ChildSpawn => "child_spawn",
++            Self::ChildExit => "child_exit",
++            Self::SignalReceived => "signal_received",
++            Self::SignalForwarded => "signal_forwarded",
++        }
++    }
++}
++
++impl fmt::Display for EventType {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(f, "{}", self.as_str())
++    }
++}
++
++/// NS-070: A structured event for logging.
++///
++/// Contains the mandatory fields (timestamp, type, provider) and optional
++/// fields (redacted token ID, duration, exit code, signal, error message).
++///
++/// The event never stores raw token values — the `token_id` field holds
++/// the redacted identifier (e.g. `[redacted:tok-abc]` or `abcdefgh...`).
++#[derive(Debug)]
++pub struct Event {
++    timestamp: DateTime<Utc>,
++    event_type: EventType,
++    provider: String,
++    token_id: Option<String>,
++    duration_ms: Option<u64>,
++    exit_code: Option<i32>,
++    signal: Option<i32>,
++    error: Option<String>,
++}
++
++impl Event {
++    /// Create a new event with the given type and provider.
++    ///
++    /// Timestamp is captured at construction time (Utc::now()).
++    /// Optional fields default to None.
++    pub fn new(event_type: EventType, provider: &str) -> Self {
++        Self {
++            timestamp: Utc::now(),
++            event_type,
++            provider: provider.to_string(),
++            token_id: None,
++            duration_ms: None,
++            exit_code: None,
++            signal: None,
++            error: None,
++        }
++    }
++
++    /// Get the event type.
++    pub fn event_type(&self) -> &EventType {
++        &self.event_type
++    }
++
++    /// Get the provider name.
++    pub fn provider(&self) -> &str {
++        &self.provider
++    }
++
++    /// Get the timestamp.
++    pub fn timestamp(&self) -> DateTime<Utc> {
++        self.timestamp
++    }
++
++    /// Set the redacted token ID.
++    ///
++    /// The caller is responsible for passing the redacted form (from
++    /// `RedactedToken::to_string()` or a provider-supplied token ID).
++    pub fn set_token_id(&mut self, id: &str) {
++        self.token_id = Some(id.to_string());
++    }
++
++    /// Set the duration in milliseconds.
++    pub fn set_duration(&mut self, duration: Duration) {
++        self.duration_ms = Some(duration.as_millis() as u64);
++    }
++
++    /// Set the child process exit code (for ChildExit events).
++    pub fn set_exit_code(&mut self, code: i32) {
++        self.exit_code = Some(code);
++    }
++
++    /// Set the signal number (for SignalReceived/SignalForwarded events).
++    pub fn set_signal(&mut self, signal: i32) {
++        self.signal = Some(signal);
++    }
++
++    /// Set an error message (for *Fail events).
++    pub fn set_error(&mut self, message: &str) {
++        self.error = Some(message.to_string());
++    }
++
++    /// Serialize this event to a single-line JSON string.
++    ///
++    /// NS-070: JSON-per-line format for `--log-format json`.
++    pub fn to_json(&self) -> String {
++        let serializable = SerializableEvent {
++            timestamp: self.timestamp.to_rfc3339(),
++            event_type: self.event_type.as_str(),
++            provider: &self.provider,
++            token_id: self.token_id.as_deref(),
++            duration_ms: self.duration_ms,
++            exit_code: self.exit_code,
++            signal: self.signal,
++            error: self.error.as_deref(),
++        };
++        // serde_json::to_string produces compact single-line JSON by default.
++        serde_json::to_string(&serializable).expect("Event serialization should never fail")
++    }
++}
++
++/// Internal serialization helper — keeps Serialize out of the public Event type.
++///
++/// Field names match the JSON output contract:
++/// - `type` (via rename) instead of `event_type`
++/// - `duration_ms` for millisecond precision
++#[derive(Serialize)]
++struct SerializableEvent<'a> {
++    timestamp: String,
++    #[serde(rename = "type")]
++    event_type: &'a str,
++    provider: &'a str,
++    token_id: Option<&'a str>,
++    duration_ms: Option<u64>,
++    exit_code: Option<i32>,
++    signal: Option<i32>,
++    error: Option<&'a str>,
++}
++
++/// NS-070: Log output format selector.
++///
++/// `--log-format json` selects JSON-per-line output to stderr.
++/// `--log-format text` selects human-readable output (default).
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum LogFormat {
++    Json,
++    Text,
++}
++
++impl LogFormat {
++    /// Parse a format string from CLI flags.
++    ///
++    /// Returns `None` for unrecognized values.
++    pub fn from_str(s: &str) -> Option<Self> {
++        match s {
++            "json" => Some(Self::Json),
++            "text" => Some(Self::Text),
++            _ => None,
++        }
++    }
++}
++
++/// NS-070: Formats events according to the selected LogFormat.
++///
++/// Does not perform I/O — returns the formatted string for the caller
++/// to write to stderr.
++pub struct EventEmitter {
++    format: LogFormat,
++}
++
++impl EventEmitter {
++    /// Create a new emitter with the given format.
++    pub fn new(format: LogFormat) -> Self {
++        Self { format }
++    }
++
++    /// Format an event as a string according to the configured format.
++    ///
++    /// - `Json`: single-line JSON (same as `event.to_json()`)
++    /// - `Text`: human-readable `timestamp type provider [token_id] [duration]`
++    pub fn format_event(&self, event: &Event) -> String {
++        match self.format {
++            LogFormat::Json => event.to_json(),
++            LogFormat::Text => {
++                let mut out = format!(
++                    "[{}] {} provider={}",
++                    event.timestamp.to_rfc3339(),
++                    event.event_type.as_str(),
++                    event.provider,
++                );
++                if let Some(ref id) = event.token_id {
++                    out.push_str(&format!(" token_id={}", id));
++                }
++                if let Some(ms) = event.duration_ms {
++                    out.push_str(&format!(" duration={}ms", ms));
++                }
++                if let Some(code) = event.exit_code {
++                    out.push_str(&format!(" exit_code={}", code));
++                }
++                if let Some(sig) = event.signal {
++                    out.push_str(&format!(" signal={}", sig));
++                }
++                if let Some(ref err) = event.error {
++                    out.push_str(&format!(" error=\"{}\"", err));
++                }
++                out
++            }
++        }
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use chrono::{DateTime, Utc};
+     use serde_json::Value;
+
+[0m
+Now let's run the tests to see if they pass:
+[0m$ [0mcargo test --lib event 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.21s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 37 tests
+test event::tests::structured_event_logging_child_exit_event ... ok
+test event::tests::structured_event_logging_child_spawn_event ... ok
+test event::tests::structured_event_logging_emitter_json_format_output ... ok
+test event::tests::structured_event_logging_child_exit_includes_exit_code ... ok
+test event::tests::structured_event_logging_event_type_names ... ok
+test event::tests::structured_event_logging_fail_event_includes_error_message ... ok
+test event::tests::structured_event_logging_emitter_text_format_output ... ok
+test event::tests::structured_event_logging_json_contains_duration ... ok
+test event::tests::structured_event_logging_emitter_json_single_line ... ok
+test event::tests::structured_event_logging_error_null_when_not_set ... ok
+test event::tests::structured_event_logging_json_contains_provider ... ok
+test event::tests::structured_event_logging_json_contains_type ... ok
+test event::tests::structured_event_logging_json_contains_redacted_token_id ... ok
+test event::tests::structured_event_logging_json_contains_timestamp ... ok
+test event::tests::structured_event_logging_json_duration_null_when_absent ... ok
+test event::tests::structured_event_logging_json_is_single_line ... ok
+test event::tests::structured_event_logging_json_is_valid_json ... ok
+test event::tests::structured_event_logging_json_token_id_null_when_absent ... ok
+test event::tests::structured_event_logging_json_never_contains_raw_secret ... ok
+test event::tests::structured_event_logging_log_format_json ... ok
+test event::tests::structured_event_logging_log_format_text ... ok
+test event::tests::structured_event_logging_log_format_unknown_returns_none ... ok
+test event::tests::structured_event_logging_mint_fail_event ... ok
+test event::tests::structured_event_logging_mint_success_event ... ok
+test event::tests::structured_event_logging_mint_start_event ... ok
+test event::tests::structured_event_logging_refresh_fail_event ... ok
+test event::tests::structured_event_logging_refresh_success_event ... ok
+test event::tests::structured_event_logging_revoke_fail_event ... ok
+test event::tests::structured_event_logging_revoke_start_event ... ok
+test event::tests::structured_event_logging_revoke_success_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_event ... ok
+test event::tests::structured_event_logging_refresh_start_event ... ok
+test event::tests::structured_event_logging_signal_received_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_includes_signal ... ok
+test event::tests::structured_event_logging_timestamp_is_current ... ok
+test event::tests::structured_event_logging_signal_received_includes_signal ... ok
+test event::tests::structured_event_logging_token_id_is_redacted_not_raw ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 152 filtered out; finished in 0.01s
+[0m
+All 37 tests pass. Now let me verify all existing tests still pass and clippy is clean:
+[0m$ [0mcargo test 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.43s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 189 tests
+test event::tests::structured_event_logging_child_exit_event ... ok
+test event::tests::structured_event_logging_child_spawn_event ... ok
+test event::tests::structured_event_logging_child_exit_includes_exit_code ... ok
+test event::tests::structured_event_logging_emitter_json_format_output ... ok
+test event::tests::structured_event_logging_emitter_text_format_output ... ok
+test event::tests::structured_event_logging_error_null_when_not_set ... ok
+test event::tests::structured_event_logging_emitter_json_single_line ... ok
+test event::tests::structured_event_logging_event_type_names ... ok
+test event::tests::structured_event_logging_json_contains_duration ... ok
+test event::tests::structured_event_logging_fail_event_includes_error_message ... ok
+test event::tests::structured_event_logging_json_contains_provider ... ok
+test event::tests::structured_event_logging_json_contains_redacted_token_id ... ok
+test event::tests::structured_event_logging_json_contains_timestamp ... ok
+test event::tests::structured_event_logging_json_contains_type ... ok
+test event::tests::structured_event_logging_json_is_single_line ... ok
+test event::tests::structured_event_logging_json_duration_null_when_absent ... ok
+test event::tests::structured_event_logging_json_is_valid_json ... ok
+test event::tests::structured_event_logging_json_never_contains_raw_secret ... ok
+test event::tests::structured_event_logging_json_token_id_null_when_absent ... ok
+test event::tests::structured_event_logging_log_format_json ... ok
+test event::tests::structured_event_logging_log_format_text ... ok
+test event::tests::structured_event_logging_mint_fail_event ... ok
+test event::tests::structured_event_logging_mint_success_event ... ok
+test event::tests::structured_event_logging_log_format_unknown_returns_none ... ok
+test event::tests::structured_event_logging_mint_start_event ... ok
+test event::tests::structured_event_logging_refresh_start_event ... ok
+test event::tests::structured_event_logging_revoke_start_event ... ok
+test event::tests::structured_event_logging_refresh_success_event ... ok
+test event::tests::structured_event_logging_revoke_fail_event ... ok
+test event::tests::structured_event_logging_refresh_fail_event ... ok
+test event::tests::structured_event_logging_revoke_success_event ... ok
+test event::tests::structured_event_logging_signal_received_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_includes_signal ... ok
+test event::tests::structured_event_logging_signal_received_includes_signal ... ok
+test event::tests::structured_event_logging_timestamp_is_current ... ok
+test exit_code::tests::exit_129_is_signal_1_sighup ... ok
+test exit_code::tests::exit_exactly_128_is_not_signal_terminated ... ok
+test exit_code::tests::known_provider_exit_codes_interpreted_directly ... ok
+test event::tests::structured_event_logging_token_id_is_redacted_not_raw ... ok
+test exit_code::tests::exit_255_is_signal_127 ... ok
+test exit_code::tests::multi_provider_report_exit_code_is_65_mint_failure ... ok
+test exit_code::tests::multi_provider_report_can_filter_retryable_failures ... ok
+test exit_code::tests::multi_provider_report_collects_all_failures ... ok
+test exit_code::tests::multi_provider_report_empty_has_zero_failures ... ok
+test exit_code::tests::multi_provider_report_failures_are_accessible ... ok
+test exit_code::tests::multi_provider_report_stderr_contains_all_providers_in_order ... ok
+test exit_code::tests::multi_provider_report_first_failure_not_shadowed ... ok
+test exit_code::tests::multi_provider_report_format_stderr_empty_when_no_failures ... ok
+test exit_code::tests::multi_provider_report_stderr_includes_exit_code_per_provider ... ok
+test exit_code::tests::multi_provider_report_successes_are_accessible ... ok
+test exit_code::tests::negative_exit_code_maps_to_general_error_no_signal ... ok
+test exit_code::tests::multi_provider_report_tracks_successes_too ... ok
+test exit_code::tests::multi_provider_report_with_no_failures_returns_success_not_child_exit ... ok
+test exit_code::tests::non_signal_stderr_message_shows_provider_exit_code ... ok
+test exit_code::tests::noscope_exit_code_child_exit_passes_through_any_value ... ok
+test exit_code::tests::noscope_exit_code_child_exit_preserves_child_code ... ok
+test exit_code::tests::noscope_exit_code_config_error_is_78 ... ok
+test exit_code::tests::noscope_exit_code_config_not_found_is_66 ... ok
+test exit_code::tests::noscope_exit_code_display_child_exit_mentions_child ... ok
+test exit_code::tests::noscope_exit_code_display_includes_meaning ... ok
+test exit_code::tests::noscope_exit_code_display_success_mentions_success ... ok
+test exit_code::tests::noscope_exit_code_mint_failure_is_65 ... ok
+test exit_code::tests::noscope_exit_code_permission_is_77 ... ok
+test exit_code::tests::noscope_exit_code_success_is_zero ... ok
+test exit_code::tests::noscope_exit_code_unavailable_is_69 ... ok
+test exit_code::tests::noscope_exit_code_usage_is_64 ... ok
+test exit_code::tests::noscope_exit_codes_do_not_overlap_with_provider_codes ... ok
+test exit_code::tests::noscope_success_is_semantically_distinct_from_child_exit_zero ... ok
+test exit_code::tests::provider_exit_code_auth_failure_is_two ... ok
+test exit_code::tests::provider_exit_code_display_includes_code_number_and_meaning ... ok
+test exit_code::tests::noscope_exit_code_child_exit_zero_is_success ... ok
+test exit_code::tests::noscope_exit_code_internal_is_70 ... ok
+test exit_code::tests::provider_exit_code_from_raw_returns_none_for_unknown ... ok
+test exit_code::tests::provider_exit_code_from_raw_roundtrips_all_known_codes ... ok
+test exit_code::tests::provider_exit_code_general_error_is_one ... ok
+test exit_code::tests::provider_exit_code_non_zero_are_errors ... ok
+test exit_code::tests::provider_exit_code_role_not_found_is_three ... ok
+test exit_code::tests::provider_exit_code_success_is_not_error ... ok
+test exit_code::tests::provider_exit_code_success_is_zero ... ok
+test exit_code::tests::provider_exit_code_unavailable_is_four ... ok
+test exit_code::tests::provider_exit_result_implements_display ... ok
+test exit_code::tests::signal_terminated_provider_maps_to_general_error ... ok
+test exit_code::tests::unknown_non_signal_exit_code_maps_to_general_error ... ok
+test exit_code::tests::provider_exit_result_is_eq_comparable ... ok
+test exit_code::tests::signal_terminated_provider_includes_signal_number ... ok
+test exit_code::tests::signal_terminated_provider_stderr_message_contains_signal ... ok
+test provider::tests::config_file_permission_enforcement_allows_0400 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0600 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0640 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0604 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0666 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_world_readable ... ok
+test provider::tests::config_follows_xdg_base_directory ... ok
+test provider::tests::config_precedence_flags_without_mint_cmd_still_wins ... ok
+test provider::tests::config_xdg_custom_overrides_default ... ok
+test provider::tests::dry_run_mode_shows_config_source ... ok
+test provider::tests::config_source_eq_works ... ok
+test provider::tests::config_xdg_defaults_to_home_dot_config ... ok
+test provider::tests::dry_run_mode_shows_mint_command ... ok
+test provider::tests::dry_run_mode_shows_role_and_ttl ... ok
+test provider::tests::insecure_permissions_display_contains_path_and_mode ... ok
+test provider::tests::load_provider_file_rejects_insecure_file ... ok
+test provider::tests::dry_run_mode_produces_output ... ok
+test provider::tests::load_provider_file_reads_secure_file ... ok
+test provider::tests::malformed_config_empty_mint_cmd_is_error ... ok
+test provider::tests::malformed_config_is_hard_error_missing_required_field ... ok
+test provider::tests::malformed_config_is_hard_error_syntax ... ok
+test provider::tests::malformed_config_missing_file_is_not_error ... ok
+test provider::tests::parse_provider_toml_rejects_non_string_mint ... ok
+test provider::tests::parse_provider_toml_valid_with_all_commands ... ok
+test provider::tests::provider_not_found_display_contains_provider_name ... ok
+test provider::tests::provider_not_found_message_is_user_actionable ... ok
+test provider::tests::provider_not_found_enumerates_checked_locations ... ok
+test provider::tests::strict_config_precedence_env_wins_over_file ... ok
+test provider::tests::strict_config_precedence_flags_win_over_env ... ok
+test provider::tests::strict_config_precedence_no_merging_across_layers ... ok
+test provider::tests::validate_provider_checks_mint_cmd_exists ... ok
+test provider::tests::validate_provider_checks_refresh_cmd_if_present ... ok
+test provider::tests::validate_provider_checks_mint_cmd_is_executable ... ok
+test provider::tests::strict_config_precedence_file_used_when_no_flags_or_env ... ok
+test provider::tests::validate_provider_checks_revoke_cmd_if_present ... ok
+test provider::tests::validation_failed_display_lists_all_problems ... ok
+test provider::tests::validate_provider_does_not_execute_mint_cmd ... ok
+test redaction::tests::debug_format_looks_like_debug_output ... ok
+test provider::tests::validate_provider_succeeds_for_valid_config ... ok
+test redaction::tests::debug_format_shows_redacted_form_not_raw ... ok
+test redaction::tests::debug_never_shows_full_token_value ... ok
+test redaction::tests::different_tokens_produce_different_hash_ids ... ok
+test redaction::tests::display_never_shows_full_token_value ... ok
+test redaction::tests::display_of_empty_token_does_not_panic ... ok
+test redaction::tests::jwt_token_with_provider_id_uses_provider_id ... ok
+test redaction::tests::mixed_ascii_multibyte_token_takes_8_chars ... ok
+test redaction::tests::redaction_cannot_be_bypassed_by_alternate_format ... ok
+test redaction::tests::jwt_token_never_shows_prefix_chars ... ok
+test redaction::tests::long_token_shows_first_8_chars_with_ellipsis ... ok
+test redaction::tests::multibyte_utf8_token_does_not_panic ... ok
+test redaction::tests::same_token_always_produces_same_hash_id ... ok
+test redaction::tests::token_exactly_17_chars_shows_prefix ... ok
+test redaction::tests::short_token_with_provider_id_uses_that_id ... ok
+test redaction::tests::token_exactly_16_chars_uses_redacted_format ... ok
+test redaction::tests::short_token_without_id_uses_hash_based_id ... ok
+test refresh::tests::continuous_refresh_after_failure_new_window_after_expiry ... ok
+test refresh::tests::continuous_refresh_after_failure_not_permanently_disabled ... ok
+test refresh::tests::refresh_failure_independence_separate_trackers ... ok
+test refresh::tests::refresh_failure_independence_success_resets_own_tracker ... ok
+test refresh::tests::continuous_refresh_after_failure_reset_after_success ... ok
+test refresh::tests::refresh_failure_independence_tracker_knows_its_credential ... ok
+test refresh::tests::refresh_failure_preserves_child_allows_token_until_expiry ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_not_kill ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_retry ... ok
+test refresh::tests::refresh_failure_preserves_child_logs_warning ... ok
+test refresh::tests::refresh_failure_preserves_child_never_kills_at_any_attempt ... ok
+test refresh::tests::refresh_retry_parameters_base_delay_is_one_second ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_env_var_point_in_time ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_environment ... ok
+test refresh::tests::refresh_limitation_documentation_startup_warning ... ok
+test refresh::tests::refresh_retry_parameters_delay_grows_exponentially ... ok
+test refresh::tests::refresh_retry_parameters_jitter_range_is_25_percent ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_attempt_2_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_large_attempt_does_not_panic ... ok
+test refresh::tests::refresh_retry_parameters_no_retry_when_remaining_lifetime_zero ... ok
+test refresh::tests::refresh_retry_parameters_max_retries_is_four ... ok
+test refresh::tests::refresh_retry_parameters_total_window_within_50_percent_remaining ... ok
+test refresh::tests::refresh_retry_parameters_multiplier_is_two ... ok
+test refresh::tests::refresh_retry_parameters_truncates_retries_when_lifetime_short ... ok
+test refresh::tests::refresh_tracker_failure_count_saturates_instead_of_wrapping ... ok
+test security::tests::allows_args_without_token_values ... ok
+test security::tests::disable_core_dumps_sets_rlimit_to_zero ... ok
+test security::tests::empty_known_tokens_always_valid ... ok
+test security::tests::error_message_does_not_contain_token_value ... ok
+test security::tests::rejects_args_containing_known_token_value ... ok
+test security::tests::disable_core_dumps_succeeds_on_linux ... ok
+test security::tests::empty_args_always_valid ... ok
+test token::tests::scoped_token_debug_does_not_expose_secret ... ok
+test security::tests::rejects_token_as_substring_in_arg ... ok
+test token::tests::redacted_value_returns_reference_not_new_computation ... ok
+test token::tests::scoped_token_constructor_takes_secret_string_directly ... ok
+test token::tests::scoped_token_debug_shows_non_secret_fields ... ok
+test token::tests::scoped_token_display_does_not_expose_secret ... ok
+test token::tests::scoped_token_exposes_metadata_but_not_value ... ok
+test token::tests::scoped_token_expose_secret_returns_value ... ok
+test token::tests::scoped_token_is_not_clone ... ok
+test token::tests::scoped_token_is_not_serializable ... ok
+test token::tests::scoped_token_is_sync ... ok
+test token::tests::scoped_token_is_send ... ok
+test token::tests::string_zeroize_actually_clears_data ... ok
+test token::tests::scoped_token_requires_expires_at ... ok
+
+test result: ok. 189 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests noscope
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+[0m
+All 189 tests pass (37 new + 152 existing). Now check clippy:
+[0m$ [0mcargo clippy 2>&1
+Compiling serde v1.0.228
+    Checking serde_json v1.0.149
+    Checking toml_datetime v0.6.11
+    Checking serde_spanned v0.6.9
+    Checking chrono v0.4.44
+    Checking toml_edit v0.22.27
+    Checking toml v0.8.23
+    Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+warning: method `from_str` can be confused for the standard trait method `std::str::FromStr::from_str`
+   --> src/event.rs:196:5
+    |
+196 | /     pub fn from_str(s: &str) -> Option<Self> {
+197 | |         match s {
+198 | |             "json" => Some(Self::Json),
+199 | |             "text" => Some(Self::Text),
+...   |
+202 | |     }
+    | |_____^
+    |
+    = help: consider implementing the trait `std::str::FromStr` or choosing a less ambiguous method name
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.92.0/index.html#should_implement_trait
+    = note: `#[warn(clippy::should_implement_trait)]` on by default
+
+warning: `noscope` (lib) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.01s
+[0m
+Clippy has one warning about `from_str` — I should either implement `FromStr` or rename the method. Let me fix this properly:
+[0m← [0mEdit src/event.rs
+Index: /home/ben/Documents/repos/noscope/src/event.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/event.rs
++++ /home/ben/Documents/repos/noscope/src/event.rs
+@@ -192,9 +192,9 @@
+ impl LogFormat {
+     /// Parse a format string from CLI flags.
+     ///
+     /// Returns `None` for unrecognized values.
+-    pub fn from_str(s: &str) -> Option<Self> {
++    pub fn parse(s: &str) -> Option<Self> {
+         match s {
+             "json" => Some(Self::Json),
+             "text" => Some(Self::Text),
+             _ => None,
+
+[0m
+Now update the tests that call `from_str`:
+[0m← [0mEdit src/event.rs
+Index: /home/ben/Documents/repos/noscope/src/event.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/event.rs
++++ /home/ben/Documents/repos/noscope/src/event.rs
+@@ -512,9 +512,9 @@
+ 
+ #[test]
+ fn structured_event_logging_log_format_json() {
+     // NS-070: --log-format json selects JSON output
+-    let format = super::LogFormat::from_str("json");
++    let format = super::LogFormat::parse("json");
+     assert!(
+         matches!(format, Some(super::LogFormat::Json)),
+         "\"json\" must parse to LogFormat::Json"
+     );
+@@ -522,18 +522,18 @@
+ 
+ #[test]
+ fn structured_event_logging_log_format_text() {
+     // Default/text format is also a valid option
+-    let format = super::LogFormat::from_str("text");
++    let format = super::LogFormat::parse("text");
+     assert!(
+         matches!(format, Some(super::LogFormat::Text)),
+         "\"text\" must parse to LogFormat::Text"
+     );
+ }
+ 
+ #[test]
+ fn structured_event_logging_log_format_unknown_returns_none() {
+-    let format = super::LogFormat::from_str("xml");
++    let format = super::LogFormat::parse("xml");
+     assert!(format.is_none(), "Unknown format must return None");
+ }
+ 
+ // ---- EventEmitter formats based on LogFormat ----
+
+[0m
+[0m$ [0mcargo test --lib event 2>&1 && cargo clippy 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.88s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 37 tests
+test event::tests::structured_event_logging_child_exit_event ... ok
+test event::tests::structured_event_logging_emitter_json_format_output ... ok
+test event::tests::structured_event_logging_child_exit_includes_exit_code ... ok
+test event::tests::structured_event_logging_child_spawn_event ... ok
+test event::tests::structured_event_logging_emitter_text_format_output ... ok
+test event::tests::structured_event_logging_error_null_when_not_set ... ok
+test event::tests::structured_event_logging_fail_event_includes_error_message ... ok
+test event::tests::structured_event_logging_event_type_names ... ok
+test event::tests::structured_event_logging_json_contains_duration ... ok
+test event::tests::structured_event_logging_json_contains_provider ... ok
+test event::tests::structured_event_logging_json_contains_redacted_token_id ... ok
+test event::tests::structured_event_logging_json_duration_null_when_absent ... ok
+test event::tests::structured_event_logging_json_contains_timestamp ... ok
+test event::tests::structured_event_logging_json_contains_type ... ok
+test event::tests::structured_event_logging_json_is_single_line ... ok
+test event::tests::structured_event_logging_json_is_valid_json ... ok
+test event::tests::structured_event_logging_json_never_contains_raw_secret ... ok
+test event::tests::structured_event_logging_json_token_id_null_when_absent ... ok
+test event::tests::structured_event_logging_log_format_json ... ok
+test event::tests::structured_event_logging_log_format_text ... ok
+test event::tests::structured_event_logging_mint_fail_event ... ok
+test event::tests::structured_event_logging_mint_success_event ... ok
+test event::tests::structured_event_logging_log_format_unknown_returns_none ... ok
+test event::tests::structured_event_logging_mint_start_event ... ok
+test event::tests::structured_event_logging_refresh_fail_event ... ok
+test event::tests::structured_event_logging_refresh_success_event ... ok
+test event::tests::structured_event_logging_revoke_start_event ... ok
+test event::tests::structured_event_logging_refresh_start_event ... ok
+test event::tests::structured_event_logging_revoke_fail_event ... ok
+test event::tests::structured_event_logging_revoke_success_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_includes_signal ... ok
+test event::tests::structured_event_logging_signal_received_event ... ok
+test event::tests::structured_event_logging_signal_received_includes_signal ... ok
+test event::tests::structured_event_logging_timestamp_is_current ... ok
+test event::tests::structured_event_logging_emitter_json_single_line ... ok
+test event::tests::structured_event_logging_token_id_is_redacted_not_raw ... ok
+
+test result: ok. 37 passed; 0 failed; 0 ignored; 0 measured; 152 filtered out; finished in 0.00s
+
+    Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.43s
+[0m
+All 37 tests pass, zero clippy warnings. Phase 3 complete.
+[0m# [0mTodos
+[x] Phase 1: Understand - Read codebase (src/lib.rs + all modules)
+[x] Phase 1: Understand NS-070 rule requirements
+[x] Phase 2: TDD Red - Write failing tests for NS-070 (structured event logging)
+[x] Phase 2: TDD Red - Verify all tests fail
+[x] Phase 3: TDD Green - Write minimal production code
+[x] Phase 3: TDD Green - cargo test + cargo clippy pass
+[ ] Phase 4: Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds review + fix issues
+[ ] Phase 6: Commit with proper message
+[0m
+Phase 4: Refactor. Let me review the final file for cleanup opportunities:
+[0m→ [0mRead src/event.rs[90m [limit=250][0m
+The code looks clean. The structure mirrors existing patterns in the codebase. Let me check for any refactoring opportunities:
+
+1. The text formatter uses `format!` in a loop with `push_str` — this could use `write!` but the pattern is clear and the event size is small. Not worth the complexity.
+2. Names are clean and descriptive.
+3. No duplication visible.
+4. The `SerializableEvent` separation keeps `Serialize` off the public type — good design.
+
+The code is already clean. Let me verify everything passes one more time:
+[0m
+[0m$ [0mcargo test && cargo clippy 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 189 tests
+test event::tests::structured_event_logging_child_exit_event ... ok
+test event::tests::structured_event_logging_child_exit_includes_exit_code ... ok
+test event::tests::structured_event_logging_child_spawn_event ... ok
+test event::tests::structured_event_logging_emitter_json_format_output ... ok
+test event::tests::structured_event_logging_emitter_json_single_line ... ok
+test event::tests::structured_event_logging_error_null_when_not_set ... ok
+test event::tests::structured_event_logging_emitter_text_format_output ... ok
+test event::tests::structured_event_logging_event_type_names ... ok
+test event::tests::structured_event_logging_json_contains_duration ... ok
+test event::tests::structured_event_logging_fail_event_includes_error_message ... ok
+test event::tests::structured_event_logging_json_contains_type ... ok
+test event::tests::structured_event_logging_json_contains_timestamp ... ok
+test event::tests::structured_event_logging_json_contains_provider ... ok
+test event::tests::structured_event_logging_json_is_single_line ... ok
+test event::tests::structured_event_logging_json_duration_null_when_absent ... ok
+test event::tests::structured_event_logging_json_is_valid_json ... ok
+test event::tests::structured_event_logging_json_never_contains_raw_secret ... ok
+test event::tests::structured_event_logging_json_token_id_null_when_absent ... ok
+test event::tests::structured_event_logging_json_contains_redacted_token_id ... ok
+test event::tests::structured_event_logging_log_format_unknown_returns_none ... ok
+test event::tests::structured_event_logging_log_format_json ... ok
+test event::tests::structured_event_logging_log_format_text ... ok
+test event::tests::structured_event_logging_mint_fail_event ... ok
+test event::tests::structured_event_logging_mint_success_event ... ok
+test event::tests::structured_event_logging_refresh_start_event ... ok
+test event::tests::structured_event_logging_revoke_fail_event ... ok
+test event::tests::structured_event_logging_mint_start_event ... ok
+test event::tests::structured_event_logging_refresh_fail_event ... ok
+test event::tests::structured_event_logging_refresh_success_event ... ok
+test event::tests::structured_event_logging_revoke_start_event ... ok
+test event::tests::structured_event_logging_revoke_success_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_event ... ok
+test event::tests::structured_event_logging_timestamp_is_current ... ok
+test event::tests::structured_event_logging_signal_forwarded_includes_signal ... ok
+test event::tests::structured_event_logging_signal_received_event ... ok
+test event::tests::structured_event_logging_signal_received_includes_signal ... ok
+test exit_code::tests::exit_255_is_signal_127 ... ok
+test event::tests::structured_event_logging_token_id_is_redacted_not_raw ... ok
+test exit_code::tests::exit_129_is_signal_1_sighup ... ok
+test exit_code::tests::exit_exactly_128_is_not_signal_terminated ... ok
+test exit_code::tests::known_provider_exit_codes_interpreted_directly ... ok
+test exit_code::tests::multi_provider_report_collects_all_failures ... ok
+test exit_code::tests::multi_provider_report_empty_has_zero_failures ... ok
+test exit_code::tests::multi_provider_report_can_filter_retryable_failures ... ok
+test exit_code::tests::multi_provider_report_exit_code_is_65_mint_failure ... ok
+test exit_code::tests::multi_provider_report_format_stderr_empty_when_no_failures ... ok
+test exit_code::tests::multi_provider_report_failures_are_accessible ... ok
+test exit_code::tests::multi_provider_report_first_failure_not_shadowed ... ok
+test exit_code::tests::multi_provider_report_stderr_contains_all_providers_in_order ... ok
+test exit_code::tests::multi_provider_report_stderr_includes_exit_code_per_provider ... ok
+test exit_code::tests::multi_provider_report_successes_are_accessible ... ok
+test exit_code::tests::negative_exit_code_maps_to_general_error_no_signal ... ok
+test exit_code::tests::multi_provider_report_tracks_successes_too ... ok
+test exit_code::tests::multi_provider_report_with_no_failures_returns_success_not_child_exit ... ok
+test exit_code::tests::non_signal_stderr_message_shows_provider_exit_code ... ok
+test exit_code::tests::noscope_exit_code_child_exit_passes_through_any_value ... ok
+test exit_code::tests::noscope_exit_code_child_exit_zero_is_success ... ok
+test exit_code::tests::noscope_exit_code_config_not_found_is_66 ... ok
+test exit_code::tests::noscope_exit_code_display_includes_meaning ... ok
+test exit_code::tests::noscope_exit_code_child_exit_preserves_child_code ... ok
+test exit_code::tests::noscope_exit_code_config_error_is_78 ... ok
+test exit_code::tests::noscope_exit_code_display_child_exit_mentions_child ... ok
+test exit_code::tests::noscope_exit_code_display_success_mentions_success ... ok
+test exit_code::tests::noscope_exit_code_mint_failure_is_65 ... ok
+test exit_code::tests::noscope_exit_code_permission_is_77 ... ok
+test exit_code::tests::noscope_exit_code_unavailable_is_69 ... ok
+test exit_code::tests::noscope_exit_codes_do_not_overlap_with_provider_codes ... ok
+test exit_code::tests::noscope_exit_code_internal_is_70 ... ok
+test exit_code::tests::noscope_exit_code_success_is_zero ... ok
+test exit_code::tests::noscope_exit_code_usage_is_64 ... ok
+test exit_code::tests::noscope_success_is_semantically_distinct_from_child_exit_zero ... ok
+test exit_code::tests::provider_exit_code_display_includes_code_number_and_meaning ... ok
+test exit_code::tests::provider_exit_code_from_raw_roundtrips_all_known_codes ... ok
+test exit_code::tests::provider_exit_code_non_zero_are_errors ... ok
+test exit_code::tests::provider_exit_code_auth_failure_is_two ... ok
+test exit_code::tests::provider_exit_code_from_raw_returns_none_for_unknown ... ok
+test exit_code::tests::provider_exit_code_general_error_is_one ... ok
+test exit_code::tests::provider_exit_code_role_not_found_is_three ... ok
+test exit_code::tests::provider_exit_code_success_is_zero ... ok
+test exit_code::tests::provider_exit_result_implements_display ... ok
+test exit_code::tests::provider_exit_code_success_is_not_error ... ok
+test exit_code::tests::provider_exit_code_unavailable_is_four ... ok
+test exit_code::tests::provider_exit_result_is_eq_comparable ... ok
+test exit_code::tests::signal_terminated_provider_includes_signal_number ... ok
+test exit_code::tests::signal_terminated_provider_stderr_message_contains_signal ... ok
+test exit_code::tests::signal_terminated_provider_maps_to_general_error ... ok
+test exit_code::tests::unknown_non_signal_exit_code_maps_to_general_error ... ok
+test provider::tests::config_file_permission_enforcement_allows_0400 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0600 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0640 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0604 ... ok
+test provider::tests::config_follows_xdg_base_directory ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0666 ... ok
+test provider::tests::config_source_eq_works ... ok
+test provider::tests::config_precedence_flags_without_mint_cmd_still_wins ... ok
+test provider::tests::config_file_permission_enforcement_rejects_world_readable ... ok
+test provider::tests::config_xdg_custom_overrides_default ... ok
+test provider::tests::dry_run_mode_produces_output ... ok
+test provider::tests::config_xdg_defaults_to_home_dot_config ... ok
+test provider::tests::dry_run_mode_shows_mint_command ... ok
+test provider::tests::dry_run_mode_shows_role_and_ttl ... ok
+test provider::tests::dry_run_mode_shows_config_source ... ok
+test provider::tests::load_provider_file_rejects_insecure_file ... ok
+test provider::tests::insecure_permissions_display_contains_path_and_mode ... ok
+test provider::tests::malformed_config_empty_mint_cmd_is_error ... ok
+test provider::tests::load_provider_file_reads_secure_file ... ok
+test provider::tests::malformed_config_missing_file_is_not_error ... ok
+test provider::tests::malformed_config_is_hard_error_missing_required_field ... ok
+test provider::tests::parse_provider_toml_rejects_non_string_mint ... ok
+test provider::tests::malformed_config_is_hard_error_syntax ... ok
+test provider::tests::provider_not_found_enumerates_checked_locations ... ok
+test provider::tests::provider_not_found_display_contains_provider_name ... ok
+test provider::tests::provider_not_found_message_is_user_actionable ... ok
+test provider::tests::strict_config_precedence_file_used_when_no_flags_or_env ... ok
+test provider::tests::strict_config_precedence_flags_win_over_env ... ok
+test provider::tests::strict_config_precedence_env_wins_over_file ... ok
+test provider::tests::strict_config_precedence_no_merging_across_layers ... ok
+test provider::tests::validate_provider_checks_mint_cmd_is_executable ... ok
+test provider::tests::validate_provider_checks_mint_cmd_exists ... ok
+test provider::tests::validate_provider_checks_refresh_cmd_if_present ... ok
+test provider::tests::validate_provider_checks_revoke_cmd_if_present ... ok
+test provider::tests::validate_provider_does_not_execute_mint_cmd ... ok
+test provider::tests::validate_provider_succeeds_for_valid_config ... ok
+test redaction::tests::debug_format_shows_redacted_form_not_raw ... ok
+test provider::tests::validation_failed_display_lists_all_problems ... ok
+test redaction::tests::debug_never_shows_full_token_value ... ok
+test provider::tests::parse_provider_toml_valid_with_all_commands ... ok
+test redaction::tests::different_tokens_produce_different_hash_ids ... ok
+test redaction::tests::display_never_shows_full_token_value ... ok
+test redaction::tests::display_of_empty_token_does_not_panic ... ok
+test redaction::tests::jwt_token_never_shows_prefix_chars ... ok
+test redaction::tests::long_token_shows_first_8_chars_with_ellipsis ... ok
+test redaction::tests::jwt_token_with_provider_id_uses_provider_id ... ok
+test redaction::tests::mixed_ascii_multibyte_token_takes_8_chars ... ok
+test redaction::tests::multibyte_utf8_token_does_not_panic ... ok
+test redaction::tests::same_token_always_produces_same_hash_id ... ok
+test redaction::tests::redaction_cannot_be_bypassed_by_alternate_format ... ok
+test redaction::tests::short_token_with_provider_id_uses_that_id ... ok
+test redaction::tests::short_token_without_id_uses_hash_based_id ... ok
+test refresh::tests::continuous_refresh_after_failure_new_window_after_expiry ... ok
+test redaction::tests::token_exactly_16_chars_uses_redacted_format ... ok
+test redaction::tests::token_exactly_17_chars_shows_prefix ... ok
+test refresh::tests::continuous_refresh_after_failure_not_permanently_disabled ... ok
+test refresh::tests::refresh_failure_independence_separate_trackers ... ok
+test refresh::tests::refresh_failure_independence_tracker_knows_its_credential ... ok
+test refresh::tests::continuous_refresh_after_failure_reset_after_success ... ok
+test refresh::tests::refresh_failure_independence_success_resets_own_tracker ... ok
+test redaction::tests::debug_format_looks_like_debug_output ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_not_kill ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_retry ... ok
+test refresh::tests::refresh_failure_preserves_child_allows_token_until_expiry ... ok
+test refresh::tests::refresh_failure_preserves_child_never_kills_at_any_attempt ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_env_var_point_in_time ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_environment ... ok
+test refresh::tests::refresh_limitation_documentation_startup_warning ... ok
+test refresh::tests::refresh_retry_parameters_base_delay_is_one_second ... ok
+test refresh::tests::refresh_retry_parameters_delay_grows_exponentially ... ok
+test refresh::tests::refresh_retry_parameters_jitter_range_is_25_percent ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_attempt_2_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_large_attempt_does_not_panic ... ok
+test refresh::tests::refresh_retry_parameters_max_retries_is_four ... ok
+test refresh::tests::refresh_retry_parameters_multiplier_is_two ... ok
+test refresh::tests::refresh_retry_parameters_total_window_within_50_percent_remaining ... ok
+test refresh::tests::refresh_retry_parameters_no_retry_when_remaining_lifetime_zero ... ok
+test refresh::tests::refresh_retry_parameters_truncates_retries_when_lifetime_short ... ok
+test security::tests::disable_core_dumps_sets_rlimit_to_zero ... ok
+test refresh::tests::refresh_tracker_failure_count_saturates_instead_of_wrapping ... ok
+test security::tests::empty_args_always_valid ... ok
+test security::tests::disable_core_dumps_succeeds_on_linux ... ok
+test security::tests::empty_known_tokens_always_valid ... ok
+test security::tests::error_message_does_not_contain_token_value ... ok
+test security::tests::rejects_token_as_substring_in_arg ... ok
+test refresh::tests::refresh_failure_preserves_child_logs_warning ... ok
+test security::tests::allows_args_without_token_values ... ok
+test security::tests::rejects_args_containing_known_token_value ... ok
+test token::tests::redacted_value_returns_reference_not_new_computation ... ok
+test token::tests::scoped_token_debug_shows_non_secret_fields ... ok
+test token::tests::scoped_token_display_does_not_expose_secret ... ok
+test token::tests::scoped_token_constructor_takes_secret_string_directly ... ok
+test token::tests::scoped_token_is_not_clone ... ok
+test token::tests::scoped_token_debug_does_not_expose_secret ... ok
+test token::tests::scoped_token_expose_secret_returns_value ... ok
+test token::tests::scoped_token_is_send ... ok
+test token::tests::scoped_token_is_sync ... ok
+test token::tests::scoped_token_exposes_metadata_but_not_value ... ok
+test token::tests::scoped_token_is_not_serializable ... ok
+test token::tests::string_zeroize_actually_clears_data ... ok
+test token::tests::scoped_token_requires_expires_at ... ok
+
+test result: ok. 189 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests noscope
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.14s
+[0m
+189 tests pass, zero clippy warnings. Phase 4 complete.
+[0m# [0mTodos
+[x] Phase 1: Understand - Read codebase (src/lib.rs + all modules)
+[x] Phase 1: Understand NS-070 rule requirements
+[x] Phase 2: TDD Red - Write failing tests for NS-070 (structured event logging)
+[x] Phase 2: TDD Red - Verify all tests fail
+[x] Phase 3: TDD Green - Write minimal production code
+[x] Phase 3: TDD Green - cargo test + cargo clippy pass
+[x] Phase 4: Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds review + fix issues
+[ ] Phase 6: Commit with proper message
+[0m
+## Phase 5: Linus Torvalds Review
+
+Let me re-read the full production code one more time to do a brutal review:
+[0m→ [0mRead src/event.rs[90m [limit=260][0m
+### Linus Torvalds Review
+
+Writing this review to myself:
+
+**1. `set_duration` truncates u128 to u64 silently** — `duration.as_millis()` returns `u128`, and `as u64` truncates. For a credential manager, durations won't realistically exceed u64::MAX milliseconds (~584 million years), so this is fine. No fix needed.
+
+**2. `to_json()` panics on serialization failure** — The `expect()` is justified because `SerializableEvent` contains only strings, options, and integers — `serde_json` cannot fail on these. The invariant is correct.
+
+**3. `Event` is not `Clone`** — Deliberate? Looking at usage, events are created, optionally mutated, then serialized once. Clone would be wasteful. Good.
+
+**4. Text format doesn't escape error messages with quotes** — If `error` contains `"` characters, the text output `error="foo"bar"` is malformed. This is the text format, not JSON, so it's informational. But it's sloppy. Let me add a test for this edge case and fix the quoting.
+
+**5. Missing test: `set_duration` with very large duration** — Should handle gracefully.
+
+**6. Missing test: Event with all fields set simultaneously** — Integration-style test.
+
+**7. `EventEmitter` is redundant** — It just delegates `Json` to `event.to_json()`. But it serves a purpose: it provides the abstraction point for format selection from CLI flags. The caller creates the emitter once and passes it around. This is fine.
+
+**8. `LogFormat::parse` is case-sensitive** — `"JSON"` returns `None`. This is correct for CLI parsing (convention is lowercase flags).
+
+Let me fix issue #4 (text format quoting) and add the missing edge case tests:
+[0m
+[0m← [0mEdit src/event.rs
+Index: /home/ben/Documents/repos/noscope/src/event.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/event.rs
++++ /home/ben/Documents/repos/noscope/src/event.rs
+@@ -242,9 +242,11 @@
+         if let Some(sig) = event.signal {
+             out.push_str(&format!(" signal={}", sig));
+         }
+         if let Some(ref err) = event.error {
+-            out.push_str(&format!(" error=\"{}\"", err));
++            // Escape embedded quotes to keep the text format parseable.
++            let escaped = err.replace('\\', "\\\\").replace('"', "\\\"");
++            out.push_str(&format!(" error=\"{}\"", escaped));
+         }
+         out
+     }
+ }
+
+[0m
+Now add the edge case tests. Let me find the end of the tests block:
+[0m→ [0mRead src/event.rs[90m [offset=690][0m
+[0m
+[0m← [0mEdit src/event.rs
+Index: /home/ben/Documents/repos/noscope/src/event.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/event.rs
++++ /home/ben/Documents/repos/noscope/src/event.rs
+@@ -705,5 +705,121 @@
+         let json = event.to_json();
+         let parsed: Value = serde_json::from_str(&json).unwrap();
+         assert!(parsed["error"].is_null(), "error must be null when not set");
+     }
++
++    // =========================================================================
++    // Edge cases discovered during Linus review.
++    // =========================================================================
++
++    #[test]
++    fn structured_event_logging_all_fields_set_simultaneously() {
++        // Integration test: event with every optional field populated
++        let mut event = super::Event::new(super::EventType::ChildExit, "aws");
++        event.set_token_id("[redacted:tok-full]");
++        event.set_duration(Duration::from_millis(999));
++        event.set_exit_code(0);
++        event.set_signal(15);
++        event.set_error("graceful shutdown");
++        let json = event.to_json();
++        let parsed: Value = serde_json::from_str(&json).unwrap();
++        assert_eq!(parsed["type"].as_str().unwrap(), "child_exit");
++        assert_eq!(parsed["provider"].as_str().unwrap(), "aws");
++        assert_eq!(parsed["token_id"].as_str().unwrap(), "[redacted:tok-full]");
++        assert_eq!(parsed["duration_ms"].as_u64().unwrap(), 999);
++        assert_eq!(parsed["exit_code"].as_i64().unwrap(), 0);
++        assert_eq!(parsed["signal"].as_i64().unwrap(), 15);
++        assert_eq!(parsed["error"].as_str().unwrap(), "graceful shutdown");
++    }
++
++    #[test]
++    fn structured_event_logging_text_format_escapes_quotes_in_error() {
++        // Error messages with embedded quotes must not break text format
++        let emitter = super::EventEmitter::new(super::LogFormat::Text);
++        let mut event = super::Event::new(super::EventType::MintFail, "aws");
++        event.set_error("failed: \"connection refused\"");
++        let output = emitter.format_event(&event);
++        // The embedded quotes must be escaped
++        assert!(
++            output.contains("\\\"connection refused\\\""),
++            "Text format must escape embedded quotes, got: {}",
++            output
++        );
++    }
++
++    #[test]
++    fn structured_event_logging_json_error_with_quotes() {
++        // JSON format handles quotes via serde — verify it works
++        let mut event = super::Event::new(super::EventType::RefreshFail, "gcp");
++        event.set_error("key \"abc\" not found");
++        let json = event.to_json();
++        let parsed: Value = serde_json::from_str(&json).unwrap();
++        assert_eq!(parsed["error"].as_str().unwrap(), "key \"abc\" not found");
++    }
++
++    #[test]
++    fn structured_event_logging_large_duration_does_not_panic() {
++        // u128 as_millis truncated to u64 — verify no panic
++        let mut event = super::Event::new(super::EventType::MintSuccess, "aws");
++        event.set_duration(Duration::from_secs(u64::MAX / 1000));
++        let json = event.to_json();
++        let parsed: Value = serde_json::from_str(&json).unwrap();
++        assert!(
++            parsed["duration_ms"].as_u64().is_some(),
++            "Large duration must serialize without panic"
++        );
++    }
++
++    #[test]
++    fn structured_event_logging_zero_duration() {
++        let mut event = super::Event::new(super::EventType::MintSuccess, "aws");
++        event.set_duration(Duration::ZERO);
++        let json = event.to_json();
++        let parsed: Value = serde_json::from_str(&json).unwrap();
++        assert_eq!(parsed["duration_ms"].as_u64().unwrap(), 0);
++    }
++
++    #[test]
++    fn structured_event_logging_negative_exit_code() {
++        // Processes can exit with negative codes on some platforms
++        let mut event = super::Event::new(super::EventType::ChildExit, "aws");
++        event.set_exit_code(-1);
++        let json = event.to_json();
++        let parsed: Value = serde_json::from_str(&json).unwrap();
++        assert_eq!(parsed["exit_code"].as_i64().unwrap(), -1);
++    }
++
++    #[test]
++    fn structured_event_logging_event_type_display_matches_as_str() {
++        // Display impl must produce the same string as as_str()
++        let types = vec![
++            super::EventType::MintStart,
++            super::EventType::ChildExit,
++            super::EventType::SignalForwarded,
++        ];
++        for t in types {
++            assert_eq!(
++                format!("{}", t),
++                t.as_str(),
++                "Display and as_str must match for {:?}",
++                t
++            );
++        }
++    }
++
++    #[test]
++    fn structured_event_logging_log_format_parse_is_case_sensitive() {
++        // CLI convention: lowercase flags
++        assert!(super::LogFormat::parse("JSON").is_none());
++        assert!(super::LogFormat::parse("Text").is_none());
++        assert!(super::LogFormat::parse("json").is_some());
++    }
++
++    #[test]
++    fn structured_event_logging_empty_provider_name() {
++        // Edge case: empty provider string should not panic
++        let event = super::Event::new(super::EventType::MintStart, "");
++        let json = event.to_json();
++        let parsed: Value = serde_json::from_str(&json).unwrap();
++        assert_eq!(parsed["provider"].as_str().unwrap(), "");
++    }
+ }
+
+[0m
+Now run all tests + clippy:
+[0m$ [0mcargo test && cargo clippy 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.46s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 198 tests
+test event::tests::structured_event_logging_child_exit_event ... ok
+test event::tests::structured_event_logging_all_fields_set_simultaneously ... ok
+test event::tests::structured_event_logging_child_exit_includes_exit_code ... ok
+test event::tests::structured_event_logging_child_spawn_event ... ok
+test event::tests::structured_event_logging_emitter_json_format_output ... ok
+test event::tests::structured_event_logging_emitter_json_single_line ... ok
+test event::tests::structured_event_logging_emitter_text_format_output ... ok
+test event::tests::structured_event_logging_error_null_when_not_set ... ok
+test event::tests::structured_event_logging_event_type_names ... ok
+test event::tests::structured_event_logging_event_type_display_matches_as_str ... ok
+test event::tests::structured_event_logging_fail_event_includes_error_message ... ok
+test event::tests::structured_event_logging_json_contains_duration ... ok
+test event::tests::structured_event_logging_json_contains_redacted_token_id ... ok
+test event::tests::structured_event_logging_json_contains_provider ... ok
+test event::tests::structured_event_logging_json_contains_timestamp ... ok
+test event::tests::structured_event_logging_json_contains_type ... ok
+test event::tests::structured_event_logging_json_duration_null_when_absent ... ok
+test event::tests::structured_event_logging_json_error_with_quotes ... ok
+test event::tests::structured_event_logging_json_is_single_line ... ok
+test event::tests::structured_event_logging_json_token_id_null_when_absent ... ok
+test event::tests::structured_event_logging_json_is_valid_json ... ok
+test event::tests::structured_event_logging_json_never_contains_raw_secret ... ok
+test event::tests::structured_event_logging_log_format_json ... ok
+test event::tests::structured_event_logging_large_duration_does_not_panic ... ok
+test event::tests::structured_event_logging_log_format_parse_is_case_sensitive ... ok
+test event::tests::structured_event_logging_log_format_text ... ok
+test event::tests::structured_event_logging_log_format_unknown_returns_none ... ok
+test event::tests::structured_event_logging_mint_fail_event ... ok
+test event::tests::structured_event_logging_mint_start_event ... ok
+test event::tests::structured_event_logging_mint_success_event ... ok
+test event::tests::structured_event_logging_refresh_fail_event ... ok
+test event::tests::structured_event_logging_refresh_start_event ... ok
+test event::tests::structured_event_logging_negative_exit_code ... ok
+test event::tests::structured_event_logging_refresh_success_event ... ok
+test event::tests::structured_event_logging_revoke_fail_event ... ok
+test event::tests::structured_event_logging_revoke_start_event ... ok
+test event::tests::structured_event_logging_revoke_success_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_event ... ok
+test event::tests::structured_event_logging_signal_received_event ... ok
+test event::tests::structured_event_logging_text_format_escapes_quotes_in_error ... ok
+test event::tests::structured_event_logging_signal_received_includes_signal ... ok
+test event::tests::structured_event_logging_signal_forwarded_includes_signal ... ok
+test event::tests::structured_event_logging_timestamp_is_current ... ok
+test exit_code::tests::exit_129_is_signal_1_sighup ... ok
+test event::tests::structured_event_logging_zero_duration ... ok
+test event::tests::structured_event_logging_token_id_is_redacted_not_raw ... ok
+test exit_code::tests::exit_255_is_signal_127 ... ok
+test exit_code::tests::exit_exactly_128_is_not_signal_terminated ... ok
+test exit_code::tests::multi_provider_report_can_filter_retryable_failures ... ok
+test exit_code::tests::known_provider_exit_codes_interpreted_directly ... ok
+test exit_code::tests::multi_provider_report_collects_all_failures ... ok
+test event::tests::structured_event_logging_empty_provider_name ... ok
+test exit_code::tests::multi_provider_report_empty_has_zero_failures ... ok
+test exit_code::tests::multi_provider_report_failures_are_accessible ... ok
+test exit_code::tests::multi_provider_report_format_stderr_empty_when_no_failures ... ok
+test exit_code::tests::multi_provider_report_stderr_includes_exit_code_per_provider ... ok
+test exit_code::tests::multi_provider_report_exit_code_is_65_mint_failure ... ok
+test exit_code::tests::multi_provider_report_first_failure_not_shadowed ... ok
+test exit_code::tests::multi_provider_report_stderr_contains_all_providers_in_order ... ok
+test exit_code::tests::multi_provider_report_successes_are_accessible ... ok
+test exit_code::tests::negative_exit_code_maps_to_general_error_no_signal ... ok
+test exit_code::tests::noscope_exit_code_child_exit_passes_through_any_value ... ok
+test exit_code::tests::multi_provider_report_tracks_successes_too ... ok
+test exit_code::tests::multi_provider_report_with_no_failures_returns_success_not_child_exit ... ok
+test exit_code::tests::non_signal_stderr_message_shows_provider_exit_code ... ok
+test exit_code::tests::noscope_exit_code_child_exit_preserves_child_code ... ok
+test exit_code::tests::noscope_exit_code_config_error_is_78 ... ok
+test exit_code::tests::noscope_exit_code_display_child_exit_mentions_child ... ok
+test exit_code::tests::noscope_exit_code_display_success_mentions_success ... ok
+test exit_code::tests::noscope_exit_code_child_exit_zero_is_success ... ok
+test exit_code::tests::noscope_exit_code_config_not_found_is_66 ... ok
+test exit_code::tests::noscope_exit_code_display_includes_meaning ... ok
+test exit_code::tests::noscope_exit_code_internal_is_70 ... ok
+test exit_code::tests::noscope_exit_code_permission_is_77 ... ok
+test exit_code::tests::noscope_exit_code_unavailable_is_69 ... ok
+test exit_code::tests::noscope_exit_code_usage_is_64 ... ok
+test exit_code::tests::noscope_success_is_semantically_distinct_from_child_exit_zero ... ok
+test exit_code::tests::noscope_exit_code_mint_failure_is_65 ... ok
+test exit_code::tests::noscope_exit_code_success_is_zero ... ok
+test exit_code::tests::provider_exit_code_auth_failure_is_two ... ok
+test exit_code::tests::provider_exit_code_from_raw_returns_none_for_unknown ... ok
+test exit_code::tests::provider_exit_code_general_error_is_one ... ok
+test exit_code::tests::provider_exit_code_display_includes_code_number_and_meaning ... ok
+test exit_code::tests::provider_exit_code_from_raw_roundtrips_all_known_codes ... ok
+test exit_code::tests::provider_exit_code_non_zero_are_errors ... ok
+test exit_code::tests::provider_exit_code_success_is_not_error ... ok
+test exit_code::tests::provider_exit_code_unavailable_is_four ... ok
+test exit_code::tests::provider_exit_code_role_not_found_is_three ... ok
+test exit_code::tests::provider_exit_code_success_is_zero ... ok
+test exit_code::tests::provider_exit_result_implements_display ... ok
+test exit_code::tests::signal_terminated_provider_maps_to_general_error ... ok
+test exit_code::tests::provider_exit_result_is_eq_comparable ... ok
+test exit_code::tests::signal_terminated_provider_includes_signal_number ... ok
+test exit_code::tests::signal_terminated_provider_stderr_message_contains_signal ... ok
+test exit_code::tests::unknown_non_signal_exit_code_maps_to_general_error ... ok
+test provider::tests::config_file_permission_enforcement_allows_0600 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0400 ... ok
+test exit_code::tests::noscope_exit_codes_do_not_overlap_with_provider_codes ... ok
+test provider::tests::config_file_permission_enforcement_allows_0640 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0604 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0666 ... ok
+test provider::tests::config_precedence_flags_without_mint_cmd_still_wins ... ok
+test provider::tests::config_xdg_custom_overrides_default ... ok
+test provider::tests::config_xdg_defaults_to_home_dot_config ... ok
+test provider::tests::dry_run_mode_produces_output ... ok
+test provider::tests::config_file_permission_enforcement_rejects_world_readable ... ok
+test provider::tests::dry_run_mode_shows_config_source ... ok
+test provider::tests::dry_run_mode_shows_mint_command ... ok
+test provider::tests::dry_run_mode_shows_role_and_ttl ... ok
+test provider::tests::insecure_permissions_display_contains_path_and_mode ... ok
+test provider::tests::load_provider_file_rejects_insecure_file ... ok
+test provider::tests::malformed_config_empty_mint_cmd_is_error ... ok
+test provider::tests::config_follows_xdg_base_directory ... ok
+test provider::tests::config_source_eq_works ... ok
+test provider::tests::malformed_config_is_hard_error_syntax ... ok
+test provider::tests::malformed_config_is_hard_error_missing_required_field ... ok
+test provider::tests::malformed_config_missing_file_is_not_error ... ok
+test provider::tests::load_provider_file_reads_secure_file ... ok
+test provider::tests::provider_not_found_display_contains_provider_name ... ok
+test provider::tests::provider_not_found_enumerates_checked_locations ... ok
+test provider::tests::parse_provider_toml_rejects_non_string_mint ... ok
+test provider::tests::parse_provider_toml_valid_with_all_commands ... ok
+test provider::tests::provider_not_found_message_is_user_actionable ... ok
+test provider::tests::strict_config_precedence_no_merging_across_layers ... ok
+test provider::tests::strict_config_precedence_env_wins_over_file ... ok
+test provider::tests::strict_config_precedence_file_used_when_no_flags_or_env ... ok
+test provider::tests::strict_config_precedence_flags_win_over_env ... ok
+test provider::tests::validate_provider_checks_mint_cmd_exists ... ok
+test provider::tests::validate_provider_checks_mint_cmd_is_executable ... ok
+test provider::tests::validate_provider_checks_revoke_cmd_if_present ... ok
+test provider::tests::validate_provider_does_not_execute_mint_cmd ... ok
+test provider::tests::validate_provider_succeeds_for_valid_config ... ok
+test provider::tests::validate_provider_checks_refresh_cmd_if_present ... ok
+test redaction::tests::debug_format_looks_like_debug_output ... ok
+test provider::tests::validation_failed_display_lists_all_problems ... ok
+test redaction::tests::debug_format_shows_redacted_form_not_raw ... ok
+test redaction::tests::debug_never_shows_full_token_value ... ok
+test redaction::tests::display_of_empty_token_does_not_panic ... ok
+test redaction::tests::jwt_token_never_shows_prefix_chars ... ok
+test redaction::tests::different_tokens_produce_different_hash_ids ... ok
+test redaction::tests::display_never_shows_full_token_value ... ok
+test redaction::tests::mixed_ascii_multibyte_token_takes_8_chars ... ok
+test redaction::tests::jwt_token_with_provider_id_uses_provider_id ... ok
+test redaction::tests::long_token_shows_first_8_chars_with_ellipsis ... ok
+test redaction::tests::redaction_cannot_be_bypassed_by_alternate_format ... ok
+test redaction::tests::multibyte_utf8_token_does_not_panic ... ok
+test redaction::tests::same_token_always_produces_same_hash_id ... ok
+test redaction::tests::short_token_with_provider_id_uses_that_id ... ok
+test redaction::tests::short_token_without_id_uses_hash_based_id ... ok
+test redaction::tests::token_exactly_16_chars_uses_redacted_format ... ok
+test refresh::tests::continuous_refresh_after_failure_not_permanently_disabled ... ok
+test refresh::tests::continuous_refresh_after_failure_reset_after_success ... ok
+test refresh::tests::refresh_failure_independence_separate_trackers ... ok
+test redaction::tests::token_exactly_17_chars_shows_prefix ... ok
+test refresh::tests::refresh_failure_independence_success_resets_own_tracker ... ok
+test refresh::tests::refresh_failure_independence_tracker_knows_its_credential ... ok
+test refresh::tests::refresh_failure_preserves_child_allows_token_until_expiry ... ok
+test refresh::tests::refresh_failure_preserves_child_logs_warning ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_retry ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_not_kill ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_environment ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_env_var_point_in_time ... ok
+test refresh::tests::refresh_retry_parameters_base_delay_is_one_second ... ok
+test refresh::tests::refresh_limitation_documentation_startup_warning ... ok
+test refresh::tests::refresh_retry_parameters_jitter_range_is_25_percent ... ok
+test refresh::tests::refresh_retry_parameters_delay_grows_exponentially ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_attempt_2_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_large_attempt_does_not_panic ... ok
+test refresh::tests::refresh_retry_parameters_max_retries_is_four ... ok
+test refresh::tests::refresh_retry_parameters_multiplier_is_two ... ok
+test refresh::tests::refresh_retry_parameters_no_retry_when_remaining_lifetime_zero ... ok
+test refresh::tests::refresh_retry_parameters_total_window_within_50_percent_remaining ... ok
+test refresh::tests::refresh_retry_parameters_truncates_retries_when_lifetime_short ... ok
+test refresh::tests::refresh_tracker_failure_count_saturates_instead_of_wrapping ... ok
+test security::tests::disable_core_dumps_sets_rlimit_to_zero ... ok
+test security::tests::allows_args_without_token_values ... ok
+test security::tests::disable_core_dumps_succeeds_on_linux ... ok
+test security::tests::empty_known_tokens_always_valid ... ok
+test security::tests::empty_args_always_valid ... ok
+test security::tests::error_message_does_not_contain_token_value ... ok
+test security::tests::rejects_args_containing_known_token_value ... ok
+test token::tests::redacted_value_returns_reference_not_new_computation ... ok
+test security::tests::rejects_token_as_substring_in_arg ... ok
+test token::tests::scoped_token_constructor_takes_secret_string_directly ... ok
+test token::tests::scoped_token_debug_does_not_expose_secret ... ok
+test token::tests::scoped_token_debug_shows_non_secret_fields ... ok
+test refresh::tests::continuous_refresh_after_failure_new_window_after_expiry ... ok
+test refresh::tests::refresh_failure_preserves_child_never_kills_at_any_attempt ... ok
+test token::tests::scoped_token_expose_secret_returns_value ... ok
+test token::tests::scoped_token_display_does_not_expose_secret ... ok
+test token::tests::scoped_token_exposes_metadata_but_not_value ... ok
+test token::tests::scoped_token_is_not_serializable ... ok
+test token::tests::scoped_token_is_send ... ok
+test token::tests::scoped_token_is_sync ... ok
+test token::tests::scoped_token_is_not_clone ... ok
+test token::tests::scoped_token_requires_expires_at ... ok
+test token::tests::string_zeroize_actually_clears_data ... ok
+
+test result: ok. 198 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   Doc-tests noscope
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.51s
+[0m
+198 tests pass, zero clippy warnings. Phase 5 complete.
+[0m# [0mTodos
+[x] Phase 1: Understand - Read codebase (src/lib.rs + all modules)
+[x] Phase 1: Understand NS-070 rule requirements
+[x] Phase 2: TDD Red - Write failing tests for NS-070 (structured event logging)
+[x] Phase 2: TDD Red - Verify all tests fail
+[x] Phase 3: TDD Green - Write minimal production code
+[x] Phase 3: TDD Green - cargo test + cargo clippy pass
+[x] Phase 4: Refactor - Clean up code
+[x] Phase 5: Linus Torvalds review + fix issues
+[ ] Phase 6: Commit with proper message
+[0m
+Now Phase 6: write the provenance draft and commit. First, the provenance draft:
+[0m$ [0mls /home/ben/Documents/repos/noscope/.beads/provenance-drafts/ 2>/dev/null || mkdir -p /home/ben/Documents/repos/noscope/.beads/provenance-drafts/
+noscope-4mw.md
+noscope-ia2.md
+[0m
+[0m← [0mWrite .beads/provenance-drafts/noscope-4of.md
+Wrote file successfully.
+[0m
+Now let me stage and commit:
+[0m$ [0mgit status
+On branch main
+Your branch is up to date with 'origin/main'.
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   Cargo.lock
+	modified:   Cargo.toml
+	modified:   src/lib.rs
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.beads/provenance-drafts/noscope-4mw.md
+	.beads/provenance-drafts/noscope-4of.md
+	.beads/session-logs/
+	README.md
+	src/event.rs
+
+no changes added to commit (use "git add" and/or "git commit -a")
+[0m
+[0m$ [0mgit log -3 --format="%h %s"
+a91454e feat: refresh failure policy module (noscope-ia2)
+f65bcb0 feat: provider discovery and configuration module (noscope-4mw)
+6e09983 feat: add drain-beads.sh automation script
+[0m
+[0m$ [0mgit add Cargo.toml Cargo.lock src/lib.rs src/event.rs .beads/provenance-drafts/noscope-4of.md && git commit -m "feat: structured event logging module (noscope-4of)
+
+Implement NS-070: structured event logging for noscope.
+
+New module src/event.rs provides:
+- EventType enum: 13 event types covering mint/refresh/revoke
+  start/success/fail, child spawn/exit, signal received/forwarded
+- Event struct: timestamp, type, provider, redacted token ID, duration,
+  exit code, signal, error message
+- JSON-per-line serialization via to_json() for --log-format json
+- LogFormat enum + EventEmitter for format-dispatched rendering
+- Text format with proper quote escaping in error messages
+
+Design: Event does not derive Serialize — internal SerializableEvent<'a>
+borrows from Event, keeping serde out of the public API. token_id field
+holds only redacted identifiers, never raw token values.
+
+Added serde + serde_json as production dependencies for JSON output.
+
+46 tests covering all event types, JSON field correctness, format
+selection, security invariants, and edge cases from review."
+[main 27eec9b] feat: structured event logging module (noscope-4of)
+ 5 files changed, 869 insertions(+), 1 deletion(-)
+ create mode 100644 .beads/provenance-drafts/noscope-4of.md
+ create mode 100644 src/event.rs
+[0m
+[0m$ [0mgit status
+On branch main
+Your branch is ahead of 'origin/main' by 1 commit.
+  (use "git push" to publish your local commits)
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.beads/provenance-drafts/noscope-4mw.md
+	.beads/session-logs/
+	README.md
+
+nothing added to commit but untracked files present (use "git add" to track)
+[0m
+Now close the bead:
+[0m$ [0mbd close noscope-4of --reason "Implemented NS-070: structured event logging module with 46 tests. Event/EventType/LogFormat/EventEmitter types in src/event.rs. JSON-per-line format for stderr. All tests pass, zero clippy warnings." --json 2>/dev/null || echo "bd close attempted"
+[
+  {
+    "id": "noscope-4of",
+    "title": "Threat model documentation",
+    "description": "Provenance REQ: jn780pzjkgn2dq9geb9mqq7b4h83vcb9\n\nMust distinguish run mode (three safety layers: process groups + revoke-on-exit + TTL) from mint mode (one layer: TTL). Must acknowledge /proc/*/environ risks, credential logging via env vars, fork inheritance to grandchildren, and the SIGKILL gap honestly. Must not claim simplicity equals security.\n\nRules:\n- NS-070: Structured event logging — emit structured events to stderr (JSON-per-line with --log-format json) for: mint/refresh/revoke start/success/fail, child spawn/exit, signal received/forwarded; each event includes timestamp, type, provider, redacted token ID, duration\n\nProvenance stats: 0 resolutions, 1 rule",
+    "status": "closed",
+    "priority": 2,
+    "issue_type": "task",
+    "assignee": "Ben Nasraoui",
+    "owner": "nasraouiprojects@gmail.com",
+    "created_at": "2026-03-29T13:43:30Z",
+    "created_by": "Ben Nasraoui",
+    "updated_at": "2026-03-29T15:21:45Z",
+    "closed_at": "2026-03-29T15:21:45Z",
+    "close_reason": "Implemented NS-070: structured event logging module with 46 tests. Event/EventType/LogFormat/EventEmitter types in src/event.rs. JSON-per-line format for stderr. All tests pass, zero clippy warnings."
+  }
+]
+[0m
+[0m# [0mTodos
+[x] Phase 1: Understand - Read codebase (src/lib.rs + all modules)
+[x] Phase 1: Understand NS-070 rule requirements
+[x] Phase 2: TDD Red - Write failing tests for NS-070 (structured event logging)
+[x] Phase 2: TDD Red - Verify all tests fail
+[x] Phase 3: TDD Green - Write minimal production code
+[x] Phase 3: TDD Green - cargo test + cargo clippy pass
+[x] Phase 4: Refactor - Clean up code
+[x] Phase 5: Linus Torvalds review + fix issues
+[x] Phase 6: Commit with proper message
+[0m
+Bead `noscope-4of` is complete. Here's the summary:
+
+## Implementation Summary
+
+**Rule covered**: NS-070 (Structured event logging)
+
+**New file**: `src/event.rs` — 4 public types:
+
+| Type | Purpose |
+|------|---------|
+| `EventType` | 13-variant enum: mint/refresh/revoke start/success/fail, child spawn/exit, signal received/forwarded |
+| `Event` | Structured event with timestamp, type, provider, redacted token ID, duration, exit code, signal, error |
+| `LogFormat` | `Json` / `Text` selector for `--log-format` flag |
+| `EventEmitter` | Format-dispatched renderer (JSON-per-line or human-readable text) |
+
+**Key design decisions**:
+- `Event` does NOT derive `Serialize` — internal `SerializableEvent<'a>` borrows from it, keeping serde off the public API
+- `token_id` stores only the redacted form, never raw token values
+- JSON output is single-line (compact) per JSON-per-line convention
+- Text format escapes embedded quotes in error messages
+
+**Dependencies added**: `serde`, `serde_json` (production); `chrono` gains `serde` feature
+
+**Tests**: 46 total — 198 across the entire crate, all passing. Zero clippy warnings.
+
+**Commit**: `27eec9b feat: structured event logging module (noscope-4of)` — not pushed per instructions.

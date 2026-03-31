@@ -7,3 +7,7 @@
 # Added by cargo
 
 /target
+
+# Statesman
+.statesman/
+statesman.local.toml

@@ -1,0 +1,68 @@
+You are implementing bead noscope-cg8.5: "Consolidate provider config and capability parsing"
+
+## Bead Details
+
+Reduce duplication and drift risk in provider configuration by unifying config model ownership and parsing paths.\n\nCurrent pain points:\n- Parallel config structs for flags/env/file with overlapping fields\n- Capability parsing logic separated from provider config parsing\n- Repeated path-resolution patterns across modules\n\nAcceptance:\n- Single authoritative provider config domain model\n- Capability declarations validated in one owned parsing flow\n- Clear precedence + validation pipeline with typed intermediate states
+
+## Your Workflow
+
+You MUST follow this workflow exactly. Do not skip steps.
+
+### Phase 1: Understand
+1. Read the existing codebase: src/lib.rs and all modules in src/ to understand patterns.
+2. Read .agents/skills/statesman-provenance/SKILL.md if you need provenance CLI reference.
+3. Understand every rule listed in the bead description. Each rule is a hard requirement.
+
+### Phase 2: TDD — Red
+4. Create a new module (or extend existing) with ONLY tests. No production code yet.
+5. Write tests for EVERY rule. Name tests after the rule (e.g., test for NS-042 named
+   `config_follows_xdg_base_directory`). Each rule must have at least one test.
+6. Run `cargo test` and verify ALL tests fail. If any test passes, it's testing
+   existing behavior — rewrite it.
+
+### Phase 3: TDD — Green
+7. Write the MINIMAL production code to make all tests pass.
+8. Run `cargo test` — all tests must pass.
+9. Run `cargo clippy` — zero warnings.
+
+### Phase 4: TDD — Refactor
+10. Clean up: improve names, extract helpers, remove duplication.
+11. Run `cargo test && cargo clippy` — still clean.
+
+### Phase 5: Linus Torvalds Review
+12. Review your own code AS IF you are Linus Torvalds reading it on LKML.
+    Be brutal: check for API design mistakes, missing edge cases, naming problems,
+    over-engineering, write-only data structures, missing trait impls, semantic lies
+    in type names. Write the review to yourself.
+13. Fix every legitimate issue from the review. Add tests for missing edge cases.
+14. Run `cargo test && cargo clippy` again.
+
+### Phase 6: Commit
+15. Stage and commit with message format:
+    feat: <short description> (<bead_id>)
+
+    <body explaining what was implemented and which rules are covered>
+16. Do NOT push.
+
+
+## Statesman Provenance (OFFLINE)
+
+statesman is not reachable. For any provenance updates (new rules, resolutions,
+thread messages), write them to: /home/ben/Documents/repos/noscope/.beads/provenance-drafts/noscope-cg8.5.md
+Use this format:
+  # Provenance Draft: noscope-cg8.5
+  ## Thread Message (for requirement )
+  <your message>
+  ## New Artifacts (if any)
+  - type: rule/resolution/requirement
+    content: ...
+
+
+## Rules
+
+- Follow the test-driven-development skill STRICTLY. No production code before failing tests.
+- Every NS-xxx rule in the bead MUST have at least one dedicated test.
+- Match existing code patterns (see token.rs, security.rs, redaction.rs for style).
+- Use `cp -f`, `mv -f`, `rm -f` for file operations (non-interactive shell).
+- Do NOT run benchmarks.
+- If you get stuck on a rule, create a bd issue: `bd create "Blocked on NS-xxx" --deps discovered-from:noscope-cg8.5`

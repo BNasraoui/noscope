@@ -180,7 +180,7 @@ log "Dry run: ${DRY_RUN} | Max beads: ${MAX_BEADS:-unlimited} | Skip epics: ${SK
 pick_next_bead() {
   local json="$1"
   local skip_ids="$2"  # comma-separated ids to skip (for dry-run)
-  for priority in 1 2 3 4; do
+  for priority in 0 1 2 3 4; do
     local filter
     if [[ "$SKIP_EPICS" == "true" ]]; then
       filter=".priority == ${priority} and .issue_type != \"epic\""

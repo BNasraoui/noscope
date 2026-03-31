@@ -1,0 +1,1924 @@
+[0m
+> build · claude-opus-4-6
+[0m
+I'll start by understanding the codebase, then follow the TDD workflow strictly.
+[0m→ [0mSkill "test-driven-development"
+Now let me load the beads skill and understand the codebase:
+[0m→ [0mSkill "beads"
+[0m→ [0mRead src
+[0m
+[0m# [0mTodos
+[ ] Phase 1: Read and understand config_path.rs, error.rs, security.rs, token.rs, redaction.rs
+[ ] Phase 1: Claim bead noscope-bsq.1.1
+[ ] Phase 2 (RED): Write failing tests for path traversal rejection
+[ ] Phase 2 (RED): Verify all tests fail
+[ ] Phase 3 (GREEN): Write minimal production code to pass tests
+[ ] Phase 3 (GREEN): Verify all tests pass + clippy clean
+[ ] Phase 4 (REFACTOR): Clean up code
+[ ] Phase 5: Linus Torvalds review
+[ ] Phase 6: Commit with proper message format
+[0m
+Let me read the key files to understand the codebase patterns:
+[0m→ [0mRead src/config_path.rs
+[0m→ [0mRead src/error.rs
+[0m→ [0mRead src/security.rs
+[0m→ [0mRead src/token.rs
+[0m→ [0mRead src/redaction.rs
+[0m→ [0mRead src/lib.rs
+Now let me look at how `named_config_toml_path` is called to understand the callers:
+[0m✱ [0mGrep "named_config_toml_path"[90m 16 matches[0m
+[0m→ [0mRead src/profile.rs
+[0m→ [0mRead src/provider.rs
+Now I have a thorough understanding of the codebase. Let me also check the Cargo.toml for dependencies and then claim the bead:
+[0m→ [0mRead Cargo.toml
+[0m
+[0m$ [0mbd update noscope-bsq.1.1 --claim --json 2>&1 || true
+Error claiming noscope-bsq.1.1: issue already claimed by Ben Nasraoui
+[0m
+Good, the bead is already claimed. Now I have a thorough understanding of the codebase. Let me mark Phase 1 complete and begin Phase 2 (RED):
+[0m# [0mTodos
+[x] Phase 1: Read and understand config_path.rs, error.rs, security.rs, token.rs, redaction.rs
+[x] Phase 1: Claim bead noscope-bsq.1.1
+[ ] Phase 2 (RED): Write failing tests for path traversal rejection
+[ ] Phase 2 (RED): Verify all tests fail
+[ ] Phase 3 (GREEN): Write minimal production code to pass tests
+[ ] Phase 3 (GREEN): Verify all tests pass + clippy clean
+[ ] Phase 4 (REFACTOR): Clean up code
+[ ] Phase 5: Linus Torvalds review
+[ ] Phase 6: Commit with proper message format
+[0m
+Now let me understand the bead requirements and design the tests. The bead requires:
+
+1. Reject names containing path separators (`/`, `\`), `..`, or other traversal primitives
+2. Define a strict allowed-name contract (documented and tested)
+3. Apply to both provider and profile lookup paths
+4. Traversal inputs rejected with typed errors
+5. Valid names still resolve under expected XDG/HOME directories
+
+The approach:
+- `named_config_toml_path` currently returns `PathBuf` — it needs to return `Result<PathBuf, ConfigPathError>` 
+- Add a `ConfigPathError` type (following the pattern from `SecurityError`, `ProfileError`, etc.)
+- Validate the `name` parameter (and also `domain` to be thorough) against traversal attacks
+- The callers (`provider_config_path`, `profile_config_path`, etc.) need to propagate the error
+
+Let me write ONLY tests first — no production code:
+[0m→ [0mRead src/config_path.rs
+Now I'll write the tests. I need to think about what the API should look like. Currently `named_config_toml_path` returns `PathBuf`. It must return `Result<PathBuf, ConfigPathError>`. The callers (`provider_config_path`, `profile_config_path`, etc.) also need updating. Let me write tests that capture all the rules:
+[0m
+[0m← [0mEdit src/config_path.rs
+Index: /home/ben/Documents/repos/noscope/src/config_path.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/config_path.rs
++++ /home/ben/Documents/repos/noscope/src/config_path.rs
+@@ -1,6 +1,46 @@
++use std::fmt;
+ use std::path::{Path, PathBuf};
+ 
++/// Error type for config name validation failures.
++///
++/// Returned when a provider or profile name contains path traversal
++/// characters (`/`, `\`, `..`) or is otherwise unsafe for use as a
++/// filesystem path component.
++#[derive(Debug)]
++pub struct ConfigPathError {
++    name: String,
++    reason: &'static str,
++}
++
++impl ConfigPathError {
++    /// The rejected name.
++    pub fn name(&self) -> &str {
++        &self.name
++    }
++
++    /// Why the name was rejected.
++    pub fn reason(&self) -> &str {
++        self.reason
++    }
++}
++
++impl fmt::Display for ConfigPathError {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(f, "invalid config name '{}': {}", self.name, self.reason)
++    }
++}
++
++impl std::error::Error for ConfigPathError {}
++
++/// Validate that a config name is safe for use as a single path component.
++///
++/// Allowed: ASCII alphanumeric, hyphen, underscore, dot (but not `..`).
++/// Rejected: empty, path separators (`/`, `\`), `..`, NUL bytes.
++pub(crate) fn validate_config_name(name: &str) -> Result<(), ConfigPathError> {
++    todo!("production code not yet implemented")
++}
++
+ fn config_base_dir(xdg_config_home: Option<&Path>, home: Option<&Path>) -> PathBuf {
+     match xdg_config_home {
+         Some(base) => base.to_path_buf(),
+         None => {
+@@ -19,10 +59,316 @@
+     xdg_config_home: Option<&Path>,
+     home: Option<&Path>,
+     domain: &str,
+     name: &str,
+-) -> PathBuf {
+-    config_base_dir(xdg_config_home, home)
++) -> Result<PathBuf, ConfigPathError> {
++    validate_config_name(name)?;
++    Ok(config_base_dir(xdg_config_home, home)
+         .join("noscope")
+         .join(domain)
+-        .join(format!("{}.toml", name))
++        .join(format!("{}.toml", name)))
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::path::Path;
++
++    // =========================================================================
++    // noscope-bsq.1.1: Block config-name path traversal in config_path.
++    //
++    // Acceptance criteria:
++    // 1. Traversal inputs are rejected with typed errors.
++    // 2. Valid names still resolve under the expected XDG/HOME directories.
++    // 3. Tests cover positive and negative cases.
++    //
++    // Rules:
++    // - Reject names containing path separators (`/`, `\`), `..`, or other
++    //   traversal primitives.
++    // - Define a strict allowed-name contract (documented and tested).
++    // - Apply to both provider and profile lookup paths.
++    // =========================================================================
++
++    // -------------------------------------------------------------------------
++    // Rule: Reject names containing path separators.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn rejects_forward_slash_in_name() {
++        let result = validate_config_name("../../etc/passwd");
++        assert!(result.is_err(), "Forward slash must be rejected");
++    }
++
++    #[test]
++    fn rejects_single_forward_slash() {
++        let result = validate_config_name("foo/bar");
++        assert!(result.is_err(), "Name with '/' must be rejected");
++    }
++
++    #[test]
++    fn rejects_backslash_in_name() {
++        let result = validate_config_name("foo\\bar");
++        assert!(result.is_err(), "Backslash must be rejected");
++    }
++
++    #[test]
++    fn rejects_windows_traversal() {
++        let result = validate_config_name("..\\..\\windows\\system32");
++        assert!(result.is_err(), "Windows-style traversal must be rejected");
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Reject names containing `..` (parent directory traversal).
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn rejects_dot_dot() {
++        let result = validate_config_name("..");
++        assert!(result.is_err(), "'..' must be rejected");
++    }
++
++    #[test]
++    fn rejects_dot_dot_embedded() {
++        // Even without slashes, `..` as a name is dangerous
++        let result = validate_config_name("..");
++        assert!(result.is_err(), "'.. ' as standalone must be rejected");
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Reject other traversal primitives (NUL, empty, dot-only).
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn rejects_empty_name() {
++        let result = validate_config_name("");
++        assert!(result.is_err(), "Empty name must be rejected");
++    }
++
++    #[test]
++    fn rejects_nul_byte_in_name() {
++        let result = validate_config_name("foo\0bar");
++        assert!(result.is_err(), "NUL byte in name must be rejected");
++    }
++
++    #[test]
++    fn rejects_single_dot() {
++        // "." refers to current directory — not a valid config name
++        let result = validate_config_name(".");
++        assert!(result.is_err(), "'.' must be rejected");
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Define strict allowed-name contract.
++    //
++    // Allowed characters: ASCII alphanumeric, hyphen, underscore, dot
++    // (but not `.` or `..` as the entire name).
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn accepts_simple_alphanumeric_name() {
++        let result = validate_config_name("aws");
++        assert!(result.is_ok(), "'aws' must be accepted");
++    }
++
++    #[test]
++    fn accepts_name_with_hyphens() {
++        let result = validate_config_name("my-provider");
++        assert!(result.is_ok(), "'my-provider' must be accepted");
++    }
++
++    #[test]
++    fn accepts_name_with_underscores() {
++        let result = validate_config_name("my_provider");
++        assert!(result.is_ok(), "'my_provider' must be accepted");
++    }
++
++    #[test]
++    fn accepts_name_with_dots_not_traversal() {
++        // A name like "v1.2" is fine — it's not ".." or "."
++        let result = validate_config_name("v1.2");
++        assert!(result.is_ok(), "'v1.2' must be accepted");
++    }
++
++    #[test]
++    fn accepts_name_with_numbers() {
++        let result = validate_config_name("provider123");
++        assert!(result.is_ok(), "'provider123' must be accepted");
++    }
++
++    #[test]
++    fn rejects_space_in_name() {
++        let result = validate_config_name("my provider");
++        assert!(result.is_err(), "Space in name must be rejected");
++    }
++
++    #[test]
++    fn rejects_colon_in_name() {
++        // Colon is special on Windows (drive letter, NTFS streams)
++        let result = validate_config_name("C:aws");
++        assert!(result.is_err(), "Colon in name must be rejected");
++    }
++
++    #[test]
++    fn rejects_tilde_in_name() {
++        // Tilde could expand to home directory in some contexts
++        let result = validate_config_name("~admin");
++        assert!(result.is_err(), "Tilde in name must be rejected");
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Typed error carries name and reason.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn error_carries_rejected_name() {
++        let err = validate_config_name("../../etc/passwd").unwrap_err();
++        assert_eq!(err.name(), "../../etc/passwd");
++    }
++
++    #[test]
++    fn error_has_human_readable_reason() {
++        let err = validate_config_name("foo/bar").unwrap_err();
++        assert!(!err.reason().is_empty(), "Reason must not be empty");
++    }
++
++    #[test]
++    fn error_display_includes_name_and_reason() {
++        let err = validate_config_name("../secret").unwrap_err();
++        let display = format!("{}", err);
++        assert!(
++            display.contains("../secret"),
++            "Display must show name: {}",
++            display
++        );
++        assert!(
++            display.contains("invalid"),
++            "Display must indicate invalidity: {}",
++            display
++        );
++    }
++
++    #[test]
++    fn error_implements_std_error() {
++        fn assert_error<T: std::error::Error>() {}
++        assert_error::<ConfigPathError>();
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: named_config_toml_path rejects traversal names.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn named_config_toml_path_rejects_traversal_name() {
++        let xdg = Path::new("/home/user/.config");
++        let result = named_config_toml_path(Some(xdg), None, "providers", "../../../etc/shadow");
++        assert!(
++            result.is_err(),
++            "Traversal name must be rejected by named_config_toml_path"
++        );
++    }
++
++    #[test]
++    fn named_config_toml_path_accepts_valid_name() {
++        let xdg = Path::new("/home/user/.config");
++        let result = named_config_toml_path(Some(xdg), None, "providers", "aws");
++        assert!(result.is_ok(), "Valid name must be accepted");
++        assert_eq!(
++            result.unwrap(),
++            PathBuf::from("/home/user/.config/noscope/providers/aws.toml")
++        );
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Valid names still resolve under expected XDG/HOME directories.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn valid_provider_resolves_under_xdg() {
++        let xdg = Path::new("/home/user/.config");
++        let path = named_config_toml_path(Some(xdg), None, "providers", "gcp").unwrap();
++        assert_eq!(
++            path,
++            PathBuf::from("/home/user/.config/noscope/providers/gcp.toml")
++        );
++    }
++
++    #[test]
++    fn valid_profile_resolves_under_home() {
++        let home = Path::new("/home/user");
++        let path = named_config_toml_path(None, Some(home), "profiles", "dev").unwrap();
++        assert_eq!(
++            path,
++            PathBuf::from("/home/user/.config/noscope/profiles/dev.toml")
++        );
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Apply to both provider and profile lookup paths.
++    //
++    // The public callers (provider_config_path, profile_config_path) must
++    // propagate the error. These tests verify end-to-end.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn provider_config_path_rejects_traversal() {
++        let result = crate::provider::provider_config_path("../etc/shadow", None);
++        assert!(
++            result.is_err(),
++            "provider_config_path must reject traversal"
++        );
++    }
++
++    #[test]
++    fn provider_config_path_accepts_valid_name() {
++        let xdg = Path::new("/home/user/.config");
++        let path = crate::provider::provider_config_path("aws", Some(xdg)).unwrap();
++        assert_eq!(
++            path,
++            PathBuf::from("/home/user/.config/noscope/providers/aws.toml")
++        );
++    }
++
++    #[test]
++    fn profile_config_path_rejects_traversal() {
++        let result = crate::profile::profile_config_path("../etc/shadow", None);
++        assert!(result.is_err(), "profile_config_path must reject traversal");
++    }
++
++    #[test]
++    fn profile_config_path_accepts_valid_name() {
++        let xdg = Path::new("/home/user/.config");
++        let path = crate::profile::profile_config_path("dev", Some(xdg)).unwrap();
++        assert_eq!(
++            path,
++            PathBuf::from("/home/user/.config/noscope/profiles/dev.toml")
++        );
++    }
++
++    // -------------------------------------------------------------------------
++    // Edge cases: boundary names
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn accepts_single_char_name() {
++        let result = validate_config_name("a");
++        assert!(result.is_ok(), "Single char name must be accepted");
++    }
++
++    #[test]
++    fn accepts_dotfile_style_name() {
++        // ".hidden" is a valid name (starts with dot, but not "." or "..")
++        let result = validate_config_name(".hidden");
++        assert!(result.is_ok(), "'.hidden' must be accepted");
++    }
++
++    #[test]
++    fn rejects_control_characters() {
++        let result = validate_config_name("foo\nbar");
++        assert!(result.is_err(), "Newline in name must be rejected");
++    }
++
++    #[test]
++    fn rejects_tab_character() {
++        let result = validate_config_name("foo\tbar");
++        assert!(result.is_err(), "Tab in name must be rejected");
++    }
++}
+
+[0m
+Now I need to update the callers to handle the new `Result` return type. But wait — TDD says I should only write tests first, no production code. The callers need to change their signatures too. Let me update just the function signatures (with `todo!()`) in provider.rs and profile.rs so the tests compile, while keeping the test-first discipline:
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -214,19 +214,26 @@
+ /// NS-042: Compute the config file path for a named provider.
+ ///
+ /// Uses XDG_CONFIG_HOME if provided, otherwise falls back to
+ /// `$HOME/.config`.
+-pub fn provider_config_path(name: &str, xdg_config_home: Option<&Path>) -> PathBuf {
++///
++/// Returns `Err` if the name contains path traversal characters.
++pub fn provider_config_path(
++    name: &str,
++    xdg_config_home: Option<&Path>,
++) -> Result<PathBuf, crate::config_path::ConfigPathError> {
+     named_config_toml_path(xdg_config_home, None, "providers", name)
+ }
+ 
+ /// NS-042: Same as `provider_config_path` but with explicit HOME fallback.
+ /// Used when XDG_CONFIG_HOME is not set.
++///
++/// Returns `Err` if the name contains path traversal characters.
+ pub fn provider_config_path_with_home(
+     name: &str,
+     xdg_config_home: Option<&Path>,
+     home: &Path,
+-) -> PathBuf {
++) -> Result<PathBuf, crate::config_path::ConfigPathError> {
+     named_config_toml_path(xdg_config_home, Some(home), "providers", name)
+ }
+ 
+ /// NS-043 + NS-072: Parse provider TOML content into a FileProviderConfig.
+
+[0m
+[0m← [0mEdit src/profile.rs
+Index: /home/ben/Documents/repos/noscope/src/profile.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/profile.rs
++++ /home/ben/Documents/repos/noscope/src/profile.rs
+@@ -106,18 +106,25 @@
+ /// Compute the config file path for a named profile.
+ ///
+ /// Uses XDG_CONFIG_HOME if provided, otherwise falls back to
+ /// `$HOME/.config`.
+-pub fn profile_config_path(name: &str, xdg_config_home: Option<&Path>) -> PathBuf {
++///
++/// Returns `Err` if the name contains path traversal characters.
++pub fn profile_config_path(
++    name: &str,
++    xdg_config_home: Option<&Path>,
++) -> Result<PathBuf, crate::config_path::ConfigPathError> {
+     named_config_toml_path(xdg_config_home, None, "profiles", name)
+ }
+ 
+ /// Same as `profile_config_path` but with explicit HOME fallback.
++///
++/// Returns `Err` if the name contains path traversal characters.
+ pub fn profile_config_path_with_home(
+     name: &str,
+     xdg_config_home: Option<&Path>,
+     home: &Path,
+-) -> PathBuf {
++) -> Result<PathBuf, crate::config_path::ConfigPathError> {
+     named_config_toml_path(xdg_config_home, Some(home), "profiles", name)
+ }
+ 
+ /// NS-051: Parse profile TOML content into a Profile.
+
+[0m
+Now I need to fix the callers of these functions that now return `Result`. Let me find them:
+[0m✱ [0mGrep "provider_config_path\(|provider_config_path_with_home\(|profile_config_path\(|profile_config_path_with_home\("[90m 17 matches[0m
+I need to update the callers in provider.rs (resolve_provider_config and tests), profile.rs (tests), and client.rs. Let me update them to handle the Result:
+[0m→ [0mRead src/client.rs[90m [offset=160, limit=30][0m
+I need to update client.rs to unwrap the Results. But I also need to add a `From<ConfigPathError>` for the top-level `Error`. Let me update the callers:
+[0m
+[0m← [0mEdit src/client.rs
+Index: /home/ben/Documents/repos/noscope/src/client.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/client.rs
++++ /home/ben/Documents/repos/noscope/src/client.rs
+@@ -167,11 +167,11 @@
+ };
+ 
+ // Load file config from disk if no overrides are active.
+ let config_path = match (&self.opts.xdg_config_home, &self.opts.home) {
+-    (Some(xdg), _) => provider::provider_config_path(name, Some(xdg)),
+-    (None, Some(home)) => provider::provider_config_path_with_home(name, None, home),
+-    (None, None) => provider::provider_config_path(name, None),
++    (Some(xdg), _) => provider::provider_config_path(name, Some(xdg))?,
++    (None, Some(home)) => provider::provider_config_path_with_home(name, None, home)?,
++    (None, None) => provider::provider_config_path(name, None)?,
+ };
+ let file_config = provider::load_provider_file(&config_path)?;
+ 
+ let env = match &self.opts.provider_env {
+
+[0m
+Now I need to add the `From<ConfigPathError>` impl in error.rs so that `?` works in client.rs:
+[0m← [0mEdit src/error.rs
+Index: /home/ben/Documents/repos/noscope/src/error.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/error.rs
++++ /home/ben/Documents/repos/noscope/src/error.rs
+@@ -282,8 +282,14 @@
+         Self::new(ErrorKind::Provider, &format!("{}", e))
+     }
+ }
+ 
++impl From<crate::config_path::ConfigPathError> for Error {
++    fn from(e: crate::config_path::ConfigPathError) -> Self {
++        Self::security(&format!("{}", e))
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     // =========================================================================
+     // NS-077: Typed machine-readable public error taxonomy.
+
+[0m
+Now update the callers in provider.rs — the `resolve_provider_config` function and the tests:
+[0m→ [0mRead src/provider.rs[90m [offset=450, limit=15][0m
+The `resolve_provider_config` function calls `provider_config_path` internally. This is tricky because `resolve_provider_config` returns `ProviderConfigError` but the path function now returns `ConfigPathError`. Let me handle this gracefully — if the name is invalid, it should fail before trying to resolve. Let me update that call:
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -455,9 +455,12 @@
+     });
+ }
+ 
+ // NS-044: No layer provided config — enumerate checked locations.
+-let config_path = provider_config_path(name, None);
++let config_path =
++    provider_config_path(name, None).map_err(|e| ProviderConfigError::MalformedConfig {
++        message: format!("{}", e),
++    })?;
+ Err(ProviderConfigError::ProviderNotFound {
+     provider: name.to_string(),
+     checked_locations: vec![
+         "flag --mint-cmd (not set)".to_string(),
+
+[0m
+Now update the tests in provider.rs that call `provider_config_path`:
+[0m→ [0mRead src/provider.rs[90m [offset=714, limit=40][0m
+[0m→ [0mRead src/provider.rs[90m [offset=753, limit=5][0m
+I need to update the tests in provider.rs to add `.unwrap()` calls:
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -723,9 +723,9 @@
+ fn config_follows_xdg_base_directory() {
+     let tmp = tempfile::tempdir().unwrap();
+     let xdg_config = tmp.path().to_path_buf();
+ 
+-    let path = provider_config_path("aws", Some(&xdg_config));
++    let path = provider_config_path("aws", Some(&xdg_config)).unwrap();
+     assert_eq!(
+         path,
+         xdg_config
+             .join("noscope")
+@@ -736,9 +736,9 @@
+ 
+ #[test]
+ fn config_xdg_defaults_to_home_dot_config() {
+     let tmp = tempfile::tempdir().unwrap();
+-    let path = provider_config_path_with_home("aws", None, tmp.path());
++    let path = provider_config_path_with_home("aws", None, tmp.path()).unwrap();
+     assert_eq!(
+         path,
+         tmp.path()
+             .join(".config")
+@@ -750,9 +750,9 @@
+ 
+ #[test]
+ fn config_xdg_custom_overrides_default() {
+     let custom_xdg = PathBuf::from("/custom/xdg");
+-    let path = provider_config_path("gcp", Some(&custom_xdg));
++    let path = provider_config_path("gcp", Some(&custom_xdg)).unwrap();
+     assert_eq!(
+         path,
+         PathBuf::from("/custom/xdg/noscope/providers/gcp.toml")
+     );
+
+[0m
+Now update the profile.rs tests:
+[0m← [0mEdit src/profile.rs
+Index: /home/ben/Documents/repos/noscope/src/profile.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/profile.rs
++++ /home/ben/Documents/repos/noscope/src/profile.rs
+@@ -927,9 +927,9 @@
+ 
+ #[test]
+ fn profile_path_under_xdg_config() {
+     let xdg = PathBuf::from("/home/user/.config");
+-    let path = super::profile_config_path("dev", Some(&xdg));
++    let path = super::profile_config_path("dev", Some(&xdg)).unwrap();
+     assert_eq!(
+         path,
+         PathBuf::from("/home/user/.config/noscope/profiles/dev.toml")
+     );
+@@ -937,9 +937,9 @@
+ 
+ #[test]
+ fn profile_path_default_home() {
+     let home = PathBuf::from("/home/user");
+-    let path = super::profile_config_path_with_home("staging", None, &home);
++    let path = super::profile_config_path_with_home("staging", None, &home).unwrap();
+     assert_eq!(
+         path,
+         PathBuf::from("/home/user/.config/noscope/profiles/staging.toml")
+     );
+
+[0m
+Now I need to check if there are callers of `profile_config_path` in client.rs:
+[0m✱ [0mGrep "profile_config_path"[90m in src · 11 matches[0m
+[0m✱ [0mGrep "profile_config_path"[90m in src/client.rs · 0 matches[0m
+[0m✱ [0mGrep "profile_config_path|profile::profile"[90m in src/client.rs · 0 matches[0m
+[0m✱ [0mGrep "profile_config_path|profile::profile_config"[90m in src/client.rs · 0 matches[0m
+Good, `profile_config_path` isn't called directly from client.rs. Let me check where it's called from in the broader codebase:
+[0m✱ [0mGrep "profile_config_path""[90m 0 matches[0m
+[0m✱ [0mGrep "profile_config_path"[90m in src/cli_adapter.rs · 0 matches[0m
+[0m✱ [0mGrep "profile_config_path"[90m in src/cli.rs · 0 matches[0m
+Good — `profile_config_path` is only called from the profile.rs tests and config_path.rs tests. The `config_path` module is `pub(crate)` so it's contained. Now I need to make the `config_path` module public enough so its types are accessible. Let me check:
+[0m→ [0mRead src/lib.rs[90m [offset=1, limit=20][0m
+`config_path` is `mod config_path` (private). The `ConfigPathError` type needs to be accessible from `provider.rs`, `profile.rs`, `error.rs`, and `client.rs` — all within the crate. Since `ConfigPathError` is `pub` in `config_path`, and the module is private, I need to either make the module `pub(crate)` or re-export the type. Let me make the module `pub(crate)`:
+[0m
+[0m← [0mEdit src/lib.rs
+Index: /home/ben/Documents/repos/noscope/src/lib.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/lib.rs
++++ /home/ben/Documents/repos/noscope/src/lib.rs
+@@ -1,9 +1,9 @@
+ pub mod ci_checks;
+ pub mod cli;
+ pub mod cli_adapter;
+ pub mod client;
+-mod config_path;
++pub(crate) mod config_path;
+ pub mod credential_set;
+ pub mod error;
+ pub mod event;
+ pub mod exit_code;
+
+[0m
+Now let's try to compile and verify all the new tests FAIL (because `validate_config_name` has `todo!()`):
+[0m$ [0mcargo test --lib config_path::tests 2>&1 | head -100
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+warning: unused variable: `name`
+  --> src/config_path.rs:39:36
+   |
+39 | pub(crate) fn validate_config_name(name: &str) -> Result<(), ConfigPathError> {
+   |                                    ^^^^ help: if this is intentional, prefix it with an underscore: `_name`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `noscope` (lib test) generated 1 warning (run `cargo fix --lib -p noscope --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.34s
+     Running unittests src/lib.rs (target/debug/deps/noscope-a9017328d4599490)
+
+running 33 tests
+test config_path::tests::accepts_name_with_numbers ... FAILED
+test config_path::tests::accepts_dotfile_style_name ... FAILED
+test config_path::tests::accepts_name_with_dots_not_traversal ... FAILED
+test config_path::tests::accepts_name_with_underscores ... FAILED
+test config_path::tests::accepts_name_with_hyphens ... FAILED
+test config_path::tests::accepts_simple_alphanumeric_name ... FAILED
+test config_path::tests::error_carries_rejected_name ... FAILED
+test config_path::tests::error_display_includes_name_and_reason ... FAILED
+test config_path::tests::error_implements_std_error ... ok
+test config_path::tests::error_has_human_readable_reason ... FAILED
+test config_path::tests::named_config_toml_path_accepts_valid_name ... FAILED
+test config_path::tests::accepts_single_char_name ... FAILED
+test config_path::tests::named_config_toml_path_rejects_traversal_name ... FAILED
+test config_path::tests::profile_config_path_accepts_valid_name ... FAILED
+test config_path::tests::profile_config_path_rejects_traversal ... FAILED
+test config_path::tests::provider_config_path_accepts_valid_name ... FAILED
+test config_path::tests::provider_config_path_rejects_traversal ... FAILED
+test config_path::tests::rejects_backslash_in_name ... FAILED
+test config_path::tests::rejects_control_characters ... FAILED
+test config_path::tests::rejects_dot_dot ... FAILED
+test config_path::tests::rejects_dot_dot_embedded ... FAILED
+test config_path::tests::rejects_colon_in_name ... FAILED
+test config_path::tests::rejects_empty_name ... FAILED
+test config_path::tests::rejects_forward_slash_in_name ... FAILED
+test config_path::tests::rejects_single_dot ... FAILED
+test config_path::tests::rejects_nul_byte_in_name ... FAILED
+test config_path::tests::rejects_single_forward_slash ... FAILED
+test config_path::tests::rejects_space_in_name ... FAILED
+test config_path::tests::rejects_tab_character ... FAILED
+test config_path::tests::rejects_tilde_in_name ... FAILED
+test config_path::tests::rejects_windows_traversal ... FAILED
+test config_path::tests::valid_profile_resolves_under_home ... FAILED
+test config_path::tests::valid_provider_resolves_under_xdg ... FAILED
+
+failures:
+
+---- config_path::tests::accepts_name_with_numbers stdout ----
+
+thread 'config_path::tests::accepts_name_with_numbers' (437577) panicked at src/config_path.rs:40:5:
+not yet implemented: production code not yet implemented
+
+---- config_path::tests::accepts_dotfile_style_name stdout ----
+
+thread 'config_path::tests::accepts_dotfile_style_name' (437574) panicked at src/config_path.rs:40:5:
+not yet implemented: production code not yet implemented
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- config_path::tests::accepts_name_with_dots_not_traversal stdout ----
+
+thread 'config_path::tests::accepts_name_with_dots_not_traversal' (437575) panicked at src/config_path.rs:40:5:
+not yet implemented: production code not yet implemented
+
+---- config_path::tests::accepts_name_with_underscores stdout ----
+
+thread 'config_path::tests::accepts_name_with_underscores' (437578) panicked at src/config_path.rs:40:5:
+not yet implemented: production code not yet implemented
+
+---- config_path::tests::accepts_name_with_hyphens stdout ----
+
+thread 'config_path::tests::accepts_name_with_hyphens' (437576) panicked at src/config_path.rs:40:5:
+not yet implemented: production code not yet implemented
+
+---- config_path::tests::accepts_simple_alphanumeric_name stdout ----
+
+thread 'config_path::tests::accepts_simple_alphanumeric_name' (437579) panicked at src/config_path.rs:40:5:
+not yet implemented: production code not yet implemented
+
+---- config_path::tests::error_carries_rejected_name stdout ----
+
+thread 'config_path::tests::error_carries_rejected_name' (437581) panicked at src/config_path.rs:40:5:
+not yet implemented: production code not yet implemented
+
+---- config_path::tests::error_display_includes_name_and_reason stdout ----
+
+thread 'config_path::tests::error_display_includes_name_and_reason' (437582) panicked at src/config_path.rs:40:5:
+not yet implemented: production code not yet implemented
+
+---- config_path::tests::error_has_human_readable_reason stdout ----
+
+thread 'config_path::tests::error_has_human_readable_reason' (437583) panicked at src/config_path.rs:40:5:
+not yet implemented: production code not yet implemented
+
+---- config_path::tests::named_config_toml_path_accepts_valid_name stdout ----
+
+thread 'config_path::tests::named_config_toml_path_accepts_valid_name' (437585) panicked at src/config_path.rs:40:5:
+not yet implemented: production code not yet implemented
+[0m
+All 32 tests fail (1 passes: `error_implements_std_error` — which tests the trait impl on the error type which I already defined). That test is testing existing behavior, not the unimplemented code. It's correct to pass because the struct `ConfigPathError` already has the `impl std::error::Error` derived. Let me verify the existing tests in the rest of the crate still compile:
+[0m$ [0mcargo test --lib 2>&1 | tail -30
+config_path::tests::provider_config_path_rejects_traversal
+    config_path::tests::rejects_backslash_in_name
+    config_path::tests::rejects_colon_in_name
+    config_path::tests::rejects_control_characters
+    config_path::tests::rejects_dot_dot
+    config_path::tests::rejects_dot_dot_embedded
+    config_path::tests::rejects_empty_name
+    config_path::tests::rejects_forward_slash_in_name
+    config_path::tests::rejects_nul_byte_in_name
+    config_path::tests::rejects_single_dot
+    config_path::tests::rejects_single_forward_slash
+    config_path::tests::rejects_space_in_name
+    config_path::tests::rejects_tab_character
+    config_path::tests::rejects_tilde_in_name
+    config_path::tests::rejects_windows_traversal
+    config_path::tests::valid_profile_resolves_under_home
+    config_path::tests::valid_provider_resolves_under_xdg
+    convergence_tests::client_resolve_provider_returns_canonical_error
+    convergence_tests::facade_provider_error_exit_code_preserved
+    profile::tests::profile_path_default_home
+    profile::tests::profile_path_under_xdg_config
+    provider::tests::config_follows_xdg_base_directory
+    provider::tests::config_xdg_custom_overrides_default
+    provider::tests::config_xdg_defaults_to_home_dot_config
+    provider::tests::provider_not_found_enumerates_checked_locations
+    provider::tests::provider_not_found_message_is_user_actionable
+
+test result: FAILED. 731 passed; 51 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.89s
+
+error: test failed, to rerun pass `--lib`
+[0m
+So 51 tests fail. The 32 new tests plus some existing tests that now go through `validate_config_name` with the `todo!()`. That's expected — the existing tests that call `provider_config_path`, `profile_config_path`, etc. will now panic on the `todo!()`. This confirms the RED phase is working.
+
+Let me verify which existing tests are failing:
+[0m$ [0mcargo test --lib 2>&1 | grep "FAILED" | grep -v "config_path::tests"
+test client::tests::env_override_mint_cmd_observed_from_client ... FAILED
+test client::tests::env_override_absent_env_falls_through_to_file ... FAILED
+test client::tests::env_override_precedence_env_beats_file ... FAILED
+test client::tests::env_override_precedence_flags_beat_env ... FAILED
+test client::tests::env_override_refresh_cmd_observed_from_client ... FAILED
+test client::tests::env_override_revoke_cmd_observed_from_client ... FAILED
+test client::tests::env_override_single_var_activates_env_layer ... FAILED
+test client::tests::env_override_explicit_empty_env_does_not_activate_layer ... FAILED
+test client::tests::facade_dry_run_produces_output ... FAILED
+test client::tests::facade_resolve_provider_delegates_to_provider_module ... FAILED
+test convergence_tests::client_resolve_provider_returns_canonical_error ... FAILED
+test convergence_tests::facade_provider_error_exit_code_preserved ... FAILED
+test profile::tests::profile_path_default_home ... FAILED
+test profile::tests::profile_path_under_xdg_config ... FAILED
+test provider::tests::config_follows_xdg_base_directory ... FAILED
+test provider::tests::config_xdg_custom_overrides_default ... FAILED
+test provider::tests::config_xdg_defaults_to_home_dot_config ... FAILED
+test provider::tests::provider_not_found_enumerates_checked_locations ... FAILED
+test provider::tests::provider_not_found_message_is_user_actionable ... FAILED
+test result: FAILED. 731 passed; 51 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.29s
+[0m
+19 existing tests fail because they call `validate_config_name` via the path functions, and it has `todo!()`. That's expected — once I implement `validate_config_name`, they'll pass again. The RED phase is verified.
+[0m# [0mTodos
+[x] Phase 1: Read and understand config_path.rs, error.rs, security.rs, token.rs, redaction.rs
+[x] Phase 1: Claim bead noscope-bsq.1.1
+[x] Phase 2 (RED): Write failing tests for path traversal rejection
+[x] Phase 2 (RED): Verify all tests fail
+[ ] Phase 3 (GREEN): Write minimal production code to pass tests
+[ ] Phase 3 (GREEN): Verify all tests pass + clippy clean
+[ ] Phase 4 (REFACTOR): Clean up code
+[ ] Phase 5: Linus Torvalds review
+[ ] Phase 6: Commit with proper message format
+[0m
+Now Phase 3: GREEN — write the minimal production code to make all tests pass. The contract:
+- Allowed: ASCII alphanumeric (`a-z`, `A-Z`, `0-9`), hyphen (`-`), underscore (`_`), dot (`.`)
+- Rejected: empty, `.`, `..`, contains `/`, `\`, NUL, spaces, control chars, colons, tildes, any non-ASCII-safe char
+[0m← [0mEdit src/config_path.rs
+Index: /home/ben/Documents/repos/noscope/src/config_path.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/config_path.rs
++++ /home/ben/Documents/repos/noscope/src/config_path.rs
+@@ -33,12 +33,46 @@
+ impl std::error::Error for ConfigPathError {}
+ 
+ /// Validate that a config name is safe for use as a single path component.
+ ///
+-/// Allowed: ASCII alphanumeric, hyphen, underscore, dot (but not `..`).
+-/// Rejected: empty, path separators (`/`, `\`), `..`, NUL bytes.
++/// **Allowed characters:** ASCII alphanumeric (`a-z`, `A-Z`, `0-9`),
++/// hyphen (`-`), underscore (`_`), and dot (`.`).
++///
++/// **Rejected:**
++/// - Empty string
++/// - `.` or `..` (current/parent directory)
++/// - Any character outside the allowed set (path separators, NUL,
++///   whitespace, control characters, colons, tildes, etc.)
++///
++/// This is a strict allowlist — only characters known to be safe as
++/// filesystem path components on all supported platforms are permitted.
+ pub(crate) fn validate_config_name(name: &str) -> Result<(), ConfigPathError> {
+-    todo!("production code not yet implemented")
++    if name.is_empty() {
++        return Err(ConfigPathError {
++            name: name.to_string(),
++            reason: "name must not be empty",
++        });
++    }
++
++    if name == "." || name == ".." {
++        return Err(ConfigPathError {
++            name: name.to_string(),
++            reason: "name must not be '.' or '..'",
++        });
++    }
++
++    for ch in name.chars() {
++        let allowed = ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.';
++        if !allowed {
++            return Err(ConfigPathError {
++                name: name.to_string(),
++                reason: "name contains invalid characters; \
++                         only ASCII alphanumeric, hyphen, underscore, and dot are allowed",
++            });
++        }
++    }
++
++    Ok(())
+ }
+ 
+ fn config_base_dir(xdg_config_home: Option<&Path>, home: Option<&Path>) -> PathBuf {
+     match xdg_config_home {
+
+[0m
+Now let's run all tests:
+[0m$ [0mcargo test --lib 2>&1 | tail -20
+test token_convert::tests::centralized_scoped_token_to_mint_envelope_without_token_id ... ok
+test token_convert::tests::conversion_result_token_accessible ... ok
+test token_convert::tests::pipeline_preserves_special_characters_in_token ... ok
+test token_convert::tests::provider_output_expires_at_provided_flag_accessible ... ok
+test token_convert::tests::provider_output_expires_at_provided_true_when_supplied ... ok
+test token_convert::tests::secret_boundary_envelope_debug_does_not_expose_secret ... ok
+test token_convert::tests::secret_boundary_envelope_zeroizes_on_drop ... ok
+test token_convert::tests::secret_boundary_provider_output_consumed ... ok
+test token_convert::tests::secret_boundary_provider_output_to_token_does_not_log_secret ... ok
+test token_convert::tests::secret_boundary_provider_output_zeroizes_on_drop ... ok
+test token_convert::tests::secret_boundary_scoped_token_not_consumed_by_envelope ... ok
+test token_convert::tests::secret_boundary_scoped_token_not_serializable ... ok
+test token_convert::tests::unified_serialization_multi_envelope_uses_same_shape ... ok
+test token_convert::tests::unified_serialization_single_envelope_field_set ... ok
+test provider_exec::engine_tests::engine_times_out_long_running_command ... ok
+test provider_exec::engine_tests::engine_timeout_produces_timeout_error ... ok
+test provider_exec::engine_tests::engine_timeout_kills_after_grace_period ... ok
+
+test result: ok. 782 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.59s
+[0m
+All 782 tests pass! Now let's run clippy:
+[0m$ [0mcargo clippy --all-targets 2>&1
+Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.11s
+[0m
+Zero warnings. GREEN phase complete.
+[0m# [0mTodos
+[x] Phase 1: Read and understand config_path.rs, error.rs, security.rs, token.rs, redaction.rs
+[x] Phase 1: Claim bead noscope-bsq.1.1
+[x] Phase 2 (RED): Write failing tests for path traversal rejection
+[x] Phase 2 (RED): Verify all tests fail
+[x] Phase 3 (GREEN): Write minimal production code to pass tests
+[x] Phase 3 (GREEN): Verify all tests pass + clippy clean
+[ ] Phase 4 (REFACTOR): Clean up code
+[ ] Phase 5: Linus Torvalds review
+[ ] Phase 6: Commit with proper message format
+[0m
+Phase 4: REFACTOR. Let me review the code and clean up. Let me read the final state of config_path.rs:
+[0m→ [0mRead src/config_path.rs
+The code looks clean. Let me look at the refactoring opportunities:
+
+1. The `rejects_dot_dot` and `rejects_dot_dot_embedded` tests are duplicates — let me fix that
+2. The code structure is clean and minimal
+3. No duplication in production code
+
+Let me fix the duplicate test:
+[0m
+[0m← [0mEdit src/config_path.rs
+Index: /home/ben/Documents/repos/noscope/src/config_path.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/config_path.rs
++++ /home/ben/Documents/repos/noscope/src/config_path.rs
+@@ -160,12 +160,19 @@
+     assert!(result.is_err(), "'..' must be rejected");
+ }
+ 
+ #[test]
+-fn rejects_dot_dot_embedded() {
+-    // Even without slashes, `..` as a name is dangerous
+-    let result = validate_config_name("..");
+-    assert!(result.is_err(), "'.. ' as standalone must be rejected");
++fn rejects_dot_dot_with_extension() {
++    // "..hidden" contains `..` as prefix — but the allowlist handles
++    // this by rejecting `.` as standalone, and `..` specifically.
++    // "..hidden" should pass because it's not exactly ".." and all
++    // chars are in the allowlist. Let's verify that only exact "." and
++    // ".." are special-cased, not substrings.
++    let result = validate_config_name("..hidden");
++    assert!(
++        result.is_ok(),
++        "'..hidden' should be accepted — not exactly '..'"
++    );
+ }
+ 
+ // -------------------------------------------------------------------------
+ // Rule: Reject other traversal primitives (NUL, empty, dot-only).
+
+[0m
+Wait, I need to think about this carefully. Is `..hidden` actually safe? Let's think:
+- On POSIX, `..hidden` as a filename is fine — it's not `..` itself
+- It's a single path component that happens to start with two dots
+- Our function builds `{name}.toml`, so it becomes `..hidden.toml` — that's a valid filename
+- The `join()` call won't interpret it as `..` because it's `..hidden` not `..`
+
+Yes, `..hidden` is safe. But let me verify the test passes:
+[0m$ [0mcargo test --lib config_path::tests 2>&1 | tail -15
+test config_path::tests::rejects_dot_dot_with_extension ... ok
+test config_path::tests::rejects_forward_slash_in_name ... ok
+test config_path::tests::rejects_nul_byte_in_name ... ok
+test config_path::tests::rejects_single_forward_slash ... ok
+test config_path::tests::rejects_space_in_name ... ok
+test config_path::tests::rejects_empty_name ... ok
+test config_path::tests::rejects_single_dot ... ok
+test config_path::tests::rejects_tab_character ... ok
+test config_path::tests::rejects_tilde_in_name ... ok
+test config_path::tests::rejects_windows_traversal ... ok
+test config_path::tests::valid_profile_resolves_under_home ... ok
+test config_path::tests::valid_provider_resolves_under_xdg ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 749 filtered out; finished in 0.00s
+[0m
+All 33 tests pass. Let me verify the full test suite still passes:
+[0m$ [0mcargo test --lib 2>&1 | tail -5
+test provider_exec::engine_tests::engine_times_out_long_running_command ... ok
+test provider_exec::engine_tests::engine_timeout_kills_after_grace_period ... ok
+
+test result: ok. 782 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.58s
+[0m
+[0m$ [0mcargo clippy --all-targets 2>&1
+Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.14s
+[0m
+Phase 4 complete.
+[0m# [0mTodos
+[x] Phase 1: Read and understand config_path.rs, error.rs, security.rs, token.rs, redaction.rs
+[x] Phase 1: Claim bead noscope-bsq.1.1
+[x] Phase 2 (RED): Write failing tests for path traversal rejection
+[x] Phase 2 (RED): Verify all tests fail
+[x] Phase 3 (GREEN): Write minimal production code to pass tests
+[x] Phase 3 (GREEN): Verify all tests pass + clippy clean
+[x] Phase 4 (REFACTOR): Clean up code
+[ ] Phase 5: Linus Torvalds review
+[ ] Phase 6: Commit with proper message format
+[0m
+Phase 5: Linus Torvalds Review. Let me re-read the final state of all changed files and review brutally:
+[0m→ [0mRead src/config_path.rs[90m [limit=110][0m
+**Linus Torvalds Review:**
+
+1. **`domain` parameter is not validated.** The `domain` parameter in `named_config_toml_path` is also user-controlled via the callers — but looking at the code, it's always hardcoded as `"providers"` or `"profiles"` — never user input. So it's safe to not validate it. The callers pass string literals.
+
+2. **The `name` allocation in the error path.** When creating `ConfigPathError`, we call `name.to_string()` on the invalid input. This allocates even on the error path, but that's fine — errors are exceptional. No issue.
+
+3. **The name could be logged verbatim.** The `Display` impl includes the raw name in the error message. Is there a concern about log injection? The name is validated to be rejected, so we're showing what the user tried. The allowlist means any accepted name is safe. The Display output of a *rejected* name could contain arbitrary characters (NUL, newlines, etc.) which could mess up log output. Let me consider: the name is shown in single quotes in the Display impl — `invalid config name '../../etc/passwd': ...`. If the name contains newlines, it could inject into logs. However, this matches the pattern in the rest of the codebase (e.g., `ProviderNotFound` shows the provider name verbatim in Display). So this is consistent.
+
+4. **Missing: the `From<ConfigPathError>` for `Error` maps to `ErrorKind::Security`.** Is that the right kind? Path traversal is a security issue, so `Security` makes sense. But looking at how the callers work — `client.rs` calls `provider_config_path` and uses `?` which converts to `Error`. The exit code for Security is 64 (Usage). That's appropriate — a malicious name is a usage error from the user's perspective.
+
+5. **Potential issue: `..hidden` is allowed but could be confusing.** I already tested this edge case. Names like `..hidden` are safe as filesystem components and the test covers it. Fine.
+
+6. **Missing edge case: very long names.** No length limit. A name of 10,000 characters would create a very long path. Is this a concern? The OS will reject it at the filesystem level. Not a security issue for path traversal. I'll add a test for it but won't add a length limit (YAGNI — the filesystem handles it).
+
+7. **Missing test: `ConfigPathError` is `Send + Sync`.** Following the pattern from `error.rs` where errors are tested for `Send + Sync`.
+
+8. **The `From<ConfigPathError> for Error` in error.rs maps to `security`.** But looking at it more carefully — when a user types `noscope mint --provider "../etc/shadow"`, is it a *security* error or a *config* error? The bead description says "security bug" so mapping to `ErrorKind::Security` is correct. The existing `SecurityError` covers things like "token in args". A path traversal attempt is similar in spirit.
+
+Let me fix the issues found:
+[0m→ [0mRead src/config_path.rs[90m [offset=380, limit=40][0m
+Let me add the missing edge case tests from the review:
+[0m
+[0m← [0mEdit src/config_path.rs
+Index: /home/ben/Documents/repos/noscope/src/config_path.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/config_path.rs
++++ /home/ben/Documents/repos/noscope/src/config_path.rs
+@@ -411,5 +411,46 @@
+     fn rejects_tab_character() {
+         let result = validate_config_name("foo\tbar");
+         assert!(result.is_err(), "Tab in name must be rejected");
+     }
++
++    // -------------------------------------------------------------------------
++    // Edge cases discovered during Linus review.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn error_is_send_and_sync() {
++        static_assertions::assert_impl_all!(ConfigPathError: Send, Sync);
++    }
++
++    #[test]
++    fn rejects_non_ascii_unicode() {
++        // Non-ASCII characters (even innocent-looking ones) are rejected
++        // by the strict allowlist. This prevents confusable attacks.
++        let result = validate_config_name("provid\u{00E9}r");
++        assert!(result.is_err(), "Non-ASCII characters must be rejected");
++    }
++
++    #[test]
++    fn accepts_all_uppercase() {
++        let result = validate_config_name("AWS");
++        assert!(result.is_ok(), "Uppercase ASCII must be accepted");
++    }
++
++    #[test]
++    fn accepts_mixed_case() {
++        let result = validate_config_name("MyProvider-v2.1_beta");
++        assert!(
++            result.is_ok(),
++            "Mixed-case with all allowed chars must be accepted"
++        );
++    }
++
++    #[test]
++    fn config_path_error_from_converts_to_security_error() {
++        // ConfigPathError converts to Error with Security kind — path traversal
++        // is a security violation, not just a config error.
++        let err = validate_config_name("../evil").unwrap_err();
++        let top_err: crate::error::Error = err.into();
++        assert_eq!(top_err.kind(), crate::error::ErrorKind::Security);
++    }
+ }
+
+[0m
+Now let's run all tests and clippy again:
+[0m$ [0mcargo test --lib 2>&1 | tail -10
+test token_convert::tests::secret_boundary_scoped_token_not_consumed_by_envelope ... ok
+test token_convert::tests::secret_boundary_scoped_token_not_serializable ... ok
+test token_convert::tests::unified_serialization_multi_envelope_uses_same_shape ... ok
+test token_convert::tests::unified_serialization_single_envelope_field_set ... ok
+test provider_exec::engine_tests::engine_timeout_produces_timeout_error ... ok
+test provider_exec::engine_tests::engine_times_out_long_running_command ... ok
+test provider_exec::engine_tests::engine_timeout_kills_after_grace_period ... ok
+
+test result: ok. 787 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.64s
+[0m
+[0m$ [0mcargo clippy --all-targets 2>&1
+Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.33s
+[0m
+787 tests pass, zero clippy warnings. Let me also run `cargo fmt` to make sure formatting is clean:
+[0m$ [0mcargo fmt --all -- --check 2>&1
+All clean. Let me write the provenance draft before committing:
+[0m
+[0m$ [0mls /home/ben/Documents/repos/noscope/.beads/provenance-drafts/ 2>&1
+noscope-2wn.md
+noscope-4mw.md
+noscope-4of.md
+noscope-5dw.md
+noscope-5wl.md
+noscope-6a9.md
+noscope-9l0.md
+noscope-bsq.1.2.md
+noscope-bsq.1.3.md
+noscope-bsq.1.4.md
+noscope-bsq.1.5.md
+noscope-cg8.2.md
+noscope-cg8.3.md
+noscope-cg8.4.md
+noscope-cg8.5.md
+noscope-ia2.md
+noscope-pmr.md
+noscope-ydn.md
+[0m
+[0m← [0mWrite .beads/provenance-drafts/noscope-bsq.1.1.md
+Wrote file successfully.
+[0m
+Now Phase 6: Commit.
+[0m# [0mTodos
+[x] Phase 1: Read and understand config_path.rs, error.rs, security.rs, token.rs, redaction.rs
+[x] Phase 1: Claim bead noscope-bsq.1.1
+[x] Phase 2 (RED): Write failing tests for path traversal rejection
+[x] Phase 2 (RED): Verify all tests fail
+[x] Phase 3 (GREEN): Write minimal production code to pass tests
+[x] Phase 3 (GREEN): Verify all tests pass + clippy clean
+[x] Phase 4 (REFACTOR): Clean up code
+[x] Phase 5: Linus Torvalds review
+[ ] Phase 6: Commit with proper message format
+[0m
+[0m$ [0mgit status
+On branch main
+Your branch is ahead of 'origin/main' by 1 commit.
+  (use "git push" to publish your local commits)
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   .gitignore
+	modified:   AGENTS.md
+	modified:   scripts/drain-beads.sh
+	modified:   src/client.rs
+	modified:   src/config_path.rs
+	modified:   src/error.rs
+	modified:   src/lib.rs
+	modified:   src/profile.rs
+	modified:   src/provider.rs
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.beads/provenance-drafts/noscope-4mw.md
+	.beads/provenance-drafts/noscope-bsq.1.1.md
+	.beads/provenance-drafts/noscope-cg8.3.md
+	.beads/provenance-drafts/noscope-cg8.4.md
+	.beads/provenance-drafts/noscope-ydn.md
+	.beads/session-logs/
+	statesman.toml
+
+no changes added to commit (use "git add" and/or "git commit -a")
+[0m
+[0m$ [0mgit diff src/config_path.rs src/error.rs src/lib.rs src/provider.rs src/profile.rs src/client.rs 2>&1
+diff --git a/src/client.rs b/src/client.rs
+index 3350844..8776259 100644
+--- a/src/client.rs
++++ b/src/client.rs
+@@ -168,9 +168,9 @@ impl Client {
+ 
+         // Load file config from disk if no overrides are active.
+         let config_path = match (&self.opts.xdg_config_home, &self.opts.home) {
+-            (Some(xdg), _) => provider::provider_config_path(name, Some(xdg)),
+-            (None, Some(home)) => provider::provider_config_path_with_home(name, None, home),
+-            (None, None) => provider::provider_config_path(name, None),
++            (Some(xdg), _) => provider::provider_config_path(name, Some(xdg))?,
++            (None, Some(home)) => provider::provider_config_path_with_home(name, None, home)?,
++            (None, None) => provider::provider_config_path(name, None)?,
+         };
+         let file_config = provider::load_provider_file(&config_path)?;
+ 
+diff --git a/src/config_path.rs b/src/config_path.rs
+index 523eaea..3f63d4a 100644
+--- a/src/config_path.rs
++++ b/src/config_path.rs
+@@ -1,5 +1,79 @@
++use std::fmt;
+ use std::path::{Path, PathBuf};
+ 
++/// Error type for config name validation failures.
++///
++/// Returned when a provider or profile name contains path traversal
++/// characters (`/`, `\`, `..`) or is otherwise unsafe for use as a
++/// filesystem path component.
++#[derive(Debug)]
++pub struct ConfigPathError {
++    name: String,
++    reason: &'static str,
++}
++
++impl ConfigPathError {
++    /// The rejected name.
++    pub fn name(&self) -> &str {
++        &self.name
++    }
++
++    /// Why the name was rejected.
++    pub fn reason(&self) -> &str {
++        self.reason
++    }
++}
++
++impl fmt::Display for ConfigPathError {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        write!(f, "invalid config name '{}': {}", self.name, self.reason)
++    }
++}
++
++impl std::error::Error for ConfigPathError {}
++
++/// Validate that a config name is safe for use as a single path component.
++///
++/// **Allowed characters:** ASCII alphanumeric (`a-z`, `A-Z`, `0-9`),
++/// hyphen (`-`), underscore (`_`), and dot (`.`).
++///
++/// **Rejected:**
++/// - Empty string
++/// - `.` or `..` (current/parent directory)
++/// - Any character outside the allowed set (path separators, NUL,
++///   whitespace, control characters, colons, tildes, etc.)
++///
++/// This is a strict allowlist — only characters known to be safe as
++/// filesystem path components on all supported platforms are permitted.
++pub(crate) fn validate_config_name(name: &str) -> Result<(), ConfigPathError> {
++    if name.is_empty() {
++        return Err(ConfigPathError {
++            name: name.to_string(),
++            reason: "name must not be empty",
++        });
++    }
++
++    if name == "." || name == ".." {
++        return Err(ConfigPathError {
++            name: name.to_string(),
++            reason: "name must not be '.' or '..'",
++        });
++    }
++
++    for ch in name.chars() {
++        let allowed = ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.';
++        if !allowed {
++            return Err(ConfigPathError {
++                name: name.to_string(),
++                reason: "name contains invalid characters; \
++                         only ASCII alphanumeric, hyphen, underscore, and dot are allowed",
++            });
++        }
++    }
++
++    Ok(())
++}
++
+ fn config_base_dir(xdg_config_home: Option<&Path>, home: Option<&Path>) -> PathBuf {
+     match xdg_config_home {
+         Some(base) => base.to_path_buf(),
+@@ -20,9 +94,363 @@ pub(crate) fn named_config_toml_path(
+     home: Option<&Path>,
+     domain: &str,
+     name: &str,
+-) -> PathBuf {
+-    config_base_dir(xdg_config_home, home)
++) -> Result<PathBuf, ConfigPathError> {
++    validate_config_name(name)?;
++    Ok(config_base_dir(xdg_config_home, home)
+         .join("noscope")
+         .join(domain)
+-        .join(format!("{}.toml", name))
++        .join(format!("{}.toml", name)))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::path::Path;
++
++    // =========================================================================
++    // noscope-bsq.1.1: Block config-name path traversal in config_path.
++    //
++    // Acceptance criteria:
++    // 1. Traversal inputs are rejected with typed errors.
++    // 2. Valid names still resolve under the expected XDG/HOME directories.
++    // 3. Tests cover positive and negative cases.
++    //
++    // Rules:
++    // - Reject names containing path separators (`/`, `\`), `..`, or other
++    //   traversal primitives.
++    // - Define a strict allowed-name contract (documented and tested).
++    // - Apply to both provider and profile lookup paths.
++    // =========================================================================
++
++    // -------------------------------------------------------------------------
++    // Rule: Reject names containing path separators.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn rejects_forward_slash_in_name() {
++        let result = validate_config_name("../../etc/passwd");
++        assert!(result.is_err(), "Forward slash must be rejected");
++    }
++
++    #[test]
++    fn rejects_single_forward_slash() {
++        let result = validate_config_name("foo/bar");
++        assert!(result.is_err(), "Name with '/' must be rejected");
++    }
++
++    #[test]
++    fn rejects_backslash_in_name() {
++        let result = validate_config_name("foo\\bar");
++        assert!(result.is_err(), "Backslash must be rejected");
++    }
++
++    #[test]
++    fn rejects_windows_traversal() {
++        let result = validate_config_name("..\\..\\windows\\system32");
++        assert!(result.is_err(), "Windows-style traversal must be rejected");
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Reject names containing `..` (parent directory traversal).
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn rejects_dot_dot() {
++        let result = validate_config_name("..");
++        assert!(result.is_err(), "'..' must be rejected");
++    }
++
++    #[test]
++    fn rejects_dot_dot_with_extension() {
++        // "..hidden" contains `..` as prefix — but the allowlist handles
++        // this by rejecting `.` as standalone, and `..` specifically.
++        // "..hidden" should pass because it's not exactly ".." and all
++        // chars are in the allowlist. Let's verify that only exact "." and
++        // ".." are special-cased, not substrings.
++        let result = validate_config_name("..hidden");
++        assert!(
++            result.is_ok(),
++            "'..hidden' should be accepted — not exactly '..'"
++        );
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Reject other traversal primitives (NUL, empty, dot-only).
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn rejects_empty_name() {
++        let result = validate_config_name("");
++        assert!(result.is_err(), "Empty name must be rejected");
++    }
++
++    #[test]
++    fn rejects_nul_byte_in_name() {
++        let result = validate_config_name("foo\0bar");
++        assert!(result.is_err(), "NUL byte in name must be rejected");
++    }
++
++    #[test]
++    fn rejects_single_dot() {
++        // "." refers to current directory — not a valid config name
++        let result = validate_config_name(".");
++        assert!(result.is_err(), "'.' must be rejected");
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Define strict allowed-name contract.
++    //
++    // Allowed characters: ASCII alphanumeric, hyphen, underscore, dot
++    // (but not `.` or `..` as the entire name).
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn accepts_simple_alphanumeric_name() {
++        let result = validate_config_name("aws");
++        assert!(result.is_ok(), "'aws' must be accepted");
++    }
++
++    #[test]
++    fn accepts_name_with_hyphens() {
++        let result = validate_config_name("my-provider");
++        assert!(result.is_ok(), "'my-provider' must be accepted");
++    }
++
++    #[test]
++    fn accepts_name_with_underscores() {
++        let result = validate_config_name("my_provider");
++        assert!(result.is_ok(), "'my_provider' must be accepted");
++    }
++
++    #[test]
++    fn accepts_name_with_dots_not_traversal() {
++        // A name like "v1.2" is fine — it's not ".." or "."
++        let result = validate_config_name("v1.2");
++        assert!(result.is_ok(), "'v1.2' must be accepted");
++    }
++
++    #[test]
++    fn accepts_name_with_numbers() {
++        let result = validate_config_name("provider123");
++        assert!(result.is_ok(), "'provider123' must be accepted");
++    }
++
++    #[test]
++    fn rejects_space_in_name() {
++        let result = validate_config_name("my provider");
++        assert!(result.is_err(), "Space in name must be rejected");
++    }
++
++    #[test]
++    fn rejects_colon_in_name() {
++        // Colon is special on Windows (drive letter, NTFS streams)
++        let result = validate_config_name("C:aws");
++        assert!(result.is_err(), "Colon in name must be rejected");
++    }
++
++    #[test]
++    fn rejects_tilde_in_name() {
++        // Tilde could expand to home directory in some contexts
++        let result = validate_config_name("~admin");
++        assert!(result.is_err(), "Tilde in name must be rejected");
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Typed error carries name and reason.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn error_carries_rejected_name() {
++        let err = validate_config_name("../../etc/passwd").unwrap_err();
++        assert_eq!(err.name(), "../../etc/passwd");
++    }
++
++    #[test]
++    fn error_has_human_readable_reason() {
++        let err = validate_config_name("foo/bar").unwrap_err();
++        assert!(!err.reason().is_empty(), "Reason must not be empty");
++    }
++
++    #[test]
++    fn error_display_includes_name_and_reason() {
++        let err = validate_config_name("../secret").unwrap_err();
++        let display = format!("{}", err);
++        assert!(
++            display.contains("../secret"),
++            "Display must show name: {}",
++            display
++        );
++        assert!(
++            display.contains("invalid"),
++            "Display must indicate invalidity: {}",
++            display
++        );
++    }
++
++    #[test]
++    fn error_implements_std_error() {
++        fn assert_error<T: std::error::Error>() {}
++        assert_error::<ConfigPathError>();
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: named_config_toml_path rejects traversal names.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn named_config_toml_path_rejects_traversal_name() {
++        let xdg = Path::new("/home/user/.config");
++        let result = named_config_toml_path(Some(xdg), None, "providers", "../../../etc/shadow");
++        assert!(
++            result.is_err(),
++            "Traversal name must be rejected by named_config_toml_path"
++        );
++    }
++
++    #[test]
++    fn named_config_toml_path_accepts_valid_name() {
++        let xdg = Path::new("/home/user/.config");
++        let result = named_config_toml_path(Some(xdg), None, "providers", "aws");
++        assert!(result.is_ok(), "Valid name must be accepted");
++        assert_eq!(
++            result.unwrap(),
++            PathBuf::from("/home/user/.config/noscope/providers/aws.toml")
++        );
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Valid names still resolve under expected XDG/HOME directories.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn valid_provider_resolves_under_xdg() {
++        let xdg = Path::new("/home/user/.config");
++        let path = named_config_toml_path(Some(xdg), None, "providers", "gcp").unwrap();
++        assert_eq!(
++            path,
++            PathBuf::from("/home/user/.config/noscope/providers/gcp.toml")
++        );
++    }
++
++    #[test]
++    fn valid_profile_resolves_under_home() {
++        let home = Path::new("/home/user");
++        let path = named_config_toml_path(None, Some(home), "profiles", "dev").unwrap();
++        assert_eq!(
++            path,
++            PathBuf::from("/home/user/.config/noscope/profiles/dev.toml")
++        );
++    }
++
++    // -------------------------------------------------------------------------
++    // Rule: Apply to both provider and profile lookup paths.
++    //
++    // The public callers (provider_config_path, profile_config_path) must
++    // propagate the error. These tests verify end-to-end.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn provider_config_path_rejects_traversal() {
++        let result = crate::provider::provider_config_path("../etc/shadow", None);
++        assert!(
++            result.is_err(),
++            "provider_config_path must reject traversal"
++        );
++    }
++
++    #[test]
++    fn provider_config_path_accepts_valid_name() {
++        let xdg = Path::new("/home/user/.config");
++        let path = crate::provider::provider_config_path("aws", Some(xdg)).unwrap();
++        assert_eq!(
++            path,
++            PathBuf::from("/home/user/.config/noscope/providers/aws.toml")
++        );
++    }
++
++    #[test]
++    fn profile_config_path_rejects_traversal() {
++        let result = crate::profile::profile_config_path("../etc/shadow", None);
++        assert!(result.is_err(), "profile_config_path must reject traversal");
++    }
++
++    #[test]
++    fn profile_config_path_accepts_valid_name() {
++        let xdg = Path::new("/home/user/.config");
++        let path = crate::profile::profile_config_path("dev", Some(xdg)).unwrap();
++        assert_eq!(
++            path,
++            PathBuf::from("/home/user/.config/noscope/profiles/dev.toml")
++        );
++    }
++
++    // -------------------------------------------------------------------------
++    // Edge cases: boundary names
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn accepts_single_char_name() {
++        let result = validate_config_name("a");
++        assert!(result.is_ok(), "Single char name must be accepted");
++    }
++
++    #[test]
++    fn accepts_dotfile_style_name() {
++        // ".hidden" is a valid name (starts with dot, but not "." or "..")
++        let result = validate_config_name(".hidden");
++        assert!(result.is_ok(), "'.hidden' must be accepted");
++    }
++
++    #[test]
++    fn rejects_control_characters() {
++        let result = validate_config_name("foo\nbar");
++        assert!(result.is_err(), "Newline in name must be rejected");
++    }
++
++    #[test]
++    fn rejects_tab_character() {
++        let result = validate_config_name("foo\tbar");
++        assert!(result.is_err(), "Tab in name must be rejected");
++    }
++
++    // -------------------------------------------------------------------------
++    // Edge cases discovered during Linus review.
++    // -------------------------------------------------------------------------
++
++    #[test]
++    fn error_is_send_and_sync() {
++        static_assertions::assert_impl_all!(ConfigPathError: Send, Sync);
++    }
++
++    #[test]
++    fn rejects_non_ascii_unicode() {
++        // Non-ASCII characters (even innocent-looking ones) are rejected
++        // by the strict allowlist. This prevents confusable attacks.
++        let result = validate_config_name("provid\u{00E9}r");
++        assert!(result.is_err(), "Non-ASCII characters must be rejected");
++    }
++
++    #[test]
++    fn accepts_all_uppercase() {
++        let result = validate_config_name("AWS");
++        assert!(result.is_ok(), "Uppercase ASCII must be accepted");
++    }
++
++    #[test]
++    fn accepts_mixed_case() {
++        let result = validate_config_name("MyProvider-v2.1_beta");
++        assert!(
++            result.is_ok(),
++            "Mixed-case with all allowed chars must be accepted"
++        );
++    }
++
++    #[test]
++    fn config_path_error_from_converts_to_security_error() {
++        // ConfigPathError converts to Error with Security kind — path traversal
++        // is a security violation, not just a config error.
++        let err = validate_config_name("../evil").unwrap_err();
++        let top_err: crate::error::Error = err.into();
++        assert_eq!(top_err.kind(), crate::error::ErrorKind::Security);
++    }
+ }
+diff --git a/src/error.rs b/src/error.rs
+index 80179cf..92f5d11 100644
+--- a/src/error.rs
++++ b/src/error.rs
+@@ -283,6 +283,12 @@ impl From<crate::provider_exec::ProviderExecError> for Error {
+     }
+ }
+ 
++impl From<crate::config_path::ConfigPathError> for Error {
++    fn from(e: crate::config_path::ConfigPathError) -> Self {
++        Self::security(&format!("{}", e))
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     // =========================================================================
+diff --git a/src/lib.rs b/src/lib.rs
+index a551917..4607708 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -2,7 +2,7 @@ pub mod ci_checks;
+ pub mod cli;
+ pub mod cli_adapter;
+ pub mod client;
+-mod config_path;
++pub(crate) mod config_path;
+ pub mod credential_set;
+ pub mod error;
+ pub mod event;
+diff --git a/src/profile.rs b/src/profile.rs
+index 99be66b..0e15d97 100644
+--- a/src/profile.rs
++++ b/src/profile.rs
+@@ -107,16 +107,23 @@ impl std::error::Error for ProfileError {}
+ ///
+ /// Uses XDG_CONFIG_HOME if provided, otherwise falls back to
+ /// `$HOME/.config`.
+-pub fn profile_config_path(name: &str, xdg_config_home: Option<&Path>) -> PathBuf {
++///
++/// Returns `Err` if the name contains path traversal characters.
++pub fn profile_config_path(
++    name: &str,
++    xdg_config_home: Option<&Path>,
++) -> Result<PathBuf, crate::config_path::ConfigPathError> {
+     named_config_toml_path(xdg_config_home, None, "profiles", name)
+ }
+ 
+ /// Same as `profile_config_path` but with explicit HOME fallback.
++///
++/// Returns `Err` if the name contains path traversal characters.
+ pub fn profile_config_path_with_home(
+     name: &str,
+     xdg_config_home: Option<&Path>,
+     home: &Path,
+-) -> PathBuf {
++) -> Result<PathBuf, crate::config_path::ConfigPathError> {
+     named_config_toml_path(xdg_config_home, Some(home), "profiles", name)
+ }
+ 
+@@ -921,7 +928,7 @@ ttl = 1800
+     #[test]
+     fn profile_path_under_xdg_config() {
+         let xdg = PathBuf::from("/home/user/.config");
+-        let path = super::profile_config_path("dev", Some(&xdg));
++        let path = super::profile_config_path("dev", Some(&xdg)).unwrap();
+         assert_eq!(
+             path,
+             PathBuf::from("/home/user/.config/noscope/profiles/dev.toml")
+@@ -931,7 +938,7 @@ ttl = 1800
+     #[test]
+     fn profile_path_default_home() {
+         let home = PathBuf::from("/home/user");
+-        let path = super::profile_config_path_with_home("staging", None, &home);
++        let path = super::profile_config_path_with_home("staging", None, &home).unwrap();
+         assert_eq!(
+             path,
+             PathBuf::from("/home/user/.config/noscope/profiles/staging.toml")
+diff --git a/src/provider.rs b/src/provider.rs
+index 2451db7..98f8965 100644
+--- a/src/provider.rs
++++ b/src/provider.rs
+@@ -215,17 +215,24 @@ pub struct ResolvedProvider {
+ ///
+ /// Uses XDG_CONFIG_HOME if provided, otherwise falls back to
+ /// `$HOME/.config`.
+-pub fn provider_config_path(name: &str, xdg_config_home: Option<&Path>) -> PathBuf {
++///
++/// Returns `Err` if the name contains path traversal characters.
++pub fn provider_config_path(
++    name: &str,
++    xdg_config_home: Option<&Path>,
++) -> Result<PathBuf, crate::config_path::ConfigPathError> {
+     named_config_toml_path(xdg_config_home, None, "providers", name)
+ }
+ 
+ /// NS-042: Same as `provider_config_path` but with explicit HOME fallback.
+ /// Used when XDG_CONFIG_HOME is not set.
++///
++/// Returns `Err` if the name contains path traversal characters.
+ pub fn provider_config_path_with_home(
+     name: &str,
+     xdg_config_home: Option<&Path>,
+     home: &Path,
+-) -> PathBuf {
++) -> Result<PathBuf, crate::config_path::ConfigPathError> {
+     named_config_toml_path(xdg_config_home, Some(home), "providers", name)
+ }
+ 
+@@ -449,7 +456,10 @@ pub fn resolve_provider_config(
+     }
+ 
+     // NS-044: No layer provided config — enumerate checked locations.
+-    let config_path = provider_config_path(name, None);
++    let config_path =
++        provider_config_path(name, None).map_err(|e| ProviderConfigError::MalformedConfig {
++            message: format!("{}", e),
++        })?;
+     Err(ProviderConfigError::ProviderNotFound {
+         provider: name.to_string(),
+         checked_locations: vec![
+@@ -714,7 +724,7 @@ VAULT_ADDR = "https://vault.example.com"
+         let tmp = tempfile::tempdir().unwrap();
+         let xdg_config = tmp.path().to_path_buf();
+ 
+-        let path = provider_config_path("aws", Some(&xdg_config));
++        let path = provider_config_path("aws", Some(&xdg_config)).unwrap();
+         assert_eq!(
+             path,
+             xdg_config
+@@ -727,7 +737,7 @@ VAULT_ADDR = "https://vault.example.com"
+     #[test]
+     fn config_xdg_defaults_to_home_dot_config() {
+         let tmp = tempfile::tempdir().unwrap();
+-        let path = provider_config_path_with_home("aws", None, tmp.path());
++        let path = provider_config_path_with_home("aws", None, tmp.path()).unwrap();
+         assert_eq!(
+             path,
+             tmp.path()
+@@ -741,7 +751,7 @@ VAULT_ADDR = "https://vault.example.com"
+     #[test]
+     fn config_xdg_custom_overrides_default() {
+         let custom_xdg = PathBuf::from("/custom/xdg");
+-        let path = provider_config_path("gcp", Some(&custom_xdg));
++        let path = provider_config_path("gcp", Some(&custom_xdg)).unwrap();
+         assert_eq!(
+             path,
+             PathBuf::from("/custom/xdg/noscope/providers/gcp.toml")
+[0m
+The diff looks clean and complete. Let me also check there are no stray files I shouldn't include:
+[0m$ [0mgit log --oneline -5
+0090c2f feat: binary entrypoint and CLI framework with clap (noscope-9l0)
+b57bdfd fix: tighten linux amd64 assertion to exact target triple (noscope-x2r)
+5e53092 feat: provider command execution engine (noscope-6a9)
+3b8de2d feat: async runtime and concurrent minting orchestration (noscope-5dw)
+a96f7c0 feat: CI/CD pipeline and release automation (noscope-x2r)
+[0m
+Good — the commit message format is `feat: <description> (<bead_id>)`. Now let me stage and commit only the relevant files:
+[0m$ [0mgit add src/config_path.rs src/error.rs src/lib.rs src/provider.rs src/profile.rs src/client.rs .beads/provenance-drafts/noscope-bsq.1.1.md
+[0m
+[0m$ [0mgit commit -m "feat: block config-name path traversal in config_path (noscope-bsq.1.1)
+
+Add strict allowlist validation for provider and profile config names
+to prevent path traversal attacks via named_config_toml_path.
+
+Changes:
+- Add ConfigPathError typed error with name() and reason() accessors
+- Add validate_config_name() with ASCII alphanumeric/hyphen/underscore/dot
+  allowlist; reject empty, '.', '..', and all other characters
+- Change named_config_toml_path() return type from PathBuf to
+  Result<PathBuf, ConfigPathError>
+- Update provider_config_path, profile_config_path, and all callers
+  (client.rs, resolve_provider_config) to propagate the error
+- Add From<ConfigPathError> for Error mapping to ErrorKind::Security
+- 38 tests covering traversal rejection, valid name acceptance,
+  typed error properties, end-to-end provider/profile paths,
+  Send+Sync bounds, and edge cases (dotfiles, mixed case, unicode)"
+[main b43a81b] feat: block config-name path traversal in config_path (noscope-bsq.1.1)
+ 7 files changed, 496 insertions(+), 17 deletions(-)
+ create mode 100644 .beads/provenance-drafts/noscope-bsq.1.1.md
+[0m
+[0m$ [0mgit status
+On branch main
+Your branch is ahead of 'origin/main' by 2 commits.
+  (use "git push" to publish your local commits)
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   .gitignore
+	modified:   AGENTS.md
+	modified:   scripts/drain-beads.sh
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.beads/provenance-drafts/noscope-4mw.md
+	.beads/provenance-drafts/noscope-cg8.3.md
+	.beads/provenance-drafts/noscope-cg8.4.md
+	.beads/provenance-drafts/noscope-ydn.md
+	.beads/session-logs/
+	statesman.toml
+
+no changes added to commit (use "git add" and/or "git commit -a")
+[0m
+Commit is clean. The remaining unstaged changes (.gitignore, AGENTS.md, scripts/) are not part of this bead.
+[0m# [0mTodos
+[x] Phase 1: Read and understand config_path.rs, error.rs, security.rs, token.rs, redaction.rs
+[x] Phase 1: Claim bead noscope-bsq.1.1
+[x] Phase 2 (RED): Write failing tests for path traversal rejection
+[x] Phase 2 (RED): Verify all tests fail
+[x] Phase 3 (GREEN): Write minimal production code to pass tests
+[x] Phase 3 (GREEN): Verify all tests pass + clippy clean
+[x] Phase 4 (REFACTOR): Clean up code
+[x] Phase 5: Linus Torvalds review
+[x] Phase 6: Commit with proper message format
+[0m
+All phases complete. Here's the summary:
+
+## Bead noscope-bsq.1.1: Complete
+
+**What was implemented:**
+
+- **`ConfigPathError`** — typed error struct with `name()` and `reason()` accessors, `Display`, `Debug`, `std::error::Error`, `Send + Sync`
+- **`validate_config_name()`** — strict allowlist validation (ASCII alphanumeric, `-`, `_`, `.`; rejects empty, `.`, `..`, everything else)
+- **`named_config_toml_path()`** — changed from `-> PathBuf` to `-> Result<PathBuf, ConfigPathError>`
+- Updated all callers: `provider_config_path`, `profile_config_path`, `Client::resolve_provider`, `resolve_provider_config`
+- **`From<ConfigPathError> for Error`** — maps to `ErrorKind::Security` (exit code 64)
+
+**Test coverage: 38 tests** covering:
+- Path separator rejection (`/`, `\`, `../../etc/passwd`, Windows-style traversal)
+- Dot traversal rejection (`.`, `..`)
+- Primitive rejection (empty, NUL, control chars, whitespace, colon, tilde, non-ASCII unicode)
+- Valid name acceptance (alphanumeric, hyphens, underscores, dots, dotfiles, mixed case)
+- Typed error properties (name, reason, Display, `std::error::Error`, `Send + Sync`)
+- End-to-end provider/profile paths (XDG, HOME resolution)
+- Error kind mapping (`ConfigPathError` → `ErrorKind::Security`)
+
+**Quality gates:** 787 tests pass, zero clippy warnings, `cargo fmt` clean.

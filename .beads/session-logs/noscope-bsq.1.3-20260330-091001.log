@@ -1,0 +1,2498 @@
+[0m
+> build · claude-opus-4-6
+[0m
+I'll start by understanding the codebase and the bead requirements, then follow the TDD workflow strictly.
+[0m→ [0mSkill "test-driven-development"
+[0m→ [0mSkill "beads"
+[0m
+[0m# [0mTodos
+[ ] Phase 1: Understand the codebase - read src/lib.rs, security.rs, and related modules
+[ ] Phase 2: TDD Red - Write failing tests for stricter permission checks
+[ ] Phase 3: TDD Green - Write minimal production code to pass tests
+[ ] Phase 4: TDD Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds Review - Self-review and fix issues
+[ ] Phase 6: Commit with proper message
+[0m
+Let me first claim the bead and understand the codebase.
+[0m$ [0mbd show noscope-bsq.1.3 --json 2>&1 | head -60
+[
+  {
+    "id": "noscope-bsq.1.3",
+    "title": "Tighten Unix config permission checks for provider/profile files",
+    "description": "Security hardening: current permission check only rejects world bits; group-writable configs are still allowed.\n\nRequired changes:\n- Define and implement stricter accepted modes for secret-bearing config files.\n- Reuse policy consistently for provider and profile config loading.\n- Expand tests for accepted/rejected mode matrix.\n\nAcceptance:\n- insecure writable modes are rejected consistently,\n- secure modes remain accepted,\n- error messages remain actionable.",
+    "status": "in_progress",
+    "priority": 1,
+    "issue_type": "bug",
+    "assignee": "Ben Nasraoui",
+    "owner": "nasraouiprojects@gmail.com",
+    "created_at": "2026-03-29T22:53:48Z",
+    "created_by": "Ben Nasraoui",
+    "updated_at": "2026-03-29T23:10:02Z",
+    "dependencies": [
+      {
+        "id": "noscope-bsq.1",
+        "title": "Linus review remediation backlog",
+        "description": "Ordered remediation backlog from the Linus-style review.\n\nExecution order:\n1) Finish runtime spine and lifecycle correctness in existing issues:\n   - noscope-508 (AgentProcess orchestration)\n   - noscope-66m (PR_SET_PDEATHSIG + process groups)\n   - noscope-mpl (signal/revoke policy)\n2) Close newly discovered hardening gaps:\n   - config-path traversal defense\n   - env override plumbing in Client\n   - tighter file permission policy\n   - explicit handling of core-dump hardening failures\n3) Converge public error API surface.\n4) Restore formatting hygiene and gate it.\n\nDefinition of done:\n- Each child issue has tests first, implementation second.\n- `cargo test`, `cargo clippy --all-targets --all-features`, and `cargo fmt --check` all pass.",
+        "notes": "Execution map (ordered): 1) noscope-508, 2) noscope-66m, 3) noscope-mpl, 4) noscope-bsq.1.1, 5) noscope-bsq.1.2, 6) noscope-bsq.1.3, 7) noscope-bsq.1.4, 8) noscope-bsq.1.5, 9) noscope-bsq.1.6",
+        "status": "open",
+        "priority": 1,
+        "issue_type": "epic",
+        "owner": "nasraouiprojects@gmail.com",
+        "created_at": "2026-03-29T22:53:47Z",
+        "created_by": "Ben Nasraoui",
+        "updated_at": "2026-03-29T22:54:01Z",
+        "dependency_type": "parent-child"
+      }
+    ],
+    "parent": "noscope-bsq.1"
+  }
+]
+[0m
+[0m→ [0mRead src
+[0m→ [0mRead src/security.rs
+[0m→ [0mRead src/lib.rs
+[0m→ [0mRead src/provider.rs
+[0m→ [0mRead src/profile.rs
+[0m→ [0mRead src/config_path.rs
+Now let me also read the remaining part of provider.rs tests and look at the Cargo.toml for dependencies:
+[0m→ [0mRead src/provider.rs[90m [offset=1493][0m
+[0m→ [0mRead Cargo.toml
+Now I have a thorough understanding of the codebase. Let me analyze the current state:
+
+**Current `check_config_permissions`** (in `provider.rs:382-398`): Only checks that the "other" bits (lowest 3 bits) are zero. This means:
+- `0o620` (group-write) is **allowed** (insecure!)
+- `0o660` (group-read-write) is **allowed** (insecure!)
+- `0o670` (group-rwx) is **allowed** (insecure!)
+
+The bead requires tightening this to reject group-writable modes too. The function is already reused by `profile.rs` via `check_config_permissions`, which is good.
+
+Let me also check the error message — it currently says "world-accessible bits must be 0 (e.g. 0600, 0640)" which needs updating.
+[0m
+[0m# [0mTodos
+[x] Phase 1: Understand the codebase - read src/lib.rs, security.rs, and related modules
+[ ] Phase 2: TDD Red - Write failing tests for stricter permission checks
+[ ] Phase 3: TDD Green - Write minimal production code to pass tests
+[ ] Phase 4: TDD Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds Review - Self-review and fix issues
+[ ] Phase 6: Commit with proper message
+[0m
+## Phase 2: TDD Red — Write Failing Tests
+
+Now I need to write tests for the stricter permission policy. The accepted/rejected mode matrix:
+
+**Accepted modes** (owner-only or owner+group-read):
+- `0o600` (rw------) - owner read/write
+- `0o400` (r-------) - owner read-only
+- `0o640` (rw-r----) - owner rw, group read
+- `0o440` (r--r----) - owner read, group read
+- `0o700` (rwx------) - owner rwx (scripts)
+- `0o500` (r-x------) - owner rx
+- `0o750` (rwxr-x---) - owner rwx, group rx (less common but not writable)
+- `0o040` (---r-----) - group read only (unusual but not writable)
+
+**Rejected modes** (group-writable OR world-accessible):
+- `0o644` (rw-r--r--) - world-readable
+- `0o666` (rw-rw-rw-) - world-writable
+- `0o604` (rw----r--) - world-readable  
+- `0o660` (rw-rw----) - group-writable
+- `0o620` (rw--w----) - group-writable
+- `0o670` (rw-rwx---) - group-writable+exec
+- `0o602` (rw-----w-) - world-writable
+- `0o662` (rw-rw--w-) - group+world writable
+
+The policy: reject if **group-write bit (0o020)** or **any world bit (0o007)** is set.
+
+Let me write the failing tests first. I'll add new tests to `provider.rs` for the expanded permission matrix, and corresponding tests in `profile.rs` to verify the policy is applied consistently. I'll also add tests for the updated error message.
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -939,8 +939,170 @@
+     assert!(result.is_ok(), "0400 (owner-read-only) should be allowed");
+ }
+ 
+ // =========================================================================
++// noscope-bsq.1.3: Tighten Unix config permission checks — group-writable
++// and world-accessible bits must both be rejected for secret-bearing configs.
++// =========================================================================
++
++#[test]
++fn config_permissions_rejects_group_writable_0660() {
++    let tmp = tempfile::tempdir().unwrap();
++    let file_path = tmp.path().join("provider.toml");
++    fs::write(&file_path, valid_provider_toml()).unwrap();
++    fs::set_permissions(&file_path, fs::Permissions::from_mode(0o660)).unwrap();
++
++    let result = check_config_permissions(&file_path);
++    assert!(
++        result.is_err(),
++        "0660 (group-writable) must be rejected for secret-bearing config"
++    );
++}
++
++#[test]
++fn config_permissions_rejects_group_writable_0620() {
++    let tmp = tempfile::tempdir().unwrap();
++    let file_path = tmp.path().join("provider.toml");
++    fs::write(&file_path, valid_provider_toml()).unwrap();
++    fs::set_permissions(&file_path, fs::Permissions::from_mode(0o620)).unwrap();
++
++    let result = check_config_permissions(&file_path);
++    assert!(
++        result.is_err(),
++        "0620 (group-write-only) must be rejected for secret-bearing config"
++    );
++}
++
++#[test]
++fn config_permissions_rejects_group_writable_0670() {
++    let tmp = tempfile::tempdir().unwrap();
++    let file_path = tmp.path().join("provider.toml");
++    fs::write(&file_path, valid_provider_toml()).unwrap();
++    fs::set_permissions(&file_path, fs::Permissions::from_mode(0o670)).unwrap();
++
++    let result = check_config_permissions(&file_path);
++    assert!(
++        result.is_err(),
++        "0670 (group-rwx) must be rejected for secret-bearing config"
++    );
++}
++
++#[test]
++fn config_permissions_rejects_world_writable_0602() {
++    let tmp = tempfile::tempdir().unwrap();
++    let file_path = tmp.path().join("provider.toml");
++    fs::write(&file_path, valid_provider_toml()).unwrap();
++    fs::set_permissions(&file_path, fs::Permissions::from_mode(0o602)).unwrap();
++
++    let result = check_config_permissions(&file_path);
++    assert!(result.is_err(), "0602 (world-writable) must be rejected");
++}
++
++#[test]
++fn config_permissions_rejects_group_and_world_writable_0662() {
++    let tmp = tempfile::tempdir().unwrap();
++    let file_path = tmp.path().join("provider.toml");
++    fs::write(&file_path, valid_provider_toml()).unwrap();
++    fs::set_permissions(&file_path, fs::Permissions::from_mode(0o662)).unwrap();
++
++    let result = check_config_permissions(&file_path);
++    assert!(
++        result.is_err(),
++        "0662 (group+world writable) must be rejected"
++    );
++}
++
++#[test]
++fn config_permissions_allows_0700() {
++    let tmp = tempfile::tempdir().unwrap();
++    let file_path = tmp.path().join("provider.toml");
++    fs::write(&file_path, valid_provider_toml()).unwrap();
++    fs::set_permissions(&file_path, fs::Permissions::from_mode(0o700)).unwrap();
++
++    let result = check_config_permissions(&file_path);
++    assert!(result.is_ok(), "0700 (owner-only rwx) should be allowed");
++}
++
++#[test]
++fn config_permissions_allows_0500() {
++    let tmp = tempfile::tempdir().unwrap();
++    let file_path = tmp.path().join("provider.toml");
++    fs::write(&file_path, valid_provider_toml()).unwrap();
++    fs::set_permissions(&file_path, fs::Permissions::from_mode(0o500)).unwrap();
++
++    let result = check_config_permissions(&file_path);
++    assert!(result.is_ok(), "0500 (owner rx) should be allowed");
++}
++
++#[test]
++fn config_permissions_allows_0440() {
++    let tmp = tempfile::tempdir().unwrap();
++    let file_path = tmp.path().join("provider.toml");
++    fs::write(&file_path, valid_provider_toml()).unwrap();
++    fs::set_permissions(&file_path, fs::Permissions::from_mode(0o440)).unwrap();
++
++    let result = check_config_permissions(&file_path);
++    assert!(
++        result.is_ok(),
++        "0440 (owner+group read-only) should be allowed"
++    );
++}
++
++#[test]
++fn config_permissions_allows_0750() {
++    let tmp = tempfile::tempdir().unwrap();
++    let file_path = tmp.path().join("provider.toml");
++    fs::write(&file_path, valid_provider_toml()).unwrap();
++    fs::set_permissions(&file_path, fs::Permissions::from_mode(0o750)).unwrap();
++
++    let result = check_config_permissions(&file_path);
++    assert!(
++        result.is_ok(),
++        "0750 (owner rwx, group rx) should be allowed"
++    );
++}
++
++#[test]
++fn config_permissions_error_message_is_actionable() {
++    // The error message must mention the rejected mode, suggest acceptable
++    // modes, and reference group-writable rejection (not just world bits).
++    let tmp = tempfile::tempdir().unwrap();
++    let file_path = tmp.path().join("provider.toml");
++    fs::write(&file_path, valid_provider_toml()).unwrap();
++    fs::set_permissions(&file_path, fs::Permissions::from_mode(0o660)).unwrap();
++
++    let result = check_config_permissions(&file_path);
++    let err = result.unwrap_err();
++    let msg = format!("{}", err);
++    assert!(
++        msg.contains("0660"),
++        "Error must show the actual mode: {}",
++        msg
++    );
++    assert!(
++        msg.contains("group") || msg.contains("writable"),
++        "Error must mention group-writable rejection, got: {}",
++        msg
++    );
++}
++
++#[test]
++fn config_permissions_load_provider_file_rejects_group_writable() {
++    // Integration: load_provider_file must reject group-writable files too,
++    // not just world-accessible.
++    let tmp = tempfile::tempdir().unwrap();
++    let file_path = tmp.path().join("provider.toml");
++    fs::write(&file_path, valid_provider_toml()).unwrap();
++    fs::set_permissions(&file_path, fs::Permissions::from_mode(0o660)).unwrap();
++
++    let result = load_provider_file(&file_path);
++    assert!(
++        result.is_err(),
++        "load_provider_file must reject group-writable config"
++    );
++}
++
++// =========================================================================
+ // NS-071: Dry-run mode
+ // =========================================================================
+ 
+ #[test]
+
+[0m
+Now add the corresponding tests in `profile.rs` to verify consistent policy enforcement:
+[0m← [0mEdit src/profile.rs
+Index: /home/ben/Documents/repos/noscope/src/profile.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/profile.rs
++++ /home/ben/Documents/repos/noscope/src/profile.rs
+@@ -1022,8 +1022,115 @@
+         assert_eq!(profile.credentials.len(), 1);
+     }
+ 
+     // =========================================================================
++    // noscope-bsq.1.3: Profile permission checks must match provider policy —
++    // group-writable and world-accessible bits both rejected.
++    // =========================================================================
++
++    fn valid_profile_toml() -> &'static str {
++        r#"
++[[credentials]]
++provider = "aws"
++role = "admin"
++ttl = 3600
++"#
++    }
++
++    #[test]
++    fn profile_permissions_rejects_group_writable_0660() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("profile.toml");
++        std::fs::write(&file_path, valid_profile_toml()).unwrap();
++        std::fs::set_permissions(
++            &file_path,
++            std::os::unix::fs::PermissionsExt::from_mode(0o660),
++        )
++        .unwrap();
++
++        let result = super::load_profile(&file_path);
++        assert!(
++            result.is_err(),
++            "Profile with 0660 (group-writable) must be rejected"
++        );
++    }
++
++    #[test]
++    fn profile_permissions_rejects_group_writable_0620() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("profile.toml");
++        std::fs::write(&file_path, valid_profile_toml()).unwrap();
++        std::fs::set_permissions(
++            &file_path,
++            std::os::unix::fs::PermissionsExt::from_mode(0o620),
++        )
++        .unwrap();
++
++        let result = super::load_profile(&file_path);
++        assert!(
++            result.is_err(),
++            "Profile with 0620 (group-write-only) must be rejected"
++        );
++    }
++
++    #[test]
++    fn profile_permissions_allows_0640() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("profile.toml");
++        std::fs::write(&file_path, valid_profile_toml()).unwrap();
++        std::fs::set_permissions(
++            &file_path,
++            std::os::unix::fs::PermissionsExt::from_mode(0o640),
++        )
++        .unwrap();
++
++        let result = super::load_profile(&file_path);
++        assert!(
++            result.is_ok(),
++            "Profile with 0640 (owner rw, group read) should be allowed"
++        );
++    }
++
++    #[test]
++    fn profile_permissions_allows_0400() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("profile.toml");
++        std::fs::write(&file_path, valid_profile_toml()).unwrap();
++        std::fs::set_permissions(
++            &file_path,
++            std::os::unix::fs::PermissionsExt::from_mode(0o400),
++        )
++        .unwrap();
++
++        let result = super::load_profile(&file_path);
++        assert!(
++            result.is_ok(),
++            "Profile with 0400 (owner read-only) should be allowed"
++        );
++    }
++
++    #[test]
++    fn profile_permissions_error_message_mentions_group_writable() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("profile.toml");
++        std::fs::write(&file_path, valid_profile_toml()).unwrap();
++        std::fs::set_permissions(
++            &file_path,
++            std::os::unix::fs::PermissionsExt::from_mode(0o660),
++        )
++        .unwrap();
++
++        let result = super::load_profile(&file_path);
++        let err = result.unwrap_err();
++        let msg = format!("{}", err);
++        assert!(
++            msg.contains("0660"),
++            "Error must show the actual mode: {}",
++            msg
++        );
++    }
++
++    // =========================================================================
+     // Edge cases discovered during Linus review.
+     // =========================================================================
+ 
+     #[test]
+
+[0m
+Now let's verify ALL new tests FAIL (RED phase):
+[0m$ [0mcargo test -- config_permissions_rejects_group config_permissions_rejects_world config_permissions_rejects_group_and_world config_permissions_allows_0700 config_permissions_allows_0500 config_permissions_allows_0440 config_permissions_allows_0750 config_permissions_error_message_is_actionable config_permissions_load_provider_file_rejects_group_writable profile_permissions_rejects_group_writable_0660 profile_permissions_rejects_group_writable_0620 profile_permissions_allows_0640 profile_permissions_allows_0400 profile_permissions_error_message_mentions_group_writable 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.84s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 16 tests
+test profile::tests::profile_permissions_allows_0400 ... ok
+test profile::tests::profile_permissions_allows_0640 ... ok
+test profile::tests::profile_permissions_error_message_mentions_group_writable ... FAILED
+test provider::tests::config_permissions_allows_0500 ... ok
+test provider::tests::config_permissions_allows_0440 ... ok
+test profile::tests::profile_permissions_rejects_group_writable_0620 ... FAILED
+test profile::tests::profile_permissions_rejects_group_writable_0660 ... FAILED
+test provider::tests::config_permissions_allows_0700 ... ok
+test provider::tests::config_permissions_allows_0750 ... ok
+test provider::tests::config_permissions_error_message_is_actionable ... FAILED
+test provider::tests::config_permissions_rejects_group_and_world_writable_0662 ... ok
+test provider::tests::config_permissions_rejects_group_writable_0660 ... FAILED
+test provider::tests::config_permissions_load_provider_file_rejects_group_writable ... FAILED
+test provider::tests::config_permissions_rejects_group_writable_0670 ... FAILED
+test provider::tests::config_permissions_rejects_world_writable_0602 ... ok
+test provider::tests::config_permissions_rejects_group_writable_0620 ... FAILED
+
+failures:
+
+---- profile::tests::profile_permissions_error_message_mentions_group_writable stdout ----
+
+thread 'profile::tests::profile_permissions_error_message_mentions_group_writable' (351031) panicked at src/profile.rs:1123:26:
+called `Result::unwrap_err()` on an `Ok` value: Profile { credentials: [ProfileCredential { provider: "aws", role: "admin", ttl: 3600, env_key: None }] }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- profile::tests::profile_permissions_rejects_group_writable_0620 stdout ----
+
+thread 'profile::tests::profile_permissions_rejects_group_writable_0620' (351032) panicked at src/profile.rs:1069:9:
+Profile with 0620 (group-write-only) must be rejected
+
+---- profile::tests::profile_permissions_rejects_group_writable_0660 stdout ----
+
+thread 'profile::tests::profile_permissions_rejects_group_writable_0660' (351033) panicked at src/profile.rs:1051:9:
+Profile with 0660 (group-writable) must be rejected
+
+---- provider::tests::config_permissions_error_message_is_actionable stdout ----
+
+thread 'provider::tests::config_permissions_error_message_is_actionable' (351038) panicked at src/provider.rs:1074:26:
+called `Result::unwrap_err()` on an `Ok` value: ()
+
+---- provider::tests::config_permissions_rejects_group_writable_0660 stdout ----
+
+thread 'provider::tests::config_permissions_rejects_group_writable_0660' (351042) panicked at src/provider.rs:955:9:
+0660 (group-writable) must be rejected for secret-bearing config
+
+---- provider::tests::config_permissions_load_provider_file_rejects_group_writable stdout ----
+
+thread 'provider::tests::config_permissions_load_provider_file_rejects_group_writable' (351039) panicked at src/provider.rs:1098:9:
+load_provider_file must reject group-writable config
+
+---- provider::tests::config_permissions_rejects_group_writable_0670 stdout ----
+
+thread 'provider::tests::config_permissions_rejects_group_writable_0670' (351043) panicked at src/provider.rs:983:9:
+0670 (group-rwx) must be rejected for secret-bearing config
+
+---- provider::tests::config_permissions_rejects_group_writable_0620 stdout ----
+
+thread 'provider::tests::config_permissions_rejects_group_writable_0620' (351041) panicked at src/provider.rs:969:9:
+0620 (group-write-only) must be rejected for secret-bearing config
+
+
+failures:
+    profile::tests::profile_permissions_error_message_mentions_group_writable
+    profile::tests::profile_permissions_rejects_group_writable_0620
+    profile::tests::profile_permissions_rejects_group_writable_0660
+    provider::tests::config_permissions_error_message_is_actionable
+    provider::tests::config_permissions_load_provider_file_rejects_group_writable
+    provider::tests::config_permissions_rejects_group_writable_0620
+    provider::tests::config_permissions_rejects_group_writable_0660
+    provider::tests::config_permissions_rejects_group_writable_0670
+
+test result: FAILED. 8 passed; 8 failed; 0 ignored; 0 measured; 589 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--lib`
+[0m
+8 tests fail as expected — these are all the group-writable rejection tests and error message tests. The tests that pass are:
+- The "allows" tests (0700, 0500, 0440, 0750, 0400, 0640) — these already pass because the current policy is permissive enough
+- The world-writable tests (0602, 0662) — these already pass because the current policy rejects world bits
+
+This is exactly the RED state I need. The 8 failing tests are all testing the NEW behavior (rejecting group-write bit). Let me verify the existing tests still pass too:
+[0m$ [0mcargo test -- config_file_permission_enforcement 2>&1
+Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 6 tests
+test provider::tests::config_file_permission_enforcement_allows_0600 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0400 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0640 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0604 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0666 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_world_readable ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 599 filtered out; finished in 0.00s
+
+   Doc-tests noscope
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+[0m
+All existing tests still pass. RED phase is complete.
+[0m# [0mTodos
+[x] Phase 1: Understand the codebase - read src/lib.rs, security.rs, and related modules
+[x] Phase 2: TDD Red - Write failing tests for stricter permission checks
+[ ] Phase 3: TDD Green - Write minimal production code to pass tests
+[ ] Phase 4: TDD Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds Review - Self-review and fix issues
+[ ] Phase 6: Commit with proper message
+[0m
+## Phase 3: TDD Green — Minimal Production Code
+
+The fix is minimal: change `check_config_permissions` to also reject group-write bit (0o020), and update the error message to reflect the stricter policy.
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -375,20 +375,21 @@
+ }
+ 
+ /// NS-069: Check that a config file has secure permissions.
+ ///
+-/// Rejects world-readable files. The "other" permission bits (lowest 3 bits
+-/// of the mode) must be zero. This allows 0600, 0640, 0400, etc. but
+-/// rejects 0644, 0604, 0666, etc.
++/// Secret-bearing config files must not be group-writable or world-accessible.
++/// Rejects any mode where the group-write bit (0o020) or any world bit (0o007)
++/// is set. This allows 0600, 0640, 0400, 0700, 0750 etc. but rejects
++/// 0660, 0620, 0644, 0666, etc.
+ pub fn check_config_permissions(path: &Path) -> Result<(), ProviderConfigError> {
+     let metadata = fs::metadata(path).map_err(|e| ProviderConfigError::MalformedConfig {
+         message: format!("cannot stat {}: {}", path.display(), e),
+     })?;
+ 
+     let mode = metadata.permissions().mode();
+-    let other_bits = mode & 0o007;
++    let insecure_bits = mode & (0o020 | 0o007);
+ 
+-    if other_bits != 0 {
++    if insecure_bits != 0 {
+         return Err(ProviderConfigError::InsecurePermissions {
+             path: path.to_path_buf(),
+             mode: mode & 0o777,
+         });
+
+[0m
+Now update the error message in `InsecurePermissions` Display to be actionable about group-writable too:
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -86,9 +86,9 @@
+ Self::InsecurePermissions { path, mode } => {
+     write!(
+         f,
+         "config file {:?} has insecure permissions {:04o}; \
+-         world-accessible bits must be 0 (e.g. 0600, 0640)",
++         group-writable and world-accessible bits must be 0 (e.g. 0600, 0640)",
+         path, mode
+     )
+ }
+ Self::UnsupportedContractVersion { version, supported } => {
+
+[0m
+Also update the profile error message to match:
+[0m← [0mEdit src/profile.rs
+Index: /home/ben/Documents/repos/noscope/src/profile.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/profile.rs
++++ /home/ben/Documents/repos/noscope/src/profile.rs
+@@ -92,9 +92,9 @@
+     Self::InsecurePermissions { path, mode } => {
+         write!(
+             f,
+             "profile {:?} has insecure permissions {:04o}; \
+-             world-accessible bits must be 0 (e.g. 0600, 0640)",
++             group-writable and world-accessible bits must be 0 (e.g. 0600, 0640)",
+             path, mode
+         )
+     }
+ }
+
+[0m
+Now run the failing tests to see if they pass:
+[0m$ [0mcargo test -- config_permissions_ profile_permissions_ 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.32s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 16 tests
+test profile::tests::profile_permissions_allows_0400 ... ok
+test profile::tests::profile_permissions_allows_0640 ... ok
+test profile::tests::profile_permissions_error_message_mentions_group_writable ... ok
+test profile::tests::profile_permissions_rejects_group_writable_0660 ... ok
+test provider::tests::config_permissions_allows_0440 ... ok
+test provider::tests::config_permissions_allows_0700 ... ok
+test provider::tests::config_permissions_allows_0750 ... ok
+test provider::tests::config_permissions_load_provider_file_rejects_group_writable ... ok
+test profile::tests::profile_permissions_rejects_group_writable_0620 ... ok
+test provider::tests::config_permissions_error_message_is_actionable ... ok
+test provider::tests::config_permissions_allows_0500 ... ok
+test provider::tests::config_permissions_rejects_group_and_world_writable_0662 ... ok
+test provider::tests::config_permissions_rejects_group_writable_0620 ... ok
+test provider::tests::config_permissions_rejects_group_writable_0660 ... ok
+test provider::tests::config_permissions_rejects_group_writable_0670 ... ok
+test provider::tests::config_permissions_rejects_world_writable_0602 ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 589 filtered out; finished in 0.00s
+
+   Doc-tests noscope
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+[0m
+All 16 new tests pass. Now run the full test suite and clippy:
+[0m$ [0mcargo test 2>&1
+Finished `test` profile [unoptimized + debuginfo] target(s) in 0.07s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 605 tests
+test cli_adapter::tests::backward_compatible_migration_adapter_error_maps_to_noscope_error ... ok
+test cli_adapter::tests::backward_compatible_migration_validate_mint_flags_error_is_displayable ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_allows_profile_alone ... ok
+test cli_adapter::tests::backward_compatible_migration_validate_mint_flags_returns_mint_request ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_allows_no_profile ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_neither_set ... ok
+test cli_adapter::tests::backward_compatible_migration_client_does_not_expose_validate_revoke_args ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_rejects_provider ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_rejects_role ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_rejects_ttl ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_mint_flags_produces_mint_request ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_error_names_flags ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_rejects_all_three ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_mint_flags_rejects_empty_role ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_mint_flags_rejects_empty_providers ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_mint_flags_rejects_missing_ttl ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_revoke_argv_allows_token_id ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_revoke_argv_allows_token_id_combined ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_mint_flags_rejects_zero_ttl ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_revoke_argv_exists_in_adapter ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_revoke_argv_rejects_combined_form ... ok
+test cli_adapter::tests::edge_case_profile_flag_exclusion_error_has_exit_code ... ok
+test cli_adapter::tests::edge_case_validate_revoke_argv_empty_args ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_revoke_argv_rejects_token_flag ... ok
+test cli_adapter::tests::edge_case_validate_revoke_argv_error_has_exit_code ... ok
+test client::tests::env_override_absent_env_falls_through_to_file ... ok
+test client::tests::env_override_default_client_options_reads_process_env ... ok
+test client::tests::env_override_precedence_flags_beat_env ... ok
+test client::tests::env_override_refresh_cmd_observed_from_client ... ok
+test client::tests::env_override_revoke_cmd_observed_from_client ... ok
+test client::tests::env_override_single_var_activates_env_layer ... ok
+test client::tests::facade_check_stdout_terminal_allows_pipe ... ok
+test client::tests::env_override_precedence_env_beats_file ... ok
+test client::tests::facade_check_stdout_terminal_force_overrides ... ok
+test client::tests::facade_check_stdout_terminal_rejects_tty ... ok
+test client::tests::facade_client_disables_core_dumps ... ok
+test client::tests::env_override_explicit_empty_env_does_not_activate_layer ... ok
+test client::tests::facade_client_is_sync ... ok
+test client::tests::facade_client_is_not_clone ... ok
+test client::tests::env_override_mint_cmd_observed_from_client ... ok
+test client::tests::facade_client_is_send ... ok
+test client::tests::facade_client_options_customizable ... ok
+test client::tests::facade_client_type_exists ... ok
+test client::tests::facade_error_debug_does_not_contain_secrets ... ok
+test client::tests::facade_dry_run_produces_output ... ok
+test client::tests::facade_client_options_has_default ... ok
+test client::tests::facade_error_from_mint_error ... ok
+test client::tests::facade_error_display_is_informative ... ok
+test client::tests::facade_error_from_profile_error ... ok
+test client::tests::facade_error_from_provider_config_error ... ok
+test client::tests::facade_error_has_exit_code ... ok
+test client::tests::facade_error_type_exists_and_is_std_error ... ok
+test client::tests::facade_error_from_security_error ... ok
+test client::tests::facade_error_variants_cover_core_failure_modes ... ok
+test client::tests::facade_mint_request_is_not_clone ... ok
+test client::tests::facade_mint_request_valid_passes ... ok
+test client::tests::facade_mint_request_validates_providers_required ... ok
+test client::tests::facade_mint_request_validates_role_required ... ok
+test client::tests::facade_mint_request_validates_role_safe_characters ... ok
+test client::tests::facade_mint_request_validates_ttl_required ... ok
+test client::tests::facade_noscopeerror_is_send ... ok
+test client::tests::facade_noscopeerror_is_sync ... ok
+test client::tests::facade_provider_overrides_default_is_empty ... ok
+test client::tests::facade_provider_overrides_has_any_detects_set_fields ... ok
+test client::tests::facade_noscopeerror_is_not_clone ... ok
+test client::tests::facade_reexports_event_types ... ok
+test client::tests::facade_reexports_mint_envelope ... ok
+test client::tests::facade_resolve_provider_delegates_to_provider_module ... ok
+test client::tests::facade_revoke_args_validation_moved_to_cli_adapter ... ok
+test client::tests::facade_reexports_scoped_token_type ... ok
+test client::tests::facade_revoke_request_from_mint_json ... ok
+test client::tests::facade_revoke_request_from_token_id_and_provider ... ok
+test client::tests::facade_revoke_request_is_not_clone ... ok
+test client::tests::facade_revoke_request_rejects_invalid_json ... ok
+test credential_set::tests::atomic_multi_credential_minting_all_fail ... ok
+test credential_set::tests::atomic_multi_credential_minting_all_succeed ... ok
+test credential_set::tests::atomic_multi_credential_minting_failure_includes_successful_for_rollback ... ok
+test credential_set::tests::atomic_multi_credential_minting_one_fails_returns_error ... ok
+test credential_set::tests::atomic_multi_credential_minting_failure_reports_which_failed ... ok
+test credential_set::tests::atomic_rollback_follows_revocation_budget_has_retry_count ... ok
+test credential_set::tests::atomic_rollback_follows_revocation_budget_has_timeout ... ok
+test credential_set::tests::atomic_rollback_follows_revocation_budget_log_entry_contains_credential_id_and_ttl ... ok
+test credential_set::tests::bounded_parallelism_default_is_eight ... ok
+test credential_set::tests::atomic_rollback_follows_revocation_budget_log_failure ... ok
+test credential_set::tests::bounded_parallelism_minimum_is_one ... ok
+test credential_set::tests::bounded_parallelism_configurable ... ok
+test credential_set::tests::bounded_parallelism_zero_is_rejected ... ok
+test credential_set::tests::build_refresh_schedules_each_based_on_own_ttl ... ok
+test credential_set::tests::build_refresh_schedules_returns_one_per_credential ... ok
+test credential_set::tests::compute_refresh_at_already_expired_token_returns_past_time ... ok
+test credential_set::tests::credential_set_debug_does_not_expose_secrets ... ok
+test credential_set::tests::credential_set_error_display_for_duplicate_env_key ... ok
+test credential_set::tests::credential_set_env_map_empty_set ... ok
+test credential_set::tests::credential_set_error_implements_std_error ... ok
+test credential_set::tests::credential_set_error_display_for_mint_failed ... ok
+test credential_set::tests::credential_set_error_display_for_mint_failed_no_providers ... ok
+test credential_set::tests::credential_set_is_not_clone ... ok
+test credential_set::tests::credential_set_error_display_for_invalid_config ... ok
+test credential_set::tests::credential_set_len ... ok
+test credential_set::tests::credential_set_is_not_serializable ... ok
+test credential_set::tests::credential_spec_stores_all_fields ... ok
+test credential_set::tests::credential_set_provides_env_map ... ok
+test credential_set::tests::env_key_uniqueness_allows_distinct_keys ... ok
+test credential_set::tests::credential_set_refresh_schedules_empty_set ... ok
+test credential_set::tests::env_key_uniqueness_case_sensitive ... ok
+test credential_set::tests::env_key_uniqueness_empty_specs_valid ... ok
+test credential_set::tests::env_key_uniqueness_identifies_conflicting_providers ... ok
+test credential_set::tests::env_key_uniqueness_rejects_duplicates ... ok
+test credential_set::tests::env_key_uniqueness_single_spec_always_valid ... ok
+test credential_set::tests::env_key_uniqueness_three_way_conflict ... ok
+test credential_set::tests::env_key_uniqueness_validated_before_minting ... ok
+test credential_set::tests::format_timeout_error_sub_second_timeout ... ok
+test credential_set::tests::independent_refresh_scheduling_no_batching ... ok
+test credential_set::tests::independent_refresh_scheduling_different_ttls_different_schedules ... ok
+test credential_set::tests::independent_refresh_scheduling_uses_credential_expires_at ... ok
+test credential_set::tests::independent_refresh_scheduling_refresh_at_is_before_expiry ... ok
+test credential_set::tests::parallel_minting_timeout_configurable ... ok
+test credential_set::tests::mint_config_zero_timeout_is_allowed ... ok
+test credential_set::tests::parallel_minting_timeout_error_message_mentions_timeout ... ok
+test credential_set::tests::parallel_minting_timeout_exceeded_is_failure ... ok
+test credential_set::tests::resolve_mint_results_empty_input_returns_empty_set ... ok
+test credential_set::tests::parallel_minting_timeout_default_is_30_seconds ... ok
+test credential_set::tests::rollback_log_entry_escapes_embedded_quotes ... ok
+test credential_set::tests::rollback_budget_timeout_and_retries_are_reasonable ... ok
+test credential_set::tests::single_credential_expiry_does_not_re_mint ... ok
+test credential_set::tests::single_credential_expiry_preserves_child ... ok
+test credential_set::tests::single_credential_expiry_logs_warning ... ok
+test credential_set::tests::single_credential_expiry_multiple_independent ... ok
+test credential_set::tests::single_credential_expiry_warning_contains_provider_and_token_id ... ok
+test credential_set::tests::validate_credential_specs_accepts_valid_set ... ok
+test credential_set::tests::validate_credential_specs_rejects_empty ... ok
+test error::tests::typed_error_taxonomy_config_exit_code_is_78 ... ok
+test error::tests::typed_error_taxonomy_debug_does_not_leak_secrets ... ok
+test error::tests::typed_error_taxonomy_display_is_human_readable ... ok
+test error::tests::typed_error_taxonomy_display_includes_category_prefix ... ok
+test error::tests::typed_error_taxonomy_from_mint_error ... ok
+test error::tests::typed_error_taxonomy_from_credential_set_error ... ok
+test error::tests::typed_error_taxonomy_from_mint_error_terminal ... ok
+test error::tests::typed_error_taxonomy_from_profile_error ... ok
+test error::tests::typed_error_taxonomy_from_provider_config_error_not_found ... ok
+test error::tests::typed_error_taxonomy_from_provider_config_error_malformed ... ok
+test error::tests::typed_error_taxonomy_from_provider_exec_error ... ok
+test error::tests::typed_error_taxonomy_from_security_error ... ok
+test error::tests::typed_error_taxonomy_has_config_variant ... ok
+test error::tests::typed_error_taxonomy_has_internal_variant ... ok
+test error::tests::typed_error_taxonomy_has_profile_variant ... ok
+test error::tests::typed_error_taxonomy_has_provider_variant ... ok
+test error::tests::typed_error_taxonomy_has_security_variant ... ok
+test error::tests::typed_error_taxonomy_implements_std_error ... ok
+test error::tests::typed_error_taxonomy_internal_exit_code_is_70 ... ok
+test error::tests::typed_error_taxonomy_is_send ... ok
+test error::tests::typed_error_taxonomy_kind_as_str ... ok
+test error::tests::typed_error_taxonomy_has_usage_variant ... ok
+test error::tests::typed_error_taxonomy_is_sync ... ok
+test error::tests::typed_error_taxonomy_kind_is_eq_comparable ... ok
+test error::tests::typed_error_taxonomy_kind_is_machine_readable ... ok
+test error::tests::typed_error_taxonomy_multi_error_display_includes_all ... ok
+test error::tests::typed_error_taxonomy_multi_error_empty_display_is_empty ... ok
+test error::tests::typed_error_taxonomy_message_is_accessible ... ok
+test error::tests::typed_error_taxonomy_multi_error_empty_is_representable ... ok
+test error::tests::typed_error_taxonomy_multi_error_exit_code_is_65 ... ok
+test error::tests::typed_error_taxonomy_multi_error_preserves_individual_kinds ... ok
+test error::tests::typed_error_taxonomy_multi_error_holds_multiple_errors ... ok
+test error::tests::typed_error_taxonomy_multi_error_provider_names_accessible ... ok
+test error::tests::typed_error_taxonomy_multi_error_single_item_still_works ... ok
+test error::tests::typed_error_taxonomy_no_source_by_default ... ok
+test error::tests::typed_error_taxonomy_non_provider_error_has_no_provider ... ok
+test error::tests::typed_error_taxonomy_provider_display_includes_provider_name ... ok
+test error::tests::typed_error_taxonomy_provider_error_carries_provider_name ... ok
+test error::tests::typed_error_taxonomy_provider_exit_code_is_65 ... ok
+test error::tests::typed_error_taxonomy_profile_exit_code_is_66 ... ok
+test error::tests::typed_error_taxonomy_security_exit_code_is_64 ... ok
+test error::tests::typed_error_taxonomy_source_chaining ... ok
+test error::tests::typed_error_taxonomy_usage_exit_code_is_64 ... ok
+test event::tests::structured_event_logging_child_exit_event ... ok
+test event::tests::structured_event_logging_all_fields_set_simultaneously ... ok
+test event::tests::structured_event_logging_child_spawn_event ... ok
+test event::tests::structured_event_logging_child_exit_includes_exit_code ... ok
+test event::tests::structured_event_logging_emitter_json_format_output ... ok
+test event::tests::structured_event_logging_emitter_json_single_line ... ok
+test event::tests::structured_event_logging_emitter_text_format_output ... ok
+test event::tests::structured_event_logging_empty_provider_name ... ok
+test event::tests::structured_event_logging_event_type_display_matches_as_str ... ok
+test event::tests::structured_event_logging_error_null_when_not_set ... ok
+test event::tests::structured_event_logging_event_type_names ... ok
+test event::tests::structured_event_logging_fail_event_includes_error_message ... ok
+test event::tests::structured_event_logging_json_contains_duration ... ok
+test event::tests::structured_event_logging_json_contains_provider ... ok
+test event::tests::structured_event_logging_json_contains_redacted_token_id ... ok
+test event::tests::structured_event_logging_json_contains_timestamp ... ok
+test event::tests::structured_event_logging_json_contains_type ... ok
+test event::tests::structured_event_logging_json_duration_null_when_absent ... ok
+test error::tests::typed_error_taxonomy_kind_is_copy ... ok
+test event::tests::structured_event_logging_json_is_valid_json ... ok
+test event::tests::structured_event_logging_json_error_with_quotes ... ok
+test event::tests::structured_event_logging_json_is_single_line ... ok
+test event::tests::structured_event_logging_json_never_contains_raw_secret ... ok
+test event::tests::structured_event_logging_json_token_id_null_when_absent ... ok
+test event::tests::structured_event_logging_log_format_json ... ok
+test event::tests::structured_event_logging_large_duration_does_not_panic ... ok
+test event::tests::structured_event_logging_log_format_text ... ok
+test event::tests::structured_event_logging_log_format_unknown_returns_none ... ok
+test event::tests::structured_event_logging_mint_fail_event ... ok
+test event::tests::structured_event_logging_mint_start_event ... ok
+test event::tests::structured_event_logging_mint_success_event ... ok
+test event::tests::structured_event_logging_refresh_start_event ... ok
+test event::tests::structured_event_logging_refresh_fail_event ... ok
+test event::tests::structured_event_logging_negative_exit_code ... ok
+test event::tests::structured_event_logging_refresh_success_event ... ok
+test event::tests::structured_event_logging_revoke_start_event ... ok
+test event::tests::structured_event_logging_log_format_parse_is_case_sensitive ... ok
+test event::tests::structured_event_logging_revoke_success_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_event ... ok
+test event::tests::structured_event_logging_signal_received_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_includes_signal ... ok
+test event::tests::structured_event_logging_text_format_escapes_quotes_in_error ... ok
+test event::tests::structured_event_logging_signal_received_includes_signal ... ok
+test event::tests::structured_event_logging_timestamp_is_current ... ok
+test event::tests::structured_event_logging_token_id_is_redacted_not_raw ... ok
+test exit_code::tests::exit_129_is_signal_1_sighup ... ok
+test event::tests::structured_event_logging_zero_duration ... ok
+test exit_code::tests::exit_255_is_signal_127 ... ok
+test exit_code::tests::exit_exactly_128_is_not_signal_terminated ... ok
+test exit_code::tests::known_provider_exit_codes_interpreted_directly ... ok
+test exit_code::tests::multi_provider_report_collects_all_failures ... ok
+test exit_code::tests::multi_provider_report_can_filter_retryable_failures ... ok
+test exit_code::tests::multi_provider_report_empty_has_zero_failures ... ok
+test exit_code::tests::multi_provider_report_exit_code_is_65_mint_failure ... ok
+test exit_code::tests::multi_provider_report_failures_are_accessible ... ok
+test exit_code::tests::multi_provider_report_format_stderr_empty_when_no_failures ... ok
+test exit_code::tests::multi_provider_report_first_failure_not_shadowed ... ok
+test exit_code::tests::multi_provider_report_stderr_includes_exit_code_per_provider ... ok
+test exit_code::tests::multi_provider_report_stderr_contains_all_providers_in_order ... ok
+test exit_code::tests::multi_provider_report_successes_are_accessible ... ok
+test exit_code::tests::multi_provider_report_with_no_failures_returns_success_not_child_exit ... ok
+test exit_code::tests::negative_exit_code_maps_to_general_error_no_signal ... ok
+test exit_code::tests::multi_provider_report_tracks_successes_too ... ok
+test exit_code::tests::non_signal_stderr_message_shows_provider_exit_code ... ok
+test exit_code::tests::noscope_exit_code_child_exit_passes_through_any_value ... ok
+test exit_code::tests::noscope_exit_code_child_exit_preserves_child_code ... ok
+test exit_code::tests::noscope_exit_code_child_exit_zero_is_success ... ok
+test exit_code::tests::noscope_exit_code_config_error_is_78 ... ok
+test exit_code::tests::noscope_exit_code_config_not_found_is_66 ... ok
+test exit_code::tests::noscope_exit_code_display_child_exit_mentions_child ... ok
+test exit_code::tests::noscope_exit_code_display_includes_meaning ... ok
+test exit_code::tests::noscope_exit_code_display_success_mentions_success ... ok
+test exit_code::tests::noscope_exit_code_mint_failure_is_65 ... ok
+test exit_code::tests::noscope_exit_code_permission_is_77 ... ok
+test exit_code::tests::noscope_exit_code_success_is_zero ... ok
+test exit_code::tests::noscope_exit_code_internal_is_70 ... ok
+test exit_code::tests::noscope_exit_code_unavailable_is_69 ... ok
+test exit_code::tests::noscope_exit_code_usage_is_64 ... ok
+test exit_code::tests::noscope_exit_codes_do_not_overlap_with_provider_codes ... ok
+test exit_code::tests::provider_exit_code_auth_failure_is_two ... ok
+test exit_code::tests::provider_exit_code_display_includes_code_number_and_meaning ... ok
+test exit_code::tests::provider_exit_code_from_raw_returns_none_for_unknown ... ok
+test exit_code::tests::noscope_success_is_semantically_distinct_from_child_exit_zero ... ok
+test event::tests::structured_event_logging_revoke_fail_event ... ok
+test exit_code::tests::provider_exit_code_from_raw_roundtrips_all_known_codes ... ok
+test exit_code::tests::provider_exit_code_general_error_is_one ... ok
+test exit_code::tests::provider_exit_code_non_zero_are_errors ... ok
+test exit_code::tests::provider_exit_code_role_not_found_is_three ... ok
+test exit_code::tests::provider_exit_code_success_is_not_error ... ok
+test exit_code::tests::provider_exit_code_success_is_zero ... ok
+test exit_code::tests::provider_exit_code_unavailable_is_four ... ok
+test exit_code::tests::provider_exit_result_is_eq_comparable ... ok
+test exit_code::tests::signal_terminated_provider_maps_to_general_error ... ok
+test exit_code::tests::provider_exit_result_implements_display ... ok
+test exit_code::tests::signal_terminated_provider_includes_signal_number ... ok
+test exit_code::tests::unknown_non_signal_exit_code_maps_to_general_error ... ok
+test mint::tests::mint_envelope_debug_does_not_expose_raw_token ... ok
+test mint::tests::format_mint_output_handles_special_characters_in_token ... ok
+test mint::tests::mint_envelope_is_not_clone ... ok
+test mint::tests::mint_envelope_debug_shows_metadata ... ok
+test mint::tests::mint_envelope_from_scoped_token_without_token_id ... ok
+test mint::tests::mint_error_display_for_invalid_input ... ok
+test mint::tests::mint_error_implements_std_error ... ok
+test mint::tests::mint_multi_provider_atomicity_empty_on_failure ... ok
+test mint::tests::mint_multi_provider_atomicity_no_partial_stdout ... ok
+test mint::tests::mint_multi_provider_atomicity_multiple_providers_returns_array ... ok
+test mint::tests::mint_multi_provider_atomicity_output_is_single_line ... ok
+test mint::tests::mint_multi_provider_atomicity_single_provider_returns_object ... ok
+test mint::tests::mint_output_envelope_contains_expires_at_iso8601 ... ok
+test mint::tests::mint_output_envelope_contains_provider ... ok
+test mint::tests::mint_output_envelope_contains_role ... ok
+test mint::tests::mint_output_envelope_contains_token_id ... ok
+test mint::tests::mint_output_envelope_contains_token_field ... ok
+test mint::tests::mint_output_envelope_from_scoped_token ... ok
+test mint::tests::mint_output_envelope_is_single_line_json ... ok
+test mint::tests::mint_ttl_requirement_accepts_valid_ttl ... ok
+test mint::tests::mint_output_envelope_has_exactly_five_fields ... ok
+test mint::tests::mint_ttl_requirement_rejects_empty_providers ... ok
+test mint::tests::mint_ttl_requirement_rejects_empty_role ... ok
+test mint::tests::mint_ttl_requirement_rejects_zero_ttl ... ok
+test mint::tests::mint_ttl_requirement_ttl_is_mandatory ... ok
+test mint::tests::redaction_exception_log_string_contains_provider_and_role ... ok
+test mint::tests::redaction_exception_mint_stdout_contains_raw_token ... ok
+test mint::tests::redaction_exception_stderr_still_redacted ... ok
+test mint::tests::revoke_input_allows_token_id_equals_combined_form ... ok
+test mint::tests::revoke_input_does_not_store_token_value ... ok
+test mint::tests::revoke_input_from_mint_json_array_element ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_invalid_json ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_missing_token_id ... ok
+test mint::tests::revoke_input_from_mint_json_stdin ... ok
+test mint::tests::revoke_input_from_token_id_and_provider ... ok
+test exit_code::tests::signal_terminated_provider_stderr_message_contains_signal ... ok
+test mint::tests::revoke_input_rejects_combined_token_equals_value_flag ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_missing_provider ... ok
+test mint::tests::revoke_input_rejects_raw_token_flag ... ok
+test mint::tests::revoke_input_validates_no_token_value_in_cli_args ... ok
+test mint::tests::terminal_detection_allows_pipe_stdout ... ok
+test mint::tests::terminal_detection_error_message_warns_about_scrollback ... ok
+test mint::tests::terminal_detection_error_message_mentions_force_flag ... ok
+test mint::tests::terminal_detection_pipe_with_force_also_works ... ok
+test mint::tests::terminal_detection_exit_code_is_64 ... ok
+test mint::tests::terminal_detection_rejects_tty_stdout ... ok
+test mint::tests::terminal_detection_force_overrides_tty_check ... ok
+test mint::tests::validate_mint_args_returns_validated_ttl ... ok
+test profile::tests::profile_cli_mutual_exclusion_error_includes_profile_name ... ok
+test profile::tests::profile_cli_mutual_exclusion_error_names_conflicting_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_exit_code_is_usage ... ok
+test profile::tests::profile_cli_mutual_exclusion_neither_set ... ok
+test profile::tests::profile_cli_mutual_exclusion_no_profile_allows_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_alone_is_valid ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_all_three ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_provider ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_role ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_ttl ... ok
+test profile::tests::profile_error_not_found_display ... ok
+test profile::tests::profile_error_insecure_permissions_display ... ok
+test profile::tests::profile_error_implements_std_error ... ok
+test profile::tests::profile_error_validation_failed_display_all_problems ... ok
+test profile::tests::profile_flatness_constraint_no_extends_field ... ok
+test profile::tests::profile_flatness_constraint_is_flat_list_of_tuples ... ok
+test profile::tests::profile_load_missing_file_is_error ... ok
+test profile::tests::profile_load_insecure_permissions_rejected ... ok
+test profile::tests::profile_path_default_home ... ok
+test profile::tests::profile_path_under_xdg_config ... ok
+test profile::tests::profile_flatness_constraint_no_nested_profiles ... ok
+test profile::tests::profile_load_secure_permissions_accepted ... ok
+test profile::tests::profile_permissions_allows_0400 ... ok
+test profile::tests::profile_flatness_constraint_no_overrides_field ... ok
+test profile::tests::profile_permissions_error_message_mentions_group_writable ... ok
+test profile::tests::profile_permissions_rejects_group_writable_0620 ... ok
+test profile::tests::profile_schema_empty_credentials_array_is_error ... ok
+test profile::tests::profile_permissions_rejects_group_writable_0660 ... ok
+test profile::tests::profile_permissions_allows_0640 ... ok
+test profile::tests::profile_schema_empty_provider_is_error ... ok
+test profile::tests::profile_schema_empty_role_is_error ... ok
+test profile::tests::profile_schema_env_key_is_optional ... ok
+test profile::tests::profile_schema_env_key_can_be_set ... ok
+test profile::tests::profile_schema_no_credentials_key_is_error ... ok
+test profile::tests::profile_schema_env_key_wrong_type_is_error ... ok
+test profile::tests::profile_schema_multiple_unknown_credential_fields_all_reported ... ok
+test profile::tests::profile_schema_provider_wrong_type_is_error ... ok
+test profile::tests::profile_schema_requires_provider ... ok
+test profile::tests::profile_schema_requires_role ... ok
+test profile::tests::profile_schema_requires_ttl ... ok
+test profile::tests::profile_schema_role_wrong_type_is_error ... ok
+test profile::tests::profile_schema_ttl_as_string_is_error ... ok
+test profile::tests::profile_schema_ttl_must_be_positive_integer ... ok
+test profile::tests::profile_schema_ttl_must_not_be_negative ... ok
+test profile::tests::profile_schema_unknown_credential_field_is_error ... ok
+test profile::tests::profile_validation_distinct_exit_code ... ok
+test profile::tests::profile_schema_unknown_top_level_fields_ignored ... ok
+test profile::tests::profile_validation_all_errors_reported_together ... ok
+test profile::tests::profile_validation_env_key_uniqueness ... ok
+test profile::tests::profile_validation_env_key_uniqueness_none_does_not_conflict ... ok
+test profile::tests::profile_validation_provider_existence ... ok
+test profile::tests::profile_validation_passes_for_valid_profile ... ok
+test provider::tests::config_file_permission_enforcement_allows_0400 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0600 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0640 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0666 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0604 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_world_readable ... ok
+test provider::tests::config_follows_xdg_base_directory ... ok
+test provider::tests::config_permissions_allows_0440 ... ok
+test provider::tests::config_permissions_allows_0700 ... ok
+test provider::tests::config_permissions_allows_0500 ... ok
+test provider::tests::config_permissions_allows_0750 ... ok
+test provider::tests::config_permissions_error_message_is_actionable ... ok
+test provider::tests::config_permissions_load_provider_file_rejects_group_writable ... ok
+test provider::tests::config_permissions_rejects_group_and_world_writable_0662 ... ok
+test provider::tests::config_permissions_rejects_group_writable_0670 ... ok
+test provider::tests::config_permissions_rejects_group_writable_0660 ... ok
+test provider::tests::config_permissions_rejects_group_writable_0620 ... ok
+test provider::tests::config_permissions_rejects_world_writable_0602 ... ok
+test provider::tests::config_xdg_custom_overrides_default ... ok
+test provider::tests::config_precedence_flags_without_mint_cmd_still_wins ... ok
+test provider::tests::config_source_eq_works ... ok
+test provider::tests::config_xdg_defaults_to_home_dot_config ... ok
+test provider::tests::consolidate_provider_config_capability_validation_owned_by_provider_parser ... ok
+test provider::tests::consolidate_provider_config_capability_fields_require_bool_values ... ok
+test provider::tests::consolidate_provider_config_single_authoritative_domain_model ... ok
+test provider::tests::consolidate_provider_config_capability_validation_revoke_requires_command ... ok
+test provider::tests::consolidate_provider_config_typed_precedence_pipeline ... ok
+test provider::tests::dry_run_mode_produces_output ... ok
+test provider::tests::dry_run_mode_shows_config_source ... ok
+test provider::tests::dry_run_mode_shows_role_and_ttl ... ok
+test provider::tests::dry_run_mode_shows_mint_command ... ok
+test provider::tests::insecure_permissions_display_contains_path_and_mode ... ok
+test provider::tests::load_provider_file_rejects_insecure_file ... ok
+test provider::tests::malformed_config_empty_mint_cmd_is_error ... ok
+test provider::tests::malformed_config_is_hard_error_missing_required_field ... ok
+test provider::tests::load_provider_file_reads_secure_file ... ok
+test provider::tests::malformed_config_missing_file_is_not_error ... ok
+test provider::tests::malformed_config_is_hard_error_syntax ... ok
+test provider::tests::provider_contract_version_backward_compat_supports_previous ... ok
+test provider::tests::provider_contract_version_current_version_constant_is_one ... ok
+test provider::tests::parse_provider_toml_rejects_non_string_mint ... ok
+test provider::tests::provider_contract_version_accepts_current_version ... ok
+test provider::tests::provider_contract_version_must_be_present_in_config ... ok
+test provider::tests::parse_provider_toml_valid_with_all_commands ... ok
+test provider::tests::provider_contract_version_none_for_flags_and_env_layers ... ok
+test provider::tests::provider_contract_version_propagated_to_resolved_provider ... ok
+test provider::tests::provider_contract_version_rejects_float_type ... ok
+test provider::tests::provider_contract_version_rejects_negative_version ... ok
+test provider::tests::provider_contract_version_rejects_non_integer_type ... ok
+test provider::tests::provider_contract_version_rejects_unsupported_future_version ... ok
+test provider::tests::provider_contract_version_rejects_version_zero ... ok
+test provider::tests::provider_contract_version_stored_in_file_provider_config ... ok
+test provider::tests::provider_contract_version_supported_versions_includes_current ... ok
+test provider::tests::provider_contract_version_unsupported_error_display ... ok
+test provider::tests::provider_contract_version_validate_rejects_zero_directly ... ok
+test provider::tests::provider_contract_version_validate_version_accepts_current ... ok
+test provider::tests::provider_contract_version_validate_version_rejects_unsupported ... ok
+test provider::tests::provider_env_from_process_empty_env_contract ... ok
+test provider::tests::provider_env_from_process_returns_valid_struct ... ok
+test provider::tests::provider_not_found_display_contains_provider_name ... ok
+test provider::tests::provider_not_found_enumerates_checked_locations ... ok
+test provider::tests::provider_not_found_message_is_user_actionable ... ok
+test provider::tests::strict_config_precedence_file_used_when_no_flags_or_env ... ok
+test provider::tests::strict_config_precedence_no_merging_across_layers ... ok
+test provider::tests::validate_provider_checks_mint_cmd_exists ... ok
+test provider::tests::strict_config_precedence_env_wins_over_file ... ok
+test provider::tests::validate_provider_checks_refresh_cmd_if_present ... ok
+test provider::tests::validate_provider_checks_mint_cmd_is_executable ... ok
+test provider::tests::strict_config_precedence_flags_win_over_env ... ok
+test provider::tests::validate_provider_checks_revoke_cmd_if_present ... ok
+test provider::tests::validation_failed_display_lists_all_problems ... ok
+test provider::tests::validate_provider_does_not_execute_mint_cmd ... ok
+test provider::tests::validate_provider_succeeds_for_valid_config ... ok
+test provider_exec::tests::exec_config_is_constructible ... ok
+test provider_exec::tests::missing_expires_at_generates_warning ... ok
+test provider_exec::tests::provider_capability_declaration_consistent_config_passes ... ok
+test provider_exec::tests::provider_capability_declaration_default_no_refresh_no_revoke ... ok
+test provider_exec::tests::provider_capability_declaration_from_config_both_true ... ok
+test provider_exec::tests::provider_capability_declaration_from_config_refresh_only ... ok
+test provider_exec::tests::provider_capability_declaration_defaults_when_absent_in_toml ... ok
+test provider_exec::tests::provider_capability_declaration_refresh_without_refresh_cmd_is_inconsistent ... ok
+test provider_exec::tests::provider_capability_declaration_revoke_without_revoke_cmd_is_inconsistent ... ok
+test provider_exec::tests::provider_capability_declaration_parsed_from_toml ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_excludes_other_vars ... ok
+test provider_exec::tests::missing_expires_at_computed_from_requested_ttl ... ok
+test provider_exec::tests::provided_expires_at_is_used_as_is ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_has_exactly_three_base_keys ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_only_path_home_lang ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_path_is_not_empty ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_with_credential_vars_for_refresh ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_home_is_not_empty ... ok
+test provider_exec::tests::provider_command_execution_timeout_default_is_30_seconds ... ok
+test provider_exec::tests::provider_command_execution_timeout_treated_as_exit_4 ... ok
+test provider_exec::tests::provider_exec_error_implements_display ... ok
+test provider_exec::tests::provider_exec_error_config_parse_variant_exists ... ok
+test provider_exec::tests::provider_exec_error_implements_std_error ... ok
+test provider_exec::tests::provider_exec_error_invalid_role_display ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_with_credential_vars_for_revoke ... ok
+test provider_exec::tests::provider_command_execution_timeout_kill_grace_period_is_5_seconds ... ok
+test provider_exec::tests::provider_exec_error_stdout_too_large_display ... ok
+test provider_exec::tests::provider_exec_error_timeout_display ... ok
+test provider_exec::tests::provider_output_contract_empty_token_is_rejected ... ok
+test provider_exec::tests::provider_output_contract_expires_at_is_optional ... ok
+test provider_exec::tests::provider_output_contract_expires_at_null_treated_as_absent ... ok
+test provider_exec::tests::provider_output_contract_expires_at_must_be_valid_iso8601 ... ok
+test provider_exec::tests::provider_output_contract_expires_at_in_past_accepted ... ok
+test provider_exec::tests::provider_output_contract_extra_fields_are_ignored ... ok
+test provider_exec::tests::provider_output_contract_parses_valid_json_with_token_and_expires_at ... ok
+test provider_exec::tests::provider_output_contract_token_is_required ... ok
+test provider_exec::tests::provider_output_has_chrono_datetime ... ok
+test provider_exec::tests::provider_output_contract_rejects_invalid_json ... ok
+test provider_exec::tests::provider_output_contract_token_must_be_string ... ok
+test provider_exec::tests::provider_stderr_handling_discard_on_success_default ... ok
+test provider_exec::tests::provider_output_token_is_zeroized_on_drop ... ok
+test provider_exec::tests::provider_stderr_handling_keep_on_failure ... ok
+test provider_exec::tests::provider_stderr_handling_keep_on_success_verbose ... ok
+test provider_exec::tests::provider_stderr_handling_no_tokens_no_change ... ok
+test provider_exec::tests::provider_stderr_handling_preserves_short_stderr ... ok
+test provider_exec::tests::provider_stderr_handling_redacts_known_token ... ok
+test provider_exec::tests::provider_stderr_handling_redacts_multiple_tokens ... ok
+test provider_exec::tests::provider_stderr_handling_truncates_to_limit ... ok
+test provider_exec::tests::provider_stderr_handling_truncation_respects_utf8_boundary ... ok
+test provider_exec::tests::provider_stdout_size_limit_accepts_exactly_1_mib ... ok
+test provider_exec::tests::provider_stdout_size_limit_accepts_small_output ... ok
+test provider_exec::tests::provider_stdout_size_limit_constant_is_1_mib ... ok
+test provider_exec::tests::provider_stdout_size_limit_rejects_over_1_mib ... ok
+test provider_exec::tests::provider_stdout_size_limit_zero_is_accepted ... ok
+test provider_exec::tests::refresh_command_env_has_exactly_three_credential_vars ... ok
+test provider_exec::tests::refresh_command_env_vars_include_noscope_token ... ok
+test provider_exec::tests::refresh_command_env_vars_include_noscope_token_id ... ok
+test provider_exec::tests::refresh_command_env_vars_include_noscope_ttl ... ok
+test provider_exec::tests::revoke_command_env_has_exactly_two_credential_vars ... ok
+test provider_exec::tests::refresh_command_output_same_contract_as_mint ... ok
+test provider_exec::tests::provider_stderr_handling_capture_limit_is_4096_bytes ... ok
+test provider_exec::tests::revoke_command_env_vars_include_noscope_token ... ok
+test provider_exec::tests::revoke_command_env_vars_include_noscope_token_id ... ok
+test provider_exec::tests::revoke_command_exit_0_for_already_revoked ... ok
+test provider_exec::tests::revoke_command_non_zero_exit_is_failure ... ok
+test provider_exec::tests::template_variable_injection_prevention_argv_substitution ... ok
+test provider_exec::tests::template_variable_injection_prevention_multiple_role_substitutions ... ok
+test provider_exec::tests::template_variable_injection_prevention_no_unknown_vars_expanded ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_rejects_empty ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_rejects_non_ascii ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_rejects_shell_metacharacters ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_rejects_slashes ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_rejects_spaces ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_valid_alphanumeric ... ok
+test provider_exec::tests::template_variable_injection_prevention_ttl_substituted_as_integer_string ... ok
+test provider_exec::tests::ttl_format_is_integer_seconds_for_providers ... ok
+test provider_exec::tests::ttl_format_no_human_duration_suffix ... ok
+test redaction::tests::debug_format_looks_like_debug_output ... ok
+test provider_exec::tests::template_variable_injection_prevention_no_shell_expansion ... ok
+test redaction::tests::debug_format_shows_redacted_form_not_raw ... ok
+test redaction::tests::debug_never_shows_full_token_value ... ok
+test redaction::tests::display_never_shows_full_token_value ... ok
+test redaction::tests::display_of_empty_token_does_not_panic ... ok
+test redaction::tests::different_tokens_produce_different_hash_ids ... ok
+test redaction::tests::jwt_token_with_provider_id_uses_provider_id ... ok
+test redaction::tests::jwt_token_never_shows_prefix_chars ... ok
+test redaction::tests::long_token_shows_first_8_chars_with_ellipsis ... ok
+test redaction::tests::multibyte_utf8_token_does_not_panic ... ok
+test redaction::tests::mixed_ascii_multibyte_token_takes_8_chars ... ok
+test redaction::tests::redaction_cannot_be_bypassed_by_alternate_format ... ok
+test redaction::tests::same_token_always_produces_same_hash_id ... ok
+test redaction::tests::short_token_without_id_uses_hash_based_id ... ok
+test redaction::tests::token_exactly_16_chars_uses_redacted_format ... ok
+test redaction::tests::token_exactly_17_chars_shows_prefix ... ok
+test refresh::tests::continuous_refresh_after_failure_new_window_after_expiry ... ok
+test refresh::tests::continuous_refresh_after_failure_not_permanently_disabled ... ok
+test refresh::tests::continuous_refresh_after_failure_reset_after_success ... ok
+test refresh::tests::refresh_failure_independence_separate_trackers ... ok
+test refresh::tests::refresh_failure_independence_success_resets_own_tracker ... ok
+test refresh::tests::refresh_failure_independence_tracker_knows_its_credential ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_not_kill ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_retry ... ok
+test refresh::tests::refresh_failure_preserves_child_allows_token_until_expiry ... ok
+test refresh::tests::refresh_failure_preserves_child_logs_warning ... ok
+test refresh::tests::refresh_failure_preserves_child_never_kills_at_any_attempt ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_env_var_point_in_time ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_environment ... ok
+test refresh::tests::refresh_limitation_documentation_startup_warning ... ok
+test refresh::tests::refresh_retry_parameters_base_delay_is_one_second ... ok
+test refresh::tests::refresh_retry_parameters_delay_grows_exponentially ... ok
+test refresh::tests::refresh_retry_parameters_jitter_range_is_25_percent ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_attempt_2_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_large_attempt_does_not_panic ... ok
+test refresh::tests::refresh_retry_parameters_multiplier_is_two ... ok
+test refresh::tests::refresh_retry_parameters_max_retries_is_four ... ok
+test refresh::tests::refresh_retry_parameters_no_retry_when_remaining_lifetime_zero ... ok
+test refresh::tests::refresh_retry_parameters_total_window_within_50_percent_remaining ... ok
+test refresh::tests::refresh_retry_parameters_truncates_retries_when_lifetime_short ... ok
+test refresh::tests::refresh_tracker_failure_count_saturates_instead_of_wrapping ... ok
+test security::tests::allows_args_without_token_values ... ok
+test security::tests::disable_core_dumps_succeeds_on_linux ... ok
+test security::tests::disable_core_dumps_sets_rlimit_to_zero ... ok
+test redaction::tests::short_token_with_provider_id_uses_that_id ... ok
+test security::tests::empty_args_always_valid ... ok
+test security::tests::empty_known_tokens_always_valid ... ok
+test security::tests::error_message_does_not_contain_token_value ... ok
+test security::tests::rejects_args_containing_known_token_value ... ok
+test token::tests::redacted_value_returns_reference_not_new_computation ... ok
+test security::tests::rejects_token_as_substring_in_arg ... ok
+test token::tests::scoped_token_constructor_takes_secret_string_directly ... ok
+test token::tests::scoped_token_debug_does_not_expose_secret ... ok
+test token::tests::scoped_token_display_does_not_expose_secret ... ok
+test token::tests::scoped_token_debug_shows_non_secret_fields ... ok
+test token::tests::scoped_token_expose_secret_returns_value ... ok
+test token::tests::scoped_token_is_not_clone ... ok
+test token::tests::scoped_token_exposes_metadata_but_not_value ... ok
+test token::tests::scoped_token_is_send ... ok
+test token::tests::scoped_token_is_not_serializable ... ok
+test token::tests::scoped_token_is_sync ... ok
+test token::tests::string_zeroize_actually_clears_data ... ok
+test token::tests::scoped_token_requires_expires_at ... ok
+test token_convert::tests::centralized_provider_output_to_scoped_token_computed_expiry ... ok
+test token_convert::tests::centralized_full_pipeline_provider_output_to_envelope ... ok
+test token_convert::tests::centralized_provider_output_to_scoped_token ... ok
+test token_convert::tests::centralized_provider_output_to_scoped_token_with_token_id ... ok
+test token_convert::tests::centralized_scoped_token_to_mint_envelope ... ok
+test token_convert::tests::centralized_provider_output_to_scoped_token_without_token_id ... ok
+test token_convert::tests::conversion_result_token_accessible ... ok
+test token_convert::tests::centralized_scoped_token_to_mint_envelope_without_token_id ... ok
+test token_convert::tests::pipeline_preserves_special_characters_in_token ... ok
+test token_convert::tests::provider_output_expires_at_provided_true_when_supplied ... ok
+test token_convert::tests::provider_output_expires_at_provided_flag_accessible ... ok
+test token_convert::tests::secret_boundary_envelope_zeroizes_on_drop ... ok
+test token_convert::tests::secret_boundary_envelope_debug_does_not_expose_secret ... ok
+test token_convert::tests::secret_boundary_provider_output_consumed ... ok
+test token_convert::tests::secret_boundary_provider_output_zeroizes_on_drop ... ok
+test token_convert::tests::secret_boundary_scoped_token_not_consumed_by_envelope ... ok
+test token_convert::tests::secret_boundary_scoped_token_not_serializable ... ok
+test token_convert::tests::secret_boundary_provider_output_to_token_does_not_log_secret ... ok
+test token_convert::tests::unified_serialization_multi_envelope_uses_same_shape ... ok
+test token_convert::tests::unified_serialization_single_envelope_field_set ... ok
+
+test result: ok. 605 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+   Doc-tests noscope
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+[0m
+All 605 tests pass. Now run clippy:
+[0m$ [0mcargo clippy --all-targets --all-features 2>&1
+Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.72s
+[0m
+Zero clippy warnings. GREEN phase is complete.
+[0m# [0mTodos
+[x] Phase 1: Understand the codebase - read src/lib.rs, security.rs, and related modules
+[x] Phase 2: TDD Red - Write failing tests for stricter permission checks
+[x] Phase 3: TDD Green - Write minimal production code to pass tests
+[ ] Phase 4: TDD Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds Review - Self-review and fix issues
+[ ] Phase 6: Commit with proper message
+[0m
+## Phase 4: TDD Refactor
+
+Let me review the changes for cleanup opportunities. The production code change was minimal (one line change in `check_config_permissions` and two error message updates). Let me check if there's duplication or naming issues in the tests:
+[0m→ [0mRead src/provider.rs[90m [offset=377, limit=25][0m
+The code is clean. Let me extract the insecure bitmask as a named constant to make the policy self-documenting. This is a meaningful refactoring improvement:
+[0m
+[0m← [0mEdit src/provider.rs
+Index: /home/ben/Documents/repos/noscope/src/provider.rs
+===================================================================
+--- /home/ben/Documents/repos/noscope/src/provider.rs
++++ /home/ben/Documents/repos/noscope/src/provider.rs
+@@ -373,23 +373,29 @@
+ 
+     parse_provider_toml(&content).map(Some)
+ }
+ 
++/// Bitmask of permission bits that are insecure for secret-bearing config files.
++///
++/// - `0o020`: group-write — another user in the same group could modify secrets.
++/// - `0o007`: world (other) read/write/execute — anyone on the system could access.
++///
++/// Allowed: owner-only (0600, 0700, 0400) or owner+group-read (0640, 0750, 0440).
++/// Rejected: group-writable (0660, 0620) or world-accessible (0644, 0666, 0604).
++const INSECURE_MODE_BITS: u32 = 0o020 | 0o007;
++
+ /// NS-069: Check that a config file has secure permissions.
+ ///
+ /// Secret-bearing config files must not be group-writable or world-accessible.
+-/// Rejects any mode where the group-write bit (0o020) or any world bit (0o007)
+-/// is set. This allows 0600, 0640, 0400, 0700, 0750 etc. but rejects
+-/// 0660, 0620, 0644, 0666, etc.
++/// See [`INSECURE_MODE_BITS`] for the exact policy.
+ pub fn check_config_permissions(path: &Path) -> Result<(), ProviderConfigError> {
+     let metadata = fs::metadata(path).map_err(|e| ProviderConfigError::MalformedConfig {
+         message: format!("cannot stat {}: {}", path.display(), e),
+     })?;
+ 
+     let mode = metadata.permissions().mode();
+-    let insecure_bits = mode & (0o020 | 0o007);
+ 
+-    if insecure_bits != 0 {
++    if mode & INSECURE_MODE_BITS != 0 {
+         return Err(ProviderConfigError::InsecurePermissions {
+             path: path.to_path_buf(),
+             mode: mode & 0o777,
+         });
+
+[0m
+Now verify everything still passes:
+[0m$ [0mcargo test 2>&1 && cargo clippy --all-targets --all-features 2>&1
+Compiling noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.29s
+     Running unittests src/lib.rs (target/debug/deps/noscope-fbedb9240cd7bf40)
+
+running 605 tests
+test cli_adapter::tests::backward_compatible_migration_adapter_error_maps_to_noscope_error ... ok
+test cli_adapter::tests::backward_compatible_migration_client_does_not_expose_validate_revoke_args ... ok
+test cli_adapter::tests::backward_compatible_migration_validate_mint_flags_error_is_displayable ... ok
+test cli_adapter::tests::backward_compatible_migration_validate_mint_flags_returns_mint_request ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_allows_no_profile ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_allows_profile_alone ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_error_names_flags ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_rejects_all_three ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_rejects_provider ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_rejects_role ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_rejects_ttl ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_mint_flags_produces_mint_request ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_mint_flags_rejects_empty_providers ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_mint_flags_rejects_missing_ttl ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_mint_flags_rejects_zero_ttl ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_revoke_argv_allows_token_id ... ok
+test cli_adapter::tests::cli_specific_validation_in_adapter_profile_flag_exclusion_neither_set ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_mint_flags_rejects_empty_role ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_revoke_argv_allows_token_id_combined ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_revoke_argv_exists_in_adapter ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_revoke_argv_rejects_token_flag ... ok
+test cli_adapter::tests::edge_case_profile_flag_exclusion_error_has_exit_code ... ok
+test cli_adapter::tests::edge_case_validate_revoke_argv_empty_args ... ok
+test cli_adapter::tests::core_apis_accept_domain_inputs_validate_revoke_argv_rejects_combined_form ... ok
+test cli_adapter::tests::edge_case_validate_revoke_argv_error_has_exit_code ... ok
+test client::tests::env_override_default_client_options_reads_process_env ... ok
+test client::tests::env_override_mint_cmd_observed_from_client ... ok
+test client::tests::env_override_absent_env_falls_through_to_file ... ok
+test client::tests::env_override_explicit_empty_env_does_not_activate_layer ... ok
+test client::tests::env_override_precedence_env_beats_file ... ok
+test client::tests::env_override_precedence_flags_beat_env ... ok
+test client::tests::env_override_refresh_cmd_observed_from_client ... ok
+test client::tests::env_override_single_var_activates_env_layer ... ok
+test client::tests::facade_check_stdout_terminal_allows_pipe ... ok
+test client::tests::facade_check_stdout_terminal_rejects_tty ... ok
+test client::tests::facade_client_disables_core_dumps ... ok
+test client::tests::facade_client_is_not_clone ... ok
+test client::tests::facade_check_stdout_terminal_force_overrides ... ok
+test client::tests::env_override_revoke_cmd_observed_from_client ... ok
+test client::tests::facade_client_is_send ... ok
+test client::tests::facade_client_is_sync ... ok
+test client::tests::facade_client_options_has_default ... ok
+test client::tests::facade_client_type_exists ... ok
+test client::tests::facade_dry_run_produces_output ... ok
+test client::tests::facade_error_display_is_informative ... ok
+test client::tests::facade_client_options_customizable ... ok
+test client::tests::facade_error_debug_does_not_contain_secrets ... ok
+test client::tests::facade_error_from_mint_error ... ok
+test client::tests::facade_error_from_profile_error ... ok
+test client::tests::facade_error_from_provider_config_error ... ok
+test client::tests::facade_error_has_exit_code ... ok
+test client::tests::facade_error_type_exists_and_is_std_error ... ok
+test client::tests::facade_error_variants_cover_core_failure_modes ... ok
+test client::tests::facade_mint_request_is_not_clone ... ok
+test client::tests::facade_mint_request_validates_providers_required ... ok
+test client::tests::facade_error_from_security_error ... ok
+test client::tests::facade_mint_request_validates_role_required ... ok
+test client::tests::facade_mint_request_valid_passes ... ok
+test client::tests::facade_mint_request_validates_role_safe_characters ... ok
+test client::tests::facade_mint_request_validates_ttl_required ... ok
+test client::tests::facade_noscopeerror_is_send ... ok
+test client::tests::facade_noscopeerror_is_sync ... ok
+test client::tests::facade_provider_overrides_default_is_empty ... ok
+test client::tests::facade_reexports_event_types ... ok
+test client::tests::facade_reexports_mint_envelope ... ok
+test client::tests::facade_reexports_scoped_token_type ... ok
+test client::tests::facade_noscopeerror_is_not_clone ... ok
+test client::tests::facade_provider_overrides_has_any_detects_set_fields ... ok
+test client::tests::facade_revoke_args_validation_moved_to_cli_adapter ... ok
+test client::tests::facade_resolve_provider_delegates_to_provider_module ... ok
+test client::tests::facade_revoke_request_is_not_clone ... ok
+test client::tests::facade_revoke_request_rejects_invalid_json ... ok
+test credential_set::tests::atomic_multi_credential_minting_all_fail ... ok
+test client::tests::facade_revoke_request_from_mint_json ... ok
+test client::tests::facade_revoke_request_from_token_id_and_provider ... ok
+test credential_set::tests::atomic_multi_credential_minting_all_succeed ... ok
+test credential_set::tests::atomic_multi_credential_minting_failure_includes_successful_for_rollback ... ok
+test credential_set::tests::atomic_multi_credential_minting_one_fails_returns_error ... ok
+test credential_set::tests::atomic_rollback_follows_revocation_budget_has_timeout ... ok
+test credential_set::tests::atomic_multi_credential_minting_failure_reports_which_failed ... ok
+test credential_set::tests::atomic_rollback_follows_revocation_budget_log_failure ... ok
+test credential_set::tests::atomic_rollback_follows_revocation_budget_has_retry_count ... ok
+test credential_set::tests::atomic_rollback_follows_revocation_budget_log_entry_contains_credential_id_and_ttl ... ok
+test credential_set::tests::bounded_parallelism_configurable ... ok
+test credential_set::tests::bounded_parallelism_default_is_eight ... ok
+test credential_set::tests::bounded_parallelism_minimum_is_one ... ok
+test credential_set::tests::build_refresh_schedules_each_based_on_own_ttl ... ok
+test credential_set::tests::build_refresh_schedules_returns_one_per_credential ... ok
+test credential_set::tests::bounded_parallelism_zero_is_rejected ... ok
+test credential_set::tests::credential_set_debug_does_not_expose_secrets ... ok
+test credential_set::tests::compute_refresh_at_already_expired_token_returns_past_time ... ok
+test credential_set::tests::credential_set_env_map_empty_set ... ok
+test credential_set::tests::credential_set_error_display_for_duplicate_env_key ... ok
+test credential_set::tests::credential_set_error_display_for_invalid_config ... ok
+test credential_set::tests::credential_set_error_display_for_mint_failed_no_providers ... ok
+test credential_set::tests::credential_set_error_implements_std_error ... ok
+test credential_set::tests::credential_set_is_not_serializable ... ok
+test credential_set::tests::credential_set_error_display_for_mint_failed ... ok
+test credential_set::tests::credential_set_is_not_clone ... ok
+test credential_set::tests::credential_set_len ... ok
+test credential_set::tests::credential_set_refresh_schedules_empty_set ... ok
+test credential_set::tests::credential_set_provides_env_map ... ok
+test credential_set::tests::env_key_uniqueness_allows_distinct_keys ... ok
+test credential_set::tests::env_key_uniqueness_case_sensitive ... ok
+test credential_set::tests::credential_spec_stores_all_fields ... ok
+test credential_set::tests::env_key_uniqueness_rejects_duplicates ... ok
+test credential_set::tests::env_key_uniqueness_empty_specs_valid ... ok
+test credential_set::tests::env_key_uniqueness_identifies_conflicting_providers ... ok
+test credential_set::tests::env_key_uniqueness_single_spec_always_valid ... ok
+test credential_set::tests::env_key_uniqueness_validated_before_minting ... ok
+test credential_set::tests::format_timeout_error_sub_second_timeout ... ok
+test credential_set::tests::independent_refresh_scheduling_no_batching ... ok
+test credential_set::tests::independent_refresh_scheduling_refresh_at_is_before_expiry ... ok
+test credential_set::tests::env_key_uniqueness_three_way_conflict ... ok
+test credential_set::tests::independent_refresh_scheduling_different_ttls_different_schedules ... ok
+test credential_set::tests::independent_refresh_scheduling_uses_credential_expires_at ... ok
+test credential_set::tests::mint_config_zero_timeout_is_allowed ... ok
+test credential_set::tests::parallel_minting_timeout_configurable ... ok
+test credential_set::tests::parallel_minting_timeout_error_message_mentions_timeout ... ok
+test credential_set::tests::parallel_minting_timeout_default_is_30_seconds ... ok
+test credential_set::tests::parallel_minting_timeout_exceeded_is_failure ... ok
+test credential_set::tests::resolve_mint_results_empty_input_returns_empty_set ... ok
+test credential_set::tests::rollback_budget_timeout_and_retries_are_reasonable ... ok
+test credential_set::tests::single_credential_expiry_logs_warning ... ok
+test credential_set::tests::rollback_log_entry_escapes_embedded_quotes ... ok
+test credential_set::tests::single_credential_expiry_does_not_re_mint ... ok
+test credential_set::tests::single_credential_expiry_multiple_independent ... ok
+test credential_set::tests::single_credential_expiry_warning_contains_provider_and_token_id ... ok
+test credential_set::tests::single_credential_expiry_preserves_child ... ok
+test credential_set::tests::validate_credential_specs_accepts_valid_set ... ok
+test error::tests::typed_error_taxonomy_config_exit_code_is_78 ... ok
+test error::tests::typed_error_taxonomy_debug_does_not_leak_secrets ... ok
+test error::tests::typed_error_taxonomy_display_includes_category_prefix ... ok
+test error::tests::typed_error_taxonomy_from_credential_set_error ... ok
+test credential_set::tests::validate_credential_specs_rejects_empty ... ok
+test error::tests::typed_error_taxonomy_from_mint_error ... ok
+test error::tests::typed_error_taxonomy_display_is_human_readable ... ok
+test error::tests::typed_error_taxonomy_from_mint_error_terminal ... ok
+test error::tests::typed_error_taxonomy_from_profile_error ... ok
+test error::tests::typed_error_taxonomy_from_provider_exec_error ... ok
+test error::tests::typed_error_taxonomy_from_provider_config_error_malformed ... ok
+test error::tests::typed_error_taxonomy_from_provider_config_error_not_found ... ok
+test error::tests::typed_error_taxonomy_from_security_error ... ok
+test error::tests::typed_error_taxonomy_has_config_variant ... ok
+test error::tests::typed_error_taxonomy_has_provider_variant ... ok
+test error::tests::typed_error_taxonomy_has_internal_variant ... ok
+test error::tests::typed_error_taxonomy_has_profile_variant ... ok
+test error::tests::typed_error_taxonomy_has_security_variant ... ok
+test error::tests::typed_error_taxonomy_implements_std_error ... ok
+test error::tests::typed_error_taxonomy_is_send ... ok
+test error::tests::typed_error_taxonomy_kind_as_str ... ok
+test error::tests::typed_error_taxonomy_has_usage_variant ... ok
+test error::tests::typed_error_taxonomy_internal_exit_code_is_70 ... ok
+test error::tests::typed_error_taxonomy_is_sync ... ok
+test error::tests::typed_error_taxonomy_kind_is_copy ... ok
+test error::tests::typed_error_taxonomy_kind_is_eq_comparable ... ok
+test error::tests::typed_error_taxonomy_kind_is_machine_readable ... ok
+test error::tests::typed_error_taxonomy_message_is_accessible ... ok
+test error::tests::typed_error_taxonomy_multi_error_empty_is_representable ... ok
+test error::tests::typed_error_taxonomy_multi_error_display_includes_all ... ok
+test error::tests::typed_error_taxonomy_multi_error_empty_display_is_empty ... ok
+test error::tests::typed_error_taxonomy_multi_error_exit_code_is_65 ... ok
+test error::tests::typed_error_taxonomy_multi_error_holds_multiple_errors ... ok
+test error::tests::typed_error_taxonomy_multi_error_preserves_individual_kinds ... ok
+test error::tests::typed_error_taxonomy_multi_error_single_item_still_works ... ok
+test error::tests::typed_error_taxonomy_no_source_by_default ... ok
+test error::tests::typed_error_taxonomy_non_provider_error_has_no_provider ... ok
+test error::tests::typed_error_taxonomy_profile_exit_code_is_66 ... ok
+test error::tests::typed_error_taxonomy_provider_display_includes_provider_name ... ok
+test error::tests::typed_error_taxonomy_provider_error_carries_provider_name ... ok
+test error::tests::typed_error_taxonomy_provider_exit_code_is_65 ... ok
+test error::tests::typed_error_taxonomy_security_exit_code_is_64 ... ok
+test error::tests::typed_error_taxonomy_usage_exit_code_is_64 ... ok
+test event::tests::structured_event_logging_all_fields_set_simultaneously ... ok
+test event::tests::structured_event_logging_child_exit_event ... ok
+test event::tests::structured_event_logging_child_exit_includes_exit_code ... ok
+test event::tests::structured_event_logging_child_spawn_event ... ok
+test error::tests::typed_error_taxonomy_source_chaining ... ok
+test event::tests::structured_event_logging_emitter_json_format_output ... ok
+test event::tests::structured_event_logging_emitter_json_single_line ... ok
+test event::tests::structured_event_logging_empty_provider_name ... ok
+test event::tests::structured_event_logging_error_null_when_not_set ... ok
+test event::tests::structured_event_logging_emitter_text_format_output ... ok
+test event::tests::structured_event_logging_event_type_display_matches_as_str ... ok
+test event::tests::structured_event_logging_event_type_names ... ok
+test error::tests::typed_error_taxonomy_multi_error_provider_names_accessible ... ok
+test event::tests::structured_event_logging_fail_event_includes_error_message ... ok
+test event::tests::structured_event_logging_json_contains_redacted_token_id ... ok
+test event::tests::structured_event_logging_json_contains_duration ... ok
+test event::tests::structured_event_logging_json_contains_provider ... ok
+test event::tests::structured_event_logging_json_contains_timestamp ... ok
+test event::tests::structured_event_logging_json_contains_type ... ok
+test event::tests::structured_event_logging_json_duration_null_when_absent ... ok
+test event::tests::structured_event_logging_json_is_single_line ... ok
+test event::tests::structured_event_logging_json_error_with_quotes ... ok
+test event::tests::structured_event_logging_json_is_valid_json ... ok
+test event::tests::structured_event_logging_json_never_contains_raw_secret ... ok
+test event::tests::structured_event_logging_log_format_json ... ok
+test event::tests::structured_event_logging_log_format_parse_is_case_sensitive ... ok
+test event::tests::structured_event_logging_json_token_id_null_when_absent ... ok
+test event::tests::structured_event_logging_large_duration_does_not_panic ... ok
+test event::tests::structured_event_logging_log_format_text ... ok
+test event::tests::structured_event_logging_mint_fail_event ... ok
+test event::tests::structured_event_logging_mint_success_event ... ok
+test event::tests::structured_event_logging_refresh_fail_event ... ok
+test event::tests::structured_event_logging_log_format_unknown_returns_none ... ok
+test event::tests::structured_event_logging_mint_start_event ... ok
+test event::tests::structured_event_logging_negative_exit_code ... ok
+test event::tests::structured_event_logging_refresh_start_event ... ok
+test event::tests::structured_event_logging_refresh_success_event ... ok
+test event::tests::structured_event_logging_revoke_fail_event ... ok
+test event::tests::structured_event_logging_revoke_start_event ... ok
+test event::tests::structured_event_logging_revoke_success_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_event ... ok
+test event::tests::structured_event_logging_signal_received_event ... ok
+test event::tests::structured_event_logging_signal_forwarded_includes_signal ... ok
+test event::tests::structured_event_logging_timestamp_is_current ... ok
+test event::tests::structured_event_logging_signal_received_includes_signal ... ok
+test event::tests::structured_event_logging_text_format_escapes_quotes_in_error ... ok
+test event::tests::structured_event_logging_token_id_is_redacted_not_raw ... ok
+test event::tests::structured_event_logging_zero_duration ... ok
+test exit_code::tests::exit_255_is_signal_127 ... ok
+test exit_code::tests::exit_exactly_128_is_not_signal_terminated ... ok
+test exit_code::tests::known_provider_exit_codes_interpreted_directly ... ok
+test exit_code::tests::multi_provider_report_collects_all_failures ... ok
+test exit_code::tests::multi_provider_report_empty_has_zero_failures ... ok
+test exit_code::tests::exit_129_is_signal_1_sighup ... ok
+test exit_code::tests::multi_provider_report_can_filter_retryable_failures ... ok
+test exit_code::tests::multi_provider_report_exit_code_is_65_mint_failure ... ok
+test exit_code::tests::multi_provider_report_failures_are_accessible ... ok
+test exit_code::tests::multi_provider_report_first_failure_not_shadowed ... ok
+test exit_code::tests::multi_provider_report_format_stderr_empty_when_no_failures ... ok
+test exit_code::tests::multi_provider_report_stderr_includes_exit_code_per_provider ... ok
+test exit_code::tests::multi_provider_report_successes_are_accessible ... ok
+test exit_code::tests::multi_provider_report_tracks_successes_too ... ok
+test exit_code::tests::negative_exit_code_maps_to_general_error_no_signal ... ok
+test exit_code::tests::noscope_exit_code_child_exit_passes_through_any_value ... ok
+test exit_code::tests::multi_provider_report_stderr_contains_all_providers_in_order ... ok
+test exit_code::tests::multi_provider_report_with_no_failures_returns_success_not_child_exit ... ok
+test exit_code::tests::non_signal_stderr_message_shows_provider_exit_code ... ok
+test exit_code::tests::noscope_exit_code_child_exit_preserves_child_code ... ok
+test exit_code::tests::noscope_exit_code_child_exit_zero_is_success ... ok
+test exit_code::tests::noscope_exit_code_config_error_is_78 ... ok
+test exit_code::tests::noscope_exit_code_display_child_exit_mentions_child ... ok
+test exit_code::tests::noscope_exit_code_display_includes_meaning ... ok
+test exit_code::tests::noscope_exit_code_display_success_mentions_success ... ok
+test exit_code::tests::noscope_exit_code_internal_is_70 ... ok
+test exit_code::tests::noscope_exit_code_mint_failure_is_65 ... ok
+test exit_code::tests::noscope_exit_code_permission_is_77 ... ok
+test exit_code::tests::noscope_exit_code_unavailable_is_69 ... ok
+test exit_code::tests::noscope_exit_code_usage_is_64 ... ok
+test exit_code::tests::noscope_exit_codes_do_not_overlap_with_provider_codes ... ok
+test exit_code::tests::noscope_exit_code_config_not_found_is_66 ... ok
+test exit_code::tests::noscope_exit_code_success_is_zero ... ok
+test exit_code::tests::noscope_success_is_semantically_distinct_from_child_exit_zero ... ok
+test exit_code::tests::provider_exit_code_auth_failure_is_two ... ok
+test exit_code::tests::provider_exit_code_display_includes_code_number_and_meaning ... ok
+test exit_code::tests::provider_exit_code_from_raw_returns_none_for_unknown ... ok
+test exit_code::tests::provider_exit_code_from_raw_roundtrips_all_known_codes ... ok
+test exit_code::tests::provider_exit_code_general_error_is_one ... ok
+test exit_code::tests::provider_exit_code_non_zero_are_errors ... ok
+test exit_code::tests::provider_exit_code_role_not_found_is_three ... ok
+test exit_code::tests::provider_exit_code_success_is_not_error ... ok
+test exit_code::tests::provider_exit_code_success_is_zero ... ok
+test exit_code::tests::provider_exit_code_unavailable_is_four ... ok
+test exit_code::tests::provider_exit_result_implements_display ... ok
+test exit_code::tests::signal_terminated_provider_maps_to_general_error ... ok
+test exit_code::tests::signal_terminated_provider_stderr_message_contains_signal ... ok
+test exit_code::tests::unknown_non_signal_exit_code_maps_to_general_error ... ok
+test exit_code::tests::provider_exit_result_is_eq_comparable ... ok
+test exit_code::tests::signal_terminated_provider_includes_signal_number ... ok
+test mint::tests::format_mint_output_handles_special_characters_in_token ... ok
+test mint::tests::mint_envelope_debug_shows_metadata ... ok
+test mint::tests::mint_envelope_debug_does_not_expose_raw_token ... ok
+test mint::tests::mint_envelope_is_not_clone ... ok
+test mint::tests::mint_envelope_from_scoped_token_without_token_id ... ok
+test mint::tests::mint_multi_provider_atomicity_empty_on_failure ... ok
+test mint::tests::mint_error_display_for_invalid_input ... ok
+test mint::tests::mint_error_implements_std_error ... ok
+test mint::tests::mint_multi_provider_atomicity_multiple_providers_returns_array ... ok
+test mint::tests::mint_multi_provider_atomicity_no_partial_stdout ... ok
+test mint::tests::mint_output_envelope_contains_expires_at_iso8601 ... ok
+test mint::tests::mint_output_envelope_contains_provider ... ok
+test mint::tests::mint_multi_provider_atomicity_output_is_single_line ... ok
+test mint::tests::mint_multi_provider_atomicity_single_provider_returns_object ... ok
+test mint::tests::mint_output_envelope_contains_role ... ok
+test mint::tests::mint_output_envelope_contains_token_field ... ok
+test mint::tests::mint_output_envelope_has_exactly_five_fields ... ok
+test mint::tests::mint_output_envelope_is_single_line_json ... ok
+test mint::tests::mint_output_envelope_contains_token_id ... ok
+test mint::tests::mint_output_envelope_from_scoped_token ... ok
+test mint::tests::mint_ttl_requirement_accepts_valid_ttl ... ok
+test mint::tests::mint_ttl_requirement_rejects_empty_providers ... ok
+test mint::tests::mint_ttl_requirement_rejects_empty_role ... ok
+test mint::tests::mint_ttl_requirement_rejects_zero_ttl ... ok
+test mint::tests::mint_ttl_requirement_ttl_is_mandatory ... ok
+test mint::tests::redaction_exception_log_string_contains_provider_and_role ... ok
+test mint::tests::redaction_exception_mint_stdout_contains_raw_token ... ok
+test mint::tests::revoke_input_allows_token_id_equals_combined_form ... ok
+test mint::tests::revoke_input_from_mint_json_array_element ... ok
+test mint::tests::redaction_exception_stderr_still_redacted ... ok
+test mint::tests::revoke_input_does_not_store_token_value ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_invalid_json ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_missing_provider ... ok
+test mint::tests::revoke_input_from_mint_json_rejects_missing_token_id ... ok
+test mint::tests::revoke_input_from_token_id_and_provider ... ok
+test mint::tests::revoke_input_rejects_combined_token_equals_value_flag ... ok
+test mint::tests::revoke_input_rejects_raw_token_flag ... ok
+test mint::tests::revoke_input_validates_no_token_value_in_cli_args ... ok
+test mint::tests::terminal_detection_error_message_mentions_force_flag ... ok
+test mint::tests::terminal_detection_error_message_warns_about_scrollback ... ok
+test mint::tests::revoke_input_from_mint_json_stdin ... ok
+test mint::tests::terminal_detection_allows_pipe_stdout ... ok
+test mint::tests::terminal_detection_exit_code_is_64 ... ok
+test mint::tests::terminal_detection_force_overrides_tty_check ... ok
+test mint::tests::terminal_detection_pipe_with_force_also_works ... ok
+test mint::tests::terminal_detection_rejects_tty_stdout ... ok
+test mint::tests::validate_mint_args_returns_validated_ttl ... ok
+test profile::tests::profile_cli_mutual_exclusion_error_includes_profile_name ... ok
+test profile::tests::profile_cli_mutual_exclusion_error_names_conflicting_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_neither_set ... ok
+test profile::tests::profile_cli_mutual_exclusion_no_profile_allows_flags ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_all_three ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_provider ... ok
+test profile::tests::profile_cli_mutual_exclusion_exit_code_is_usage ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_alone_is_valid ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_role ... ok
+test profile::tests::profile_cli_mutual_exclusion_profile_forbids_ttl ... ok
+test profile::tests::profile_error_insecure_permissions_display ... ok
+test profile::tests::profile_error_implements_std_error ... ok
+test profile::tests::profile_error_validation_failed_display_all_problems ... ok
+test profile::tests::profile_error_not_found_display ... ok
+test profile::tests::profile_flatness_constraint_is_flat_list_of_tuples ... ok
+test profile::tests::profile_flatness_constraint_no_nested_profiles ... ok
+test profile::tests::profile_load_insecure_permissions_rejected ... ok
+test profile::tests::profile_flatness_constraint_no_overrides_field ... ok
+test profile::tests::profile_flatness_constraint_no_extends_field ... ok
+test profile::tests::profile_load_missing_file_is_error ... ok
+test profile::tests::profile_path_default_home ... ok
+test profile::tests::profile_path_under_xdg_config ... ok
+test profile::tests::profile_load_secure_permissions_accepted ... ok
+test profile::tests::profile_permissions_allows_0640 ... ok
+test profile::tests::profile_permissions_allows_0400 ... ok
+test profile::tests::profile_permissions_rejects_group_writable_0620 ... ok
+test profile::tests::profile_permissions_error_message_mentions_group_writable ... ok
+test profile::tests::profile_permissions_rejects_group_writable_0660 ... ok
+test profile::tests::profile_schema_empty_credentials_array_is_error ... ok
+test profile::tests::profile_schema_empty_provider_is_error ... ok
+test profile::tests::profile_schema_empty_role_is_error ... ok
+test profile::tests::profile_schema_env_key_is_optional ... ok
+test profile::tests::profile_schema_env_key_can_be_set ... ok
+test profile::tests::profile_schema_no_credentials_key_is_error ... ok
+test profile::tests::profile_schema_env_key_wrong_type_is_error ... ok
+test profile::tests::profile_schema_multiple_unknown_credential_fields_all_reported ... ok
+test profile::tests::profile_schema_provider_wrong_type_is_error ... ok
+test profile::tests::profile_schema_requires_provider ... ok
+test profile::tests::profile_schema_requires_ttl ... ok
+test profile::tests::profile_schema_requires_role ... ok
+test profile::tests::profile_schema_ttl_as_string_is_error ... ok
+test profile::tests::profile_schema_role_wrong_type_is_error ... ok
+test profile::tests::profile_schema_ttl_must_be_positive_integer ... ok
+test profile::tests::profile_schema_unknown_credential_field_is_error ... ok
+test profile::tests::profile_schema_ttl_must_not_be_negative ... ok
+test profile::tests::profile_schema_unknown_top_level_fields_ignored ... ok
+test profile::tests::profile_validation_all_errors_reported_together ... ok
+test profile::tests::profile_validation_distinct_exit_code ... ok
+test profile::tests::profile_validation_provider_existence ... ok
+test profile::tests::profile_validation_env_key_uniqueness ... ok
+test profile::tests::profile_validation_passes_for_valid_profile ... ok
+test provider::tests::config_file_permission_enforcement_allows_0400 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0600 ... ok
+test provider::tests::config_file_permission_enforcement_allows_0640 ... ok
+test profile::tests::profile_validation_env_key_uniqueness_none_does_not_conflict ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0604 ... ok
+test provider::tests::config_file_permission_enforcement_rejects_0666 ... ok
+test provider::tests::config_follows_xdg_base_directory ... ok
+test provider::tests::config_file_permission_enforcement_rejects_world_readable ... ok
+test provider::tests::config_permissions_allows_0440 ... ok
+test provider::tests::config_permissions_allows_0500 ... ok
+test provider::tests::config_permissions_allows_0700 ... ok
+test provider::tests::config_permissions_allows_0750 ... ok
+test provider::tests::config_permissions_error_message_is_actionable ... ok
+test provider::tests::config_permissions_load_provider_file_rejects_group_writable ... ok
+test provider::tests::config_permissions_rejects_group_and_world_writable_0662 ... ok
+test provider::tests::config_permissions_rejects_group_writable_0620 ... ok
+test provider::tests::config_permissions_rejects_group_writable_0660 ... ok
+test provider::tests::config_permissions_rejects_group_writable_0670 ... ok
+test provider::tests::config_permissions_rejects_world_writable_0602 ... ok
+test provider::tests::config_xdg_custom_overrides_default ... ok
+test provider::tests::config_precedence_flags_without_mint_cmd_still_wins ... ok
+test provider::tests::config_source_eq_works ... ok
+test provider::tests::config_xdg_defaults_to_home_dot_config ... ok
+test provider::tests::consolidate_provider_config_capability_validation_revoke_requires_command ... ok
+test provider::tests::consolidate_provider_config_capability_fields_require_bool_values ... ok
+test provider::tests::consolidate_provider_config_capability_validation_owned_by_provider_parser ... ok
+test provider::tests::consolidate_provider_config_typed_precedence_pipeline ... ok
+test provider::tests::dry_run_mode_produces_output ... ok
+test provider::tests::consolidate_provider_config_single_authoritative_domain_model ... ok
+test provider::tests::dry_run_mode_shows_mint_command ... ok
+test provider::tests::dry_run_mode_shows_config_source ... ok
+test provider::tests::insecure_permissions_display_contains_path_and_mode ... ok
+test provider::tests::dry_run_mode_shows_role_and_ttl ... ok
+test provider::tests::load_provider_file_rejects_insecure_file ... ok
+test provider::tests::malformed_config_is_hard_error_missing_required_field ... ok
+test provider::tests::malformed_config_empty_mint_cmd_is_error ... ok
+test provider::tests::load_provider_file_reads_secure_file ... ok
+test provider::tests::malformed_config_is_hard_error_syntax ... ok
+test provider::tests::malformed_config_missing_file_is_not_error ... ok
+test provider::tests::parse_provider_toml_rejects_non_string_mint ... ok
+test provider::tests::provider_contract_version_backward_compat_supports_previous ... ok
+test provider::tests::provider_contract_version_current_version_constant_is_one ... ok
+test provider::tests::parse_provider_toml_valid_with_all_commands ... ok
+test provider::tests::provider_contract_version_none_for_flags_and_env_layers ... ok
+test provider::tests::provider_contract_version_must_be_present_in_config ... ok
+test provider::tests::provider_contract_version_accepts_current_version ... ok
+test provider::tests::provider_contract_version_propagated_to_resolved_provider ... ok
+test provider::tests::provider_contract_version_rejects_float_type ... ok
+test provider::tests::provider_contract_version_rejects_non_integer_type ... ok
+test provider::tests::provider_contract_version_rejects_negative_version ... ok
+test provider::tests::provider_contract_version_rejects_unsupported_future_version ... ok
+test provider::tests::provider_contract_version_rejects_version_zero ... ok
+test provider::tests::provider_contract_version_supported_versions_includes_current ... ok
+test provider::tests::provider_contract_version_unsupported_error_display ... ok
+test provider::tests::provider_contract_version_validate_version_accepts_current ... ok
+test provider::tests::provider_contract_version_validate_rejects_zero_directly ... ok
+test provider::tests::provider_contract_version_stored_in_file_provider_config ... ok
+test provider::tests::provider_contract_version_validate_version_rejects_unsupported ... ok
+test provider::tests::provider_env_from_process_empty_env_contract ... ok
+test provider::tests::provider_env_from_process_returns_valid_struct ... ok
+test provider::tests::provider_not_found_enumerates_checked_locations ... ok
+test provider::tests::provider_not_found_message_is_user_actionable ... ok
+test provider::tests::provider_not_found_display_contains_provider_name ... ok
+test provider::tests::strict_config_precedence_env_wins_over_file ... ok
+test provider::tests::strict_config_precedence_file_used_when_no_flags_or_env ... ok
+test provider::tests::strict_config_precedence_flags_win_over_env ... ok
+test provider::tests::validate_provider_checks_mint_cmd_exists ... ok
+test provider::tests::strict_config_precedence_no_merging_across_layers ... ok
+test provider::tests::validate_provider_checks_mint_cmd_is_executable ... ok
+test provider::tests::validate_provider_checks_refresh_cmd_if_present ... ok
+test provider::tests::validate_provider_checks_revoke_cmd_if_present ... ok
+test provider::tests::validation_failed_display_lists_all_problems ... ok
+test provider::tests::validate_provider_does_not_execute_mint_cmd ... ok
+test provider_exec::tests::exec_config_is_constructible ... ok
+test provider_exec::tests::missing_expires_at_computed_from_requested_ttl ... ok
+test provider::tests::validate_provider_succeeds_for_valid_config ... ok
+test provider_exec::tests::missing_expires_at_generates_warning ... ok
+test provider_exec::tests::provided_expires_at_is_used_as_is ... ok
+test provider_exec::tests::provider_capability_declaration_consistent_config_passes ... ok
+test provider_exec::tests::provider_capability_declaration_from_config_both_true ... ok
+test provider_exec::tests::provider_capability_declaration_default_no_refresh_no_revoke ... ok
+test provider_exec::tests::provider_capability_declaration_refresh_without_refresh_cmd_is_inconsistent ... ok
+test provider_exec::tests::provider_capability_declaration_defaults_when_absent_in_toml ... ok
+test provider_exec::tests::provider_capability_declaration_revoke_without_revoke_cmd_is_inconsistent ... ok
+test provider_exec::tests::provider_capability_declaration_from_config_refresh_only ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_excludes_other_vars ... ok
+test provider_exec::tests::provider_capability_declaration_parsed_from_toml ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_only_path_home_lang ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_has_exactly_three_base_keys ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_path_is_not_empty ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_home_is_not_empty ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_with_credential_vars_for_refresh ... ok
+test provider_exec::tests::provider_command_environment_sandboxing_with_credential_vars_for_revoke ... ok
+test provider_exec::tests::provider_command_execution_timeout_kill_grace_period_is_5_seconds ... ok
+test provider_exec::tests::provider_command_execution_timeout_treated_as_exit_4 ... ok
+test provider_exec::tests::provider_exec_error_config_parse_variant_exists ... ok
+test provider_exec::tests::provider_exec_error_implements_std_error ... ok
+test provider_exec::tests::provider_command_execution_timeout_default_is_30_seconds ... ok
+test provider_exec::tests::provider_exec_error_invalid_role_display ... ok
+test provider_exec::tests::provider_exec_error_implements_display ... ok
+test provider_exec::tests::provider_exec_error_stdout_too_large_display ... ok
+test provider_exec::tests::provider_exec_error_timeout_display ... ok
+test provider_exec::tests::provider_output_contract_expires_at_in_past_accepted ... ok
+test provider_exec::tests::provider_output_contract_expires_at_is_optional ... ok
+test provider_exec::tests::provider_output_contract_empty_token_is_rejected ... ok
+test provider_exec::tests::provider_output_contract_expires_at_must_be_valid_iso8601 ... ok
+test provider_exec::tests::provider_output_contract_expires_at_null_treated_as_absent ... ok
+test provider_exec::tests::provider_output_contract_extra_fields_are_ignored ... ok
+test provider_exec::tests::provider_output_contract_rejects_invalid_json ... ok
+test provider_exec::tests::provider_output_contract_token_is_required ... ok
+test provider_exec::tests::provider_output_contract_token_must_be_string ... ok
+test provider_exec::tests::provider_stderr_handling_capture_limit_is_4096_bytes ... ok
+test provider_exec::tests::provider_output_token_is_zeroized_on_drop ... ok
+test provider_exec::tests::provider_output_has_chrono_datetime ... ok
+test provider_exec::tests::provider_output_contract_parses_valid_json_with_token_and_expires_at ... ok
+test provider_exec::tests::provider_stderr_handling_keep_on_failure ... ok
+test provider_exec::tests::provider_stderr_handling_keep_on_success_verbose ... ok
+test provider_exec::tests::provider_stderr_handling_no_tokens_no_change ... ok
+test provider_exec::tests::provider_stderr_handling_redacts_known_token ... ok
+test provider_exec::tests::provider_stderr_handling_discard_on_success_default ... ok
+test provider_exec::tests::provider_stderr_handling_redacts_multiple_tokens ... ok
+test provider_exec::tests::provider_stderr_handling_preserves_short_stderr ... ok
+test provider_exec::tests::provider_stderr_handling_truncates_to_limit ... ok
+test provider_exec::tests::provider_stderr_handling_truncation_respects_utf8_boundary ... ok
+test provider_exec::tests::provider_stdout_size_limit_accepts_exactly_1_mib ... ok
+test provider_exec::tests::provider_stdout_size_limit_constant_is_1_mib ... ok
+test provider_exec::tests::provider_stdout_size_limit_rejects_over_1_mib ... ok
+test provider_exec::tests::provider_stdout_size_limit_zero_is_accepted ... ok
+test provider_exec::tests::refresh_command_env_vars_include_noscope_token ... ok
+test provider_exec::tests::refresh_command_env_has_exactly_three_credential_vars ... ok
+test provider_exec::tests::provider_stdout_size_limit_accepts_small_output ... ok
+test provider_exec::tests::refresh_command_env_vars_include_noscope_token_id ... ok
+test provider_exec::tests::refresh_command_env_vars_include_noscope_ttl ... ok
+test provider_exec::tests::revoke_command_env_has_exactly_two_credential_vars ... ok
+test provider_exec::tests::revoke_command_env_vars_include_noscope_token ... ok
+test provider_exec::tests::revoke_command_env_vars_include_noscope_token_id ... ok
+test provider_exec::tests::revoke_command_non_zero_exit_is_failure ... ok
+test provider_exec::tests::template_variable_injection_prevention_argv_substitution ... ok
+test provider_exec::tests::template_variable_injection_prevention_multiple_role_substitutions ... ok
+test provider_exec::tests::refresh_command_output_same_contract_as_mint ... ok
+test provider_exec::tests::revoke_command_exit_0_for_already_revoked ... ok
+test provider_exec::tests::template_variable_injection_prevention_no_shell_expansion ... ok
+test provider_exec::tests::template_variable_injection_prevention_no_unknown_vars_expanded ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_rejects_empty ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_rejects_non_ascii ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_rejects_shell_metacharacters ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_rejects_spaces ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_valid_alphanumeric ... ok
+test provider_exec::tests::template_variable_injection_prevention_ttl_substituted_as_integer_string ... ok
+test provider_exec::tests::ttl_format_no_human_duration_suffix ... ok
+test provider_exec::tests::template_variable_injection_prevention_role_rejects_slashes ... ok
+test redaction::tests::debug_format_looks_like_debug_output ... ok
+test provider_exec::tests::ttl_format_is_integer_seconds_for_providers ... ok
+test redaction::tests::debug_format_shows_redacted_form_not_raw ... ok
+test redaction::tests::debug_never_shows_full_token_value ... ok
+test redaction::tests::display_never_shows_full_token_value ... ok
+test redaction::tests::display_of_empty_token_does_not_panic ... ok
+test redaction::tests::jwt_token_with_provider_id_uses_provider_id ... ok
+test redaction::tests::jwt_token_never_shows_prefix_chars ... ok
+test redaction::tests::different_tokens_produce_different_hash_ids ... ok
+test redaction::tests::long_token_shows_first_8_chars_with_ellipsis ... ok
+test redaction::tests::mixed_ascii_multibyte_token_takes_8_chars ... ok
+test redaction::tests::multibyte_utf8_token_does_not_panic ... ok
+test redaction::tests::short_token_with_provider_id_uses_that_id ... ok
+test redaction::tests::same_token_always_produces_same_hash_id ... ok
+test redaction::tests::token_exactly_16_chars_uses_redacted_format ... ok
+test redaction::tests::token_exactly_17_chars_shows_prefix ... ok
+test refresh::tests::continuous_refresh_after_failure_new_window_after_expiry ... ok
+test redaction::tests::redaction_cannot_be_bypassed_by_alternate_format ... ok
+test redaction::tests::short_token_without_id_uses_hash_based_id ... ok
+test refresh::tests::continuous_refresh_after_failure_not_permanently_disabled ... ok
+test refresh::tests::refresh_failure_independence_separate_trackers ... ok
+test refresh::tests::refresh_failure_independence_tracker_knows_its_credential ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_not_kill ... ok
+test refresh::tests::refresh_failure_preserves_child_action_is_retry ... ok
+test refresh::tests::refresh_failure_preserves_child_allows_token_until_expiry ... ok
+test refresh::tests::refresh_failure_preserves_child_logs_warning ... ok
+test refresh::tests::continuous_refresh_after_failure_reset_after_success ... ok
+test refresh::tests::refresh_failure_independence_success_resets_own_tracker ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_environment ... ok
+test refresh::tests::refresh_limitation_documentation_startup_warning ... ok
+test refresh::tests::refresh_failure_preserves_child_never_kills_at_any_attempt ... ok
+test refresh::tests::refresh_limitation_documentation_mentions_env_var_point_in_time ... ok
+test refresh::tests::refresh_retry_parameters_base_delay_is_one_second ... ok
+test refresh::tests::refresh_retry_parameters_delay_grows_exponentially ... ok
+test refresh::tests::refresh_retry_parameters_jitter_range_is_25_percent ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_max_retries_is_four ... ok
+test refresh::tests::refresh_retry_parameters_jittered_delay_attempt_2_within_bounds ... ok
+test refresh::tests::refresh_retry_parameters_large_attempt_does_not_panic ... ok
+test refresh::tests::refresh_retry_parameters_multiplier_is_two ... ok
+test refresh::tests::refresh_retry_parameters_no_retry_when_remaining_lifetime_zero ... ok
+test refresh::tests::refresh_retry_parameters_truncates_retries_when_lifetime_short ... ok
+test security::tests::allows_args_without_token_values ... ok
+test security::tests::disable_core_dumps_sets_rlimit_to_zero ... ok
+test refresh::tests::refresh_retry_parameters_total_window_within_50_percent_remaining ... ok
+test refresh::tests::refresh_tracker_failure_count_saturates_instead_of_wrapping ... ok
+test security::tests::disable_core_dumps_succeeds_on_linux ... ok
+test security::tests::empty_known_tokens_always_valid ... ok
+test security::tests::empty_args_always_valid ... ok
+test security::tests::rejects_args_containing_known_token_value ... ok
+test token::tests::redacted_value_returns_reference_not_new_computation ... ok
+test security::tests::error_message_does_not_contain_token_value ... ok
+test security::tests::rejects_token_as_substring_in_arg ... ok
+test token::tests::scoped_token_constructor_takes_secret_string_directly ... ok
+test token::tests::scoped_token_debug_does_not_expose_secret ... ok
+test token::tests::scoped_token_display_does_not_expose_secret ... ok
+test token::tests::scoped_token_expose_secret_returns_value ... ok
+test token::tests::scoped_token_exposes_metadata_but_not_value ... ok
+test token::tests::scoped_token_is_not_clone ... ok
+test token::tests::scoped_token_is_not_serializable ... ok
+test token::tests::scoped_token_is_sync ... ok
+test token::tests::scoped_token_is_send ... ok
+test token::tests::scoped_token_requires_expires_at ... ok
+test token::tests::string_zeroize_actually_clears_data ... ok
+test token_convert::tests::centralized_full_pipeline_provider_output_to_envelope ... ok
+test token_convert::tests::centralized_provider_output_to_scoped_token_computed_expiry ... ok
+test token_convert::tests::centralized_provider_output_to_scoped_token ... ok
+test token_convert::tests::centralized_provider_output_to_scoped_token_with_token_id ... ok
+test token_convert::tests::centralized_provider_output_to_scoped_token_without_token_id ... ok
+test token_convert::tests::centralized_scoped_token_to_mint_envelope ... ok
+test token_convert::tests::centralized_scoped_token_to_mint_envelope_without_token_id ... ok
+test token::tests::scoped_token_debug_shows_non_secret_fields ... ok
+test token_convert::tests::conversion_result_token_accessible ... ok
+test token_convert::tests::secret_boundary_envelope_debug_does_not_expose_secret ... ok
+test token_convert::tests::provider_output_expires_at_provided_true_when_supplied ... ok
+test token_convert::tests::pipeline_preserves_special_characters_in_token ... ok
+test token_convert::tests::provider_output_expires_at_provided_flag_accessible ... ok
+test token_convert::tests::secret_boundary_envelope_zeroizes_on_drop ... ok
+test token_convert::tests::secret_boundary_provider_output_consumed ... ok
+test token_convert::tests::secret_boundary_provider_output_to_token_does_not_log_secret ... ok
+test token_convert::tests::secret_boundary_provider_output_zeroizes_on_drop ... ok
+test token_convert::tests::secret_boundary_scoped_token_not_consumed_by_envelope ... ok
+test token_convert::tests::secret_boundary_scoped_token_not_serializable ... ok
+test token_convert::tests::unified_serialization_single_envelope_field_set ... ok
+test token_convert::tests::unified_serialization_multi_envelope_uses_same_shape ... ok
+
+test result: ok. 605 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+   Doc-tests noscope
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+    Checking noscope v0.1.0 (/home/ben/Documents/repos/noscope)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.65s
+[0m
+All 605 tests pass. Zero clippy warnings. Refactor phase complete.
+[0m# [0mTodos
+[x] Phase 1: Understand the codebase - read src/lib.rs, security.rs, and related modules
+[x] Phase 2: TDD Red - Write failing tests for stricter permission checks
+[x] Phase 3: TDD Green - Write minimal production code to pass tests
+[x] Phase 4: TDD Refactor - Clean up code
+[ ] Phase 5: Linus Torvalds Review - Self-review and fix issues
+[ ] Phase 6: Commit with proper message
+[0m
+## Phase 5: Linus Torvalds Review
+
+Let me re-read the final state of both changed files to do a thorough review:
+[0m→ [0mRead src/provider.rs[90m [offset=377, limit=30][0m
+[0m→ [0mRead src/provider.rs[90m [offset=86, limit=8][0m
+[0m→ [0mRead src/profile.rs[90m [offset=92, limit=8][0m
+### Linus Torvalds Self-Review
+
+Reading this as if I'm reviewing it on LKML:
+
+**1. INSECURE_MODE_BITS constant:** Good. Named constant with clear doc comment explaining the "why" (group-write allows modification by same-group users, world bits allow anyone). The bitmask `0o020 | 0o007` is readable and correct.
+
+**2. The actual check `mode & INSECURE_MODE_BITS != 0`:** Correct. If any of the insecure bits are set, reject. Simple, no ambiguity.
+
+**3. Reuse consistency:** `profile.rs:load_profile` calls `check_config_permissions` from `provider.rs` — single source of truth. Both error messages are updated consistently.
+
+**4. Error message actionability:** The error says "group-writable and world-accessible bits must be 0 (e.g. 0600, 0640)" — actionable, tells the user what modes are OK.
+
+**5. Missing edge case — group-execute without group-write (`0o010`, `0o710`):** These are currently allowed because the bitmask only checks `0o020` (group-write) and `0o007` (world). Should group-execute be rejected? For config *files*, group-execute is harmless (it has no effect on regular files on Linux). For directories it matters, but this function checks file permissions. Decision: NOT a bug. Group-execute on a regular file is a no-op.
+
+**6. Potential concern — `0o027` bitmask vs `0o020 | 0o007`:** These are the same value (`0o027 == 23 decimal`). Using `0o020 | 0o007` is more readable because it separates the two distinct policies. Good.
+
+**7. Test coverage matrix review:**
+
+| Mode | Expected | Tested? |
+|------|----------|---------|
+| 0o600 | allow | Yes (existing) |
+| 0o640 | allow | Yes (existing) |
+| 0o400 | allow | Yes (existing + new) |
+| 0o700 | allow | Yes (new) |
+| 0o500 | allow | Yes (new) |
+| 0o440 | allow | Yes (new) |
+| 0o750 | allow | Yes (new) |
+| 0o644 | reject | Yes (existing) |
+| 0o666 | reject | Yes (existing) |
+| 0o604 | reject | Yes (existing) |
+| 0o660 | reject | Yes (new) |
+| 0o620 | reject | Yes (new) |
+| 0o670 | reject | Yes (new) |
+| 0o602 | reject | Yes (new) |
+| 0o662 | reject | Yes (new) |
+
+Good coverage. One edge case I want to add: **`0o610`** (owner rw, group-exec only) — should be allowed since no group-write. And **`0o630`** — should be rejected (group-write+exec). Let me verify:
+
+- `0o610 & 0o027 == 0o010 & 0o027 == 0` — wait, `0o010 & 0o027`... Let me compute: `0o610 & 0o027 = 0o010` which is `8` in decimal, and `0o020 | 0o007 = 0o027 = 23`. So `0o610 & 0o027 = 0o010` — that's group-execute bit. `0o010 != 0` means... it would be REJECTED.
+
+Hold on. This is wrong. `0o027 = 0o020 | 0o007`. `0o010` is not part of that mask. Let me recalculate:
+- `0o020 = 16 decimal` (group-write)
+- `0o007 = 7 decimal` (other-rwx)
+- `0o020 | 0o007 = 0o027 = 23 decimal`
+- `0o010 = 8 decimal` (group-execute)
+- `0o010 & 0o027 = 8 & 23 = 0` — no overlap
+
+Wait, let me think in binary:
+- `0o020` = `000 010 000` 
+- `0o007` = `000 000 111`
+- `0o027` = `000 010 111`
+- `0o010` = `000 001 000`
+- `0o610` = `110 001 000`
+- `0o610 & 0o027` = `000 000 000` = 0
+
+OK, so `0o610` would be ALLOWED (correct behavior). The group-execute bit is `0o010`, which is NOT in the insecure mask. Good.
+
+- `0o630` = `110 011 000`
+- `0o630 & 0o027` = `000 010 000` = `0o020` != 0 — REJECTED. Correct.
+
+The policy is sound. No edge case bugs.
+
+**8. Backward compatibility concern:** The previous check only rejected world bits. Now we also reject group-write. If any user has config files at 0o660, they'll get a new error after upgrading. The error message is clear enough ("group-writable and world-accessible bits must be 0 (e.g. 0600, 0640)") that users can `chmod 640 <file>` to fix it. This is an intentional, documented security hardening.
+
+**Verdict: The code is correct, minimal, well-documented, and well-tested. No issues found.**
+[0m
+[0m# [0mTodos
+[x] Phase 1: Understand the codebase - read src/lib.rs, security.rs, and related modules
+[x] Phase 2: TDD Red - Write failing tests for stricter permission checks
+[x] Phase 3: TDD Green - Write minimal production code to pass tests
+[x] Phase 4: TDD Refactor - Clean up code
+[x] Phase 5: Linus Torvalds Review - Self-review and fix issues
+[ ] Phase 6: Commit with proper message
+[0m
+## Phase 6: Commit
+
+Now let me write the provenance draft and create the commit.
+[0m$ [0mls /home/ben/Documents/repos/noscope/.beads/provenance-drafts/ 2>/dev/null || mkdir -p /home/ben/Documents/repos/noscope/.beads/provenance-drafts/
+noscope-2wn.md
+noscope-4mw.md
+noscope-4of.md
+noscope-5wl.md
+noscope-bsq.1.2.md
+noscope-cg8.2.md
+noscope-cg8.3.md
+noscope-cg8.4.md
+noscope-cg8.5.md
+noscope-ia2.md
+noscope-pmr.md
+noscope-ydn.md
+[0m
+[0m$ [0mgit status --short
+M .gitignore
+ M src/profile.rs
+ M src/provider.rs
+?? .beads/provenance-drafts/noscope-4mw.md
+?? .beads/provenance-drafts/noscope-cg8.3.md
+?? .beads/provenance-drafts/noscope-cg8.4.md
+?? .beads/provenance-drafts/noscope-ydn.md
+?? .beads/session-logs/
+?? docs/
+[0m
+[0m$ [0mgit log --oneline -5
+2d19243 feat: wire NOSCOPE_* env overrides in Client::resolve_provider (noscope-bsq.1.2)
+d2418a3 feat: unify token envelope and conversion boundaries (noscope-cg8.3)
+590d7aa feat: separate CLI argument concerns from core library (noscope-cg8.2)
+024afee feat: introduce typed error taxonomy for API and AX (noscope-cg8.4)
+b1dd62a feat: introduce high-level Noscope API facade (noscope-cg8.1)
+[0m
+[0m$ [0mgit diff src/provider.rs src/profile.rs
+diff --git a/src/profile.rs b/src/profile.rs
+index 00e68a7..91f53c1 100644
+--- a/src/profile.rs
++++ b/src/profile.rs
+@@ -93,7 +93,7 @@ impl fmt::Display for ProfileError {
+                 write!(
+                     f,
+                     "profile {:?} has insecure permissions {:04o}; \
+-                     world-accessible bits must be 0 (e.g. 0600, 0640)",
++                     group-writable and world-accessible bits must be 0 (e.g. 0600, 0640)",
+                     path, mode
+                 )
+             }
+@@ -1022,6 +1022,113 @@ ttl = 3600
+         assert_eq!(profile.credentials.len(), 1);
+     }
+ 
++    // =========================================================================
++    // noscope-bsq.1.3: Profile permission checks must match provider policy —
++    // group-writable and world-accessible bits both rejected.
++    // =========================================================================
++
++    fn valid_profile_toml() -> &'static str {
++        r#"
++[[credentials]]
++provider = "aws"
++role = "admin"
++ttl = 3600
++"#
++    }
++
++    #[test]
++    fn profile_permissions_rejects_group_writable_0660() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("profile.toml");
++        std::fs::write(&file_path, valid_profile_toml()).unwrap();
++        std::fs::set_permissions(
++            &file_path,
++            std::os::unix::fs::PermissionsExt::from_mode(0o660),
++        )
++        .unwrap();
++
++        let result = super::load_profile(&file_path);
++        assert!(
++            result.is_err(),
++            "Profile with 0660 (group-writable) must be rejected"
++        );
++    }
++
++    #[test]
++    fn profile_permissions_rejects_group_writable_0620() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("profile.toml");
++        std::fs::write(&file_path, valid_profile_toml()).unwrap();
++        std::fs::set_permissions(
++            &file_path,
++            std::os::unix::fs::PermissionsExt::from_mode(0o620),
++        )
++        .unwrap();
++
++        let result = super::load_profile(&file_path);
++        assert!(
++            result.is_err(),
++            "Profile with 0620 (group-write-only) must be rejected"
++        );
++    }
++
++    #[test]
++    fn profile_permissions_allows_0640() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("profile.toml");
++        std::fs::write(&file_path, valid_profile_toml()).unwrap();
++        std::fs::set_permissions(
++            &file_path,
++            std::os::unix::fs::PermissionsExt::from_mode(0o640),
++        )
++        .unwrap();
++
++        let result = super::load_profile(&file_path);
++        assert!(
++            result.is_ok(),
++            "Profile with 0640 (owner rw, group read) should be allowed"
++        );
++    }
++
++    #[test]
++    fn profile_permissions_allows_0400() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("profile.toml");
++        std::fs::write(&file_path, valid_profile_toml()).unwrap();
++        std::fs::set_permissions(
++            &file_path,
++            std::os::unix::fs::PermissionsExt::from_mode(0o400),
++        )
++        .unwrap();
++
++        let result = super::load_profile(&file_path);
++        assert!(
++            result.is_ok(),
++            "Profile with 0400 (owner read-only) should be allowed"
++        );
++    }
++
++    #[test]
++    fn profile_permissions_error_message_mentions_group_writable() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("profile.toml");
++        std::fs::write(&file_path, valid_profile_toml()).unwrap();
++        std::fs::set_permissions(
++            &file_path,
++            std::os::unix::fs::PermissionsExt::from_mode(0o660),
++        )
++        .unwrap();
++
++        let result = super::load_profile(&file_path);
++        let err = result.unwrap_err();
++        let msg = format!("{}", err);
++        assert!(
++            msg.contains("0660"),
++            "Error must show the actual mode: {}",
++            msg
++        );
++    }
++
+     // =========================================================================
+     // Edge cases discovered during Linus review.
+     // =========================================================================
+diff --git a/src/provider.rs b/src/provider.rs
+index c8598db..2451db7 100644
+--- a/src/provider.rs
++++ b/src/provider.rs
+@@ -87,7 +87,7 @@ impl fmt::Display for ProviderConfigError {
+                 write!(
+                     f,
+                     "config file {:?} has insecure permissions {:04o}; \
+-                     world-accessible bits must be 0 (e.g. 0600, 0640)",
++                     group-writable and world-accessible bits must be 0 (e.g. 0600, 0640)",
+                     path, mode
+                 )
+             }
+@@ -374,20 +374,27 @@ pub fn load_provider_file(path: &Path) -> Result<Option<FileProviderConfig>, Pro
+     parse_provider_toml(&content).map(Some)
+ }
+ 
++/// Bitmask of permission bits that are insecure for secret-bearing config files.
++///
++/// - `0o020`: group-write — another user in the same group could modify secrets.
++/// - `0o007`: world (other) read/write/execute — anyone on the system could access.
++///
++/// Allowed: owner-only (0600, 0700, 0400) or owner+group-read (0640, 0750, 0440).
++/// Rejected: group-writable (0660, 0620) or world-accessible (0644, 0666, 0604).
++const INSECURE_MODE_BITS: u32 = 0o020 | 0o007;
++
+ /// NS-069: Check that a config file has secure permissions.
+ ///
+-/// Rejects world-readable files. The "other" permission bits (lowest 3 bits
+-/// of the mode) must be zero. This allows 0600, 0640, 0400, etc. but
+-/// rejects 0644, 0604, 0666, etc.
++/// Secret-bearing config files must not be group-writable or world-accessible.
++/// See [`INSECURE_MODE_BITS`] for the exact policy.
+ pub fn check_config_permissions(path: &Path) -> Result<(), ProviderConfigError> {
+     let metadata = fs::metadata(path).map_err(|e| ProviderConfigError::MalformedConfig {
+         message: format!("cannot stat {}: {}", path.display(), e),
+     })?;
+ 
+     let mode = metadata.permissions().mode();
+-    let other_bits = mode & 0o007;
+ 
+-    if other_bits != 0 {
++    if mode & INSECURE_MODE_BITS != 0 {
+         return Err(ProviderConfigError::InsecurePermissions {
+             path: path.to_path_buf(),
+             mode: mode & 0o777,
+@@ -939,6 +946,168 @@ mint = ""
+         assert!(result.is_ok(), "0400 (owner-read-only) should be allowed");
+     }
+ 
++    // =========================================================================
++    // noscope-bsq.1.3: Tighten Unix config permission checks — group-writable
++    // and world-accessible bits must both be rejected for secret-bearing configs.
++    // =========================================================================
++
++    #[test]
++    fn config_permissions_rejects_group_writable_0660() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("provider.toml");
++        fs::write(&file_path, valid_provider_toml()).unwrap();
++        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o660)).unwrap();
++
++        let result = check_config_permissions(&file_path);
++        assert!(
++            result.is_err(),
++            "0660 (group-writable) must be rejected for secret-bearing config"
++        );
++    }
++
++    #[test]
++    fn config_permissions_rejects_group_writable_0620() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("provider.toml");
++        fs::write(&file_path, valid_provider_toml()).unwrap();
++        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o620)).unwrap();
++
++        let result = check_config_permissions(&file_path);
++        assert!(
++            result.is_err(),
++            "0620 (group-write-only) must be rejected for secret-bearing config"
++        );
++    }
++
++    #[test]
++    fn config_permissions_rejects_group_writable_0670() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("provider.toml");
++        fs::write(&file_path, valid_provider_toml()).unwrap();
++        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o670)).unwrap();
++
++        let result = check_config_permissions(&file_path);
++        assert!(
++            result.is_err(),
++            "0670 (group-rwx) must be rejected for secret-bearing config"
++        );
++    }
++
++    #[test]
++    fn config_permissions_rejects_world_writable_0602() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("provider.toml");
++        fs::write(&file_path, valid_provider_toml()).unwrap();
++        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o602)).unwrap();
++
++        let result = check_config_permissions(&file_path);
++        assert!(result.is_err(), "0602 (world-writable) must be rejected");
++    }
++
++    #[test]
++    fn config_permissions_rejects_group_and_world_writable_0662() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("provider.toml");
++        fs::write(&file_path, valid_provider_toml()).unwrap();
++        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o662)).unwrap();
++
++        let result = check_config_permissions(&file_path);
++        assert!(
++            result.is_err(),
++            "0662 (group+world writable) must be rejected"
++        );
++    }
++
++    #[test]
++    fn config_permissions_allows_0700() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("provider.toml");
++        fs::write(&file_path, valid_provider_toml()).unwrap();
++        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o700)).unwrap();
++
++        let result = check_config_permissions(&file_path);
++        assert!(result.is_ok(), "0700 (owner-only rwx) should be allowed");
++    }
++
++    #[test]
++    fn config_permissions_allows_0500() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("provider.toml");
++        fs::write(&file_path, valid_provider_toml()).unwrap();
++        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o500)).unwrap();
++
++        let result = check_config_permissions(&file_path);
++        assert!(result.is_ok(), "0500 (owner rx) should be allowed");
++    }
++
++    #[test]
++    fn config_permissions_allows_0440() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("provider.toml");
++        fs::write(&file_path, valid_provider_toml()).unwrap();
++        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o440)).unwrap();
++
++        let result = check_config_permissions(&file_path);
++        assert!(
++            result.is_ok(),
++            "0440 (owner+group read-only) should be allowed"
++        );
++    }
++
++    #[test]
++    fn config_permissions_allows_0750() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("provider.toml");
++        fs::write(&file_path, valid_provider_toml()).unwrap();
++        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o750)).unwrap();
++
++        let result = check_config_permissions(&file_path);
++        assert!(
++            result.is_ok(),
++            "0750 (owner rwx, group rx) should be allowed"
++        );
++    }
++
++    #[test]
++    fn config_permissions_error_message_is_actionable() {
++        // The error message must mention the rejected mode, suggest acceptable
++        // modes, and reference group-writable rejection (not just world bits).
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("provider.toml");
++        fs::write(&file_path, valid_provider_toml()).unwrap();
++        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o660)).unwrap();
++
++        let result = check_config_permissions(&file_path);
++        let err = result.unwrap_err();
++        let msg = format!("{}", err);
++        assert!(
++            msg.contains("0660"),
++            "Error must show the actual mode: {}",
++            msg
++        );
++        assert!(
++            msg.contains("group") || msg.contains("writable"),
++            "Error must mention group-writable rejection, got: {}",
++            msg
++        );
++    }
++
++    #[test]
++    fn config_permissions_load_provider_file_rejects_group_writable() {
++        // Integration: load_provider_file must reject group-writable files too,
++        // not just world-accessible.
++        let tmp = tempfile::tempdir().unwrap();
++        let file_path = tmp.path().join("provider.toml");
++        fs::write(&file_path, valid_provider_toml()).unwrap();
++        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o660)).unwrap();
++
++        let result = load_provider_file(&file_path);
++        assert!(
++            result.is_err(),
++            "load_provider_file must reject group-writable config"
++        );
++    }
++
+     // =========================================================================
+     // NS-071: Dry-run mode
+     // =========================================================================
+[0m
+Good. Now write the provenance draft and commit:
+[0m← [0mWrite .beads/provenance-drafts/noscope-bsq.1.3.md
+Wrote file successfully.
+[0m
+Now stage and commit:
+[0m$ [0mgit add src/provider.rs src/profile.rs .beads/provenance-drafts/noscope-bsq.1.3.md && git commit -m 'feat: tighten Unix config permission checks for provider/profile files (noscope-bsq.1.3)
+
+Reject group-writable modes (0o020) in addition to world-accessible bits
+(0o007) for secret-bearing config files. Previously check_config_permissions
+only masked the "other" bits, allowing group-writable modes like 0660/0620
+which let another user in the same group modify secrets.
+
+Changes:
+- Define INSECURE_MODE_BITS constant (0o020 | 0o007) documenting the policy.
+- check_config_permissions now uses this mask for both provider and profile
+  config loading (single source of truth via profile.rs -> provider.rs reuse).
+- Error messages updated to mention group-writable rejection.
+- 16 new tests covering the accepted/rejected mode matrix across both
+  provider.rs and profile.rs, including error message actionability checks.
+
+NS-069 rules covered: insecure writable modes rejected consistently,
+secure modes accepted, error messages remain actionable.'
+[main c91222d] feat: tighten Unix config permission checks for provider/profile files (noscope-bsq.1.3)
+ 3 files changed, 304 insertions(+), 7 deletions(-)
+ create mode 100644 .beads/provenance-drafts/noscope-bsq.1.3.md
+[0m
+[0m$ [0mgit status
+On branch main
+Your branch is ahead of 'origin/main' by 2 commits.
+  (use "git push" to publish your local commits)
+
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   .gitignore
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	.beads/provenance-drafts/noscope-4mw.md
+	.beads/provenance-drafts/noscope-cg8.3.md
+	.beads/provenance-drafts/noscope-cg8.4.md
+	.beads/provenance-drafts/noscope-ydn.md
+	.beads/session-logs/
+	docs/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+[0m
+Now close the bead:
+[0m$ [0mbd close noscope-bsq.1.3 --reason "Implemented: INSECURE_MODE_BITS (0o020|0o007) rejects group-writable and world-accessible modes for provider/profile configs. 16 new tests, zero clippy warnings, all 605 tests pass." --json 2>&1
+[
+  {
+    "id": "noscope-bsq.1.3",
+    "title": "Tighten Unix config permission checks for provider/profile files",
+    "description": "Security hardening: current permission check only rejects world bits; group-writable configs are still allowed.\n\nRequired changes:\n- Define and implement stricter accepted modes for secret-bearing config files.\n- Reuse policy consistently for provider and profile config loading.\n- Expand tests for accepted/rejected mode matrix.\n\nAcceptance:\n- insecure writable modes are rejected consistently,\n- secure modes remain accepted,\n- error messages remain actionable.",
+    "status": "closed",
+    "priority": 1,
+    "issue_type": "bug",
+    "assignee": "Ben Nasraoui",
+    "owner": "nasraouiprojects@gmail.com",
+    "created_at": "2026-03-29T22:53:48Z",
+    "created_by": "Ben Nasraoui",
+    "updated_at": "2026-03-29T23:17:22Z",
+    "closed_at": "2026-03-29T23:17:22Z",
+    "close_reason": "Implemented: INSECURE_MODE_BITS (0o020|0o007) rejects group-writable and world-accessible modes for provider/profile configs. 16 new tests, zero clippy warnings, all 605 tests pass."
+  }
+]
+[0m
+[0m# [0mTodos
+[x] Phase 1: Understand the codebase - read src/lib.rs, security.rs, and related modules
+[x] Phase 2: TDD Red - Write failing tests for stricter permission checks
+[x] Phase 3: TDD Green - Write minimal production code to pass tests
+[x] Phase 4: TDD Refactor - Clean up code
+[x] Phase 5: Linus Torvalds Review - Self-review and fix issues
+[x] Phase 6: Commit with proper message
+[0m
+Done. Here's the summary:
+
+## noscope-bsq.1.3 Complete
+
+**Problem:** `check_config_permissions` only rejected world bits (`0o007`), allowing group-writable modes like `0o660`/`0o620` that let other users in the same group modify secret-bearing config files.
+
+**Solution:** 
+- Defined `INSECURE_MODE_BITS = 0o020 | 0o007` constant in `src/provider.rs:384` — self-documenting policy for which permission bits are insecure
+- `check_config_permissions` (`src/provider.rs:390`) now masks against this constant instead of just `0o007`
+- Both provider and profile config loading reuse the same check (profile.rs delegates to provider.rs)
+- Error messages updated from "world-accessible bits must be 0" to "group-writable and world-accessible bits must be 0"
+
+**Tests:** 16 new tests across `provider.rs` and `profile.rs`:
+- Rejection tests: 0660, 0620, 0670, 0602, 0662 (group-write/world bits)
+- Acceptance tests: 0700, 0500, 0440, 0750, 0640, 0400 (secure modes)
+- Error message actionability tests for both provider and profile
+- Integration test: `load_provider_file` rejects group-writable
+
+**Quality:** 605 tests pass, zero clippy warnings. Commit `c91222d`, not pushed per instructions.
