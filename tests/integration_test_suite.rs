@@ -7,9 +7,10 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 use noscope::integration_runtime::{
-    AtomicMintReport, IntegrationRuntimeConfig, SignalHandlingReport, atomic_mint,
-    atomic_mint_with_report, execute_provider_with_timeout, forward_sigterm_then_escalate,
-    mint_profile, mint_refresh_revoke_cycle, refresh_schedule_outcomes, run_child_and_pass_exit,
+    atomic_mint, atomic_mint_with_report, execute_provider_with_timeout,
+    forward_sigterm_then_escalate_with_os_signals, mint_profile, mint_refresh_revoke_cycle,
+    refresh_schedule_outcomes, run_child_and_pass_exit, AtomicMintReport, IntegrationRuntimeConfig,
+    SignalHandlingReport,
 };
 use noscope::{ErrorKind, MintRequest, ProviderOverrides};
 
@@ -173,9 +174,12 @@ fn signal_handling_sigterm_forwarding_and_double_signal_escalation() {
         ),
     );
 
-    let report: SignalHandlingReport =
-        forward_sigterm_then_escalate(child_script.display().to_string().as_str(), &[])
-            .expect("signal forwarding report");
+    let report: SignalHandlingReport = forward_sigterm_then_escalate_with_os_signals(
+        child_script.display().to_string().as_str(),
+        &[],
+        &[libc::SIGTERM, libc::SIGINT],
+    )
+    .expect("signal forwarding report");
 
     assert!(report.forwarded_sigterm);
     assert!(report.double_signal_escalated);
