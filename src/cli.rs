@@ -99,6 +99,12 @@ pub enum Command {
     #[command(name = "dry-run")]
     DryRun(DryRunArgs),
 
+    /// Check local setup: config directories, provider configs, command paths.
+    Doctor(DoctorArgs),
+
+    /// Create the noscope config directory structure with secure permissions.
+    Init(InitArgs),
+
     /// Generate shell completions for bash, zsh, or fish.
     Completions(CompletionsArgs),
 }
@@ -213,6 +219,18 @@ pub struct DryRunArgs {
     /// TTL in seconds.
     #[arg(long)]
     pub ttl: u64,
+}
+
+/// Arguments for the `doctor` subcommand.
+#[derive(Parser)]
+pub struct DoctorArgs {
+    // Doctor takes no arguments — it inspects the local environment.
+}
+
+/// Arguments for the `init` subcommand.
+#[derive(Parser)]
+pub struct InitArgs {
+    // Init takes no arguments — it creates the default config structure.
 }
 
 /// Arguments for the `completions` subcommand.
@@ -918,6 +936,45 @@ mod tests {
         assert!(
             !mint_help.contains("NS-"),
             "argument help should avoid internal rule identifiers"
+        );
+    }
+
+    // =========================================================================
+    // noscope-3ez.12: Doctor and init subcommands are parseable.
+    // =========================================================================
+
+    #[test]
+    fn doctor_subcommand_parseable() {
+        let cli = crate::cli::parse_from_args(["noscope", "doctor"]);
+        assert!(cli.is_ok(), "doctor subcommand must parse: {:?}", cli.err());
+        assert!(matches!(
+            cli.unwrap().command,
+            crate::cli::Command::Doctor(_)
+        ));
+    }
+
+    #[test]
+    fn init_subcommand_parseable() {
+        let cli = crate::cli::parse_from_args(["noscope", "init"]);
+        assert!(cli.is_ok(), "init subcommand must parse: {:?}", cli.err());
+        assert!(matches!(cli.unwrap().command, crate::cli::Command::Init(_)));
+    }
+
+    #[test]
+    fn doctor_help_avoids_internal_rule_jargon() {
+        let help = render_help(["noscope", "doctor", "--help"]);
+        assert!(
+            !help.contains("NS-"),
+            "doctor help should avoid internal rule identifiers"
+        );
+    }
+
+    #[test]
+    fn init_help_avoids_internal_rule_jargon() {
+        let help = render_help(["noscope", "init", "--help"]);
+        assert!(
+            !help.contains("NS-"),
+            "init help should avoid internal rule identifiers"
         );
     }
 }

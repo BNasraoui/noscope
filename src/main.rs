@@ -65,6 +65,8 @@ fn run(cli: cli::Cli) -> Result<i32, noscope::Error> {
         Command::Revoke(args) => cmd_revoke(args, cli.verbose, cli.output),
         Command::Validate(args) => cmd_validate(args, cli.output),
         Command::DryRun(args) => cmd_dry_run(args, cli.output),
+        Command::Doctor(_args) => cmd_doctor(cli.output),
+        Command::Init(_args) => cmd_init(cli.output),
         Command::Completions(args) => {
             cmd_completions(args);
             Ok(cli::SUCCESS_EXIT_CODE)
@@ -79,6 +81,8 @@ fn command_name(command: &Command) -> &'static str {
         Command::Revoke(_) => "revoke",
         Command::Validate(_) => "validate",
         Command::DryRun(_) => "dry-run",
+        Command::Doctor(_) => "doctor",
+        Command::Init(_) => "init",
         Command::Completions(_) => "completions",
     }
 }
@@ -1129,6 +1133,114 @@ fn config_source_label(source: noscope::provider::ConfigSource) -> &'static str 
         noscope::provider::ConfigSource::EnvVars => "environment variables",
         noscope::provider::ConfigSource::File => "config file",
     }
+}
+
+fn cmd_doctor(output: cli::OutputFormat) -> Result<i32, noscope::Error> {
+    let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()))
+                .join(".config")
+        });
+
+    let report = noscope::doctor::run_doctor(&xdg_config_home);
+
+    match output {
+        cli::OutputFormat::Text => {
+            for check in &report.checks {
+                let symbol = match check.status {
+                    noscope::doctor::CheckStatus::Pass => "✓",
+                    noscope::doctor::CheckStatus::Warn => "!",
+                    noscope::doctor::CheckStatus::Fail => "✗",
+                };
+                eprintln!("{} {}: {}", symbol, check.name, check.message);
+            }
+            let total = report.checks.len();
+            let passed = report.pass_count();
+            let warned = report.warn_count();
+            let failed = report.fail_count();
+            eprintln!(
+                "\n{} checks: {} passed, {} warnings, {} failed",
+                total, passed, warned, failed
+            );
+        }
+        cli::OutputFormat::Json => {
+            let checks: Vec<serde_json::Value> = report
+                .checks
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "name": c.name,
+                        "status": match c.status {
+                            noscope::doctor::CheckStatus::Pass => "pass",
+                            noscope::doctor::CheckStatus::Warn => "warn",
+                            noscope::doctor::CheckStatus::Fail => "fail",
+                        },
+                        "message": c.message,
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::json!({
+                    "command": "doctor",
+                    "checks": checks,
+                    "summary": {
+                        "total": report.checks.len(),
+                        "passed": report.pass_count(),
+                        "warnings": report.warn_count(),
+                        "failures": report.fail_count(),
+                    },
+                    "exit_code": report.exit_code(),
+                })
+            );
+        }
+    }
+
+    Ok(report.exit_code())
+}
+
+fn cmd_init(output: cli::OutputFormat) -> Result<i32, noscope::Error> {
+    let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()))
+                .join(".config")
+        });
+
+    let result = noscope::doctor::run_init(&xdg_config_home).map_err(|e| {
+        noscope::Error::config(&format!("failed to initialize config directories: {}", e))
+    })?;
+
+    match output {
+        cli::OutputFormat::Text => {
+            if result.created_dirs.is_empty() {
+                println!("noscope: config directories already exist, nothing to do");
+            } else {
+                for dir in &result.created_dirs {
+                    println!("noscope: created {}", dir.display());
+                }
+                println!("noscope: initialization complete");
+            }
+        }
+        cli::OutputFormat::Json => {
+            let created: Vec<String> = result
+                .created_dirs
+                .iter()
+                .map(|d| d.display().to_string())
+                .collect();
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "ok",
+                    "command": "init",
+                    "created_dirs": created,
+                })
+            );
+        }
+    }
+
+    Ok(cli::SUCCESS_EXIT_CODE)
 }
 
 fn cmd_completions(args: cli::CompletionsArgs) {

@@ -7,6 +7,7 @@ pub mod client;
 pub mod command_parse;
 pub(crate) mod config_path;
 pub mod credential_set;
+pub mod doctor;
 pub mod error;
 pub mod event;
 pub mod exit_code;
