@@ -487,10 +487,14 @@ fn resolve_run_specs_and_providers(
         return resolve_profile_run_specs_and_providers(client, profile_name);
     }
 
+    // Clap guarantees provider/role/ttl are present when --profile is absent.
+    let role = args.role.clone().expect("clap: required_unless_present");
+    let ttl = args.ttl.expect("clap: required_unless_present");
+
     let req = noscope::MintRequest {
         providers: args.provider.clone(),
-        role: args.role.clone(),
-        ttl_secs: args.ttl,
+        role,
+        ttl_secs: ttl,
     };
     client.validate_mint(&req)?;
 
@@ -510,6 +514,41 @@ fn resolve_run_specs_and_providers(
 }
 
 fn resolve_profile_run_specs_and_providers(
+    client: &Client,
+    profile_name: &str,
+) -> Result<
+    (
+        Vec<noscope::credential_set::CredentialSpec>,
+        std::collections::HashMap<String, noscope::provider::ResolvedProvider>,
+    ),
+    noscope::Error,
+> {
+    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    let path = noscope::profile::profile_config_path(profile_name, xdg.as_deref())?;
+    let profile = noscope::profile::load_profile(&path)?;
+
+    let mut specs = Vec::with_capacity(profile.credentials.len());
+    let mut resolved_by_name = std::collections::HashMap::new();
+    for (idx, cred) in profile.credentials.iter().enumerate() {
+        let resolved = client.resolve_provider(&cred.provider, &ProviderOverrides::default())?;
+        let env_key = cred
+            .env_key
+            .clone()
+            .unwrap_or_else(|| format!("{}_TOKEN_{}", cred.provider.to_uppercase(), idx));
+        specs.push(CredentialSpec::new(
+            &cred.provider,
+            &cred.role,
+            cred.ttl,
+            &env_key,
+        ));
+        resolved_by_name
+            .entry(cred.provider.clone())
+            .or_insert(resolved);
+    }
+    Ok((specs, resolved_by_name))
+}
+
+fn resolve_profile_mint_specs_and_providers(
     client: &Client,
     profile_name: &str,
 ) -> Result<
@@ -603,41 +642,50 @@ fn revoke_on_shutdown_signal(
 fn cmd_mint(args: cli::MintArgs, verbose: bool) -> Result<i32, noscope::Error> {
     use std::io::IsTerminal;
 
+    let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
     let client = Client::new(ClientOptions {
         verbose,
         force_terminal: args.force_terminal,
+        xdg_config_home,
         ..ClientOptions::default()
     })?;
 
-    let req = noscope::MintRequest {
-        providers: args.provider,
-        role: args.role,
-        ttl_secs: args.ttl,
-    };
-    client.validate_mint(&req)?;
-
     client.check_stdout_not_terminal(std::io::stdout().is_terminal())?;
 
-    let mut resolved_by_name = std::collections::HashMap::new();
-    let mut specs = Vec::with_capacity(req.providers.len());
-    for provider_name in &req.providers {
-        let resolved = client.resolve_provider(provider_name, &ProviderOverrides::default())?;
-        specs.push(CredentialSpec::new(
-            provider_name,
-            &req.role,
-            req.ttl_secs,
-            &format!("{}_TOKEN", provider_name.to_uppercase()),
-        ));
-        resolved_by_name.insert(provider_name.clone(), resolved);
-    }
+    let (specs, resolved_by_name) = if let Some(profile_name) = &args.profile {
+        resolve_profile_mint_specs_and_providers(&client, profile_name)?
+    } else {
+        // Clap guarantees provider/role/ttl are present when --profile is absent.
+        let role = args.role.expect("clap: required_unless_present");
+        let ttl = args.ttl.expect("clap: required_unless_present");
+
+        let req = noscope::MintRequest {
+            providers: args.provider,
+            role,
+            ttl_secs: ttl,
+        };
+        client.validate_mint(&req)?;
+
+        let mut resolved_by_name = std::collections::HashMap::new();
+        let mut specs = Vec::with_capacity(req.providers.len());
+        for provider_name in &req.providers {
+            let resolved = client.resolve_provider(provider_name, &ProviderOverrides::default())?;
+            specs.push(CredentialSpec::new(
+                provider_name,
+                &req.role,
+                req.ttl_secs,
+                &format!("{}_TOKEN", provider_name.to_uppercase()),
+            ));
+            resolved_by_name.insert(provider_name.clone(), resolved);
+        }
+        (specs, resolved_by_name)
+    };
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| noscope::Error::internal(&format!("failed creating async runtime: {}", e)))?;
 
-    let role = req.role.clone();
-    let ttl_secs = req.ttl_secs;
     let cred_set = runtime.block_on(async {
         let config = MintConfig::new(Duration::from_secs(30), 8)?;
         noscope::orchestrator::mint_all(&specs, &config, move |spec| {
@@ -647,7 +695,6 @@ fn cmd_mint(args: cli::MintArgs, verbose: bool) -> Result<i32, noscope::Error> {
             let provider_name = provider.name.clone();
             let mint_cmd = provider.mint_cmd.clone();
             let provider_env = provider.env.clone();
-            let role = role.clone();
             let spec_provider = spec.provider.clone();
             let spec_role = spec.role.clone();
             let spec_ttl = spec.ttl_secs;
@@ -665,9 +712,9 @@ fn cmd_mint(args: cli::MintArgs, verbose: bool) -> Result<i32, noscope::Error> {
 
                 let mut env = provider_env;
                 env.insert("NOSCOPE_PROVIDER".to_string(), provider_name.clone());
-                env.insert("NOSCOPE_ROLE".to_string(), role.clone());
+                env.insert("NOSCOPE_ROLE".to_string(), spec_role.clone());
                 let rendered_argv =
-                    noscope::provider_exec::substitute_template_vars(&argv, &role, ttl_secs);
+                    noscope::provider_exec::substitute_template_vars(&argv, &spec_role, spec_ttl);
 
                 match noscope::provider_exec::execute_provider_command(
                     &rendered_argv,
@@ -676,7 +723,7 @@ fn cmd_mint(args: cli::MintArgs, verbose: bool) -> Result<i32, noscope::Error> {
                         timeout: Duration::from_secs(30),
                         kill_grace_period: Duration::from_secs(5),
                     },
-                    ttl_secs,
+                    spec_ttl,
                 )
                 .await
                 {
@@ -684,7 +731,7 @@ fn cmd_mint(args: cli::MintArgs, verbose: bool) -> Result<i32, noscope::Error> {
                         Ok(output) => {
                             let token = noscope::token_convert::provider_output_to_scoped_token(
                                 output,
-                                &role,
+                                &spec_role,
                                 Some(format!("tok-{}", provider_name)),
                                 &provider_name,
                             );
@@ -893,6 +940,101 @@ fn cmd_validate(args: cli::ValidateArgs, output: cli::OutputFormat) -> Result<i3
         }
     }
     Ok(cli::SUCCESS_EXIT_CODE)
+}
+
+#[cfg(test)]
+mod mint_profile_wiring_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    fn write_executable(path: &Path, script: &str) {
+        fs::write(path, script).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn write_provider_config(xdg: &Path, provider: &str, mint_cmd: &str) {
+        let dir = xdg.join("noscope").join("providers");
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = format!(
+            "contract_version = 1\n\n[commands]\nmint = \"{}\"\n",
+            mint_cmd
+        );
+        let path = dir.join(format!("{}.toml", provider));
+        fs::write(&path, cfg).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    fn scoped_env<T>(key: &str, value: &Path, f: impl FnOnce() -> T) -> T {
+        let old = std::env::var_os(key);
+        // SAFETY: test-local env mutation, restored before return.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        let out = f();
+        match old {
+            Some(prev) => unsafe { std::env::set_var(key, prev) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        out
+    }
+
+    #[test]
+    fn cmd_mint_with_profile_mints_from_profile_credentials() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile_dir = tmp.path().join("noscope").join("profiles");
+        fs::create_dir_all(&profile_dir).unwrap();
+
+        let mint_script = tmp.path().join("mint.sh");
+        write_executable(
+            &mint_script,
+            "#!/bin/sh\nprintf '{\"token\":\"profile-mint-secret\",\"expires_at\":\"2099-01-01T00:00:00Z\"}'\n",
+        );
+
+        write_provider_config(tmp.path(), "aws", mint_script.to_string_lossy().as_ref());
+
+        let profile_toml =
+            "[[credentials]]\nprovider = \"aws\"\nrole = \"profile-role\"\nttl = 3600\n";
+        fs::write(profile_dir.join("dev.toml"), profile_toml).unwrap();
+        fs::set_permissions(
+            profile_dir.join("dev.toml"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+
+        let args = cli::MintArgs {
+            provider: vec![],
+            role: None,
+            ttl: None,
+            profile: Some("dev".to_string()),
+            force_terminal: true,
+        };
+
+        let result = scoped_env("XDG_CONFIG_HOME", tmp.path(), || cmd_mint(args, false));
+        assert!(
+            result.is_ok(),
+            "noscope-3ez.8: cmd_mint --profile must succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn cmd_mint_without_profile_still_requires_provider_role_ttl() {
+        let args = cli::MintArgs {
+            provider: vec!["nonexistent-provider".to_string()],
+            role: Some("admin".to_string()),
+            ttl: Some(3600),
+            profile: None,
+            force_terminal: true,
+        };
+
+        let result = cmd_mint(args, false);
+        assert!(
+            result.is_err(),
+            "noscope-3ez.8: cmd_mint without profile must still resolve providers"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1189,8 +1331,8 @@ mod run_wiring_tests {
     ) -> cli::RunArgs {
         cli::RunArgs {
             provider: providers,
-            role: role.to_string(),
-            ttl,
+            role: Some(role.to_string()),
+            ttl: Some(ttl),
             profile,
             log_format: log_format.to_string(),
             child_args,
@@ -1941,8 +2083,8 @@ mod run_mode_os_signal_e2e_tests {
     fn make_run_args(child_script: &Path) -> cli::RunArgs {
         cli::RunArgs {
             provider: vec!["aws".to_string()],
-            role: "admin".to_string(),
-            ttl: 3600,
+            role: Some("admin".to_string()),
+            ttl: Some(3600),
             profile: None,
             log_format: "text".to_string(),
             child_args: vec![child_script.to_string_lossy().to_string()],

@@ -111,16 +111,16 @@ pub enum Command {
 #[derive(Parser)]
 pub struct RunArgs {
     /// Provider name(s) to mint credentials from.
-    #[arg(long, required = true)]
+    #[arg(long, required_unless_present = "profile", conflicts_with = "profile")]
     pub provider: Vec<String>,
 
     /// Role to request from each provider.
-    #[arg(long)]
-    pub role: String,
+    #[arg(long, required_unless_present = "profile", conflicts_with = "profile")]
+    pub role: Option<String>,
 
     /// TTL in seconds for minted credentials.
-    #[arg(long)]
-    pub ttl: u64,
+    #[arg(long, required_unless_present = "profile", conflicts_with = "profile")]
+    pub ttl: Option<u64>,
 
     /// Use a named profile from `profiles/<name>.toml`.
     ///
@@ -143,16 +143,16 @@ pub struct RunArgs {
 #[derive(Parser)]
 pub struct MintArgs {
     /// Provider name(s) to mint credentials from.
-    #[arg(long, required = true)]
+    #[arg(long, required_unless_present = "profile", conflicts_with = "profile")]
     pub provider: Vec<String>,
 
     /// Role to request from each provider.
-    #[arg(long)]
-    pub role: String,
+    #[arg(long, required_unless_present = "profile", conflicts_with = "profile")]
+    pub role: Option<String>,
 
     /// TTL in seconds for minted credentials.
-    #[arg(long)]
-    pub ttl: u64,
+    #[arg(long, required_unless_present = "profile", conflicts_with = "profile")]
+    pub ttl: Option<u64>,
 
     /// Use a named profile from `profiles/<name>.toml`.
     ///
@@ -715,29 +715,91 @@ mod tests {
     }
 
     // =========================================================================
-    // Profile flag support.
+    // noscope-3ez.8: Profile is a first-class alternative to --provider/--role/--ttl.
     // =========================================================================
 
     #[test]
-    fn mint_subcommand_accepts_profile_flag() {
-        let cli = crate::cli::parse_from_args([
+    fn mint_profile_only_parses_without_provider_role_ttl() {
+        let cli = crate::cli::parse_from_args(["noscope", "mint", "--profile", "dev"]);
+        assert!(
+            cli.is_ok(),
+            "noscope-3ez.8: mint --profile alone must parse: {:?}",
+            cli.err()
+        );
+    }
+
+    #[test]
+    fn mint_profile_conflicts_with_provider() {
+        let result = crate::cli::parse_from_args([
             "noscope",
             "mint",
             "--profile",
-            "staging",
-            // Profile provides provider/role/ttl, so they're not required
-            // at the CLI parsing level — validation happens later.
+            "dev",
             "--provider",
             "aws",
-            "--role",
-            "r",
-            "--ttl",
+        ]);
+        assert!(
+            result.is_err(),
+            "noscope-3ez.8: --profile must conflict with --provider"
+        );
+    }
+
+    #[test]
+    fn mint_profile_conflicts_with_role() {
+        let result =
+            crate::cli::parse_from_args(["noscope", "mint", "--profile", "dev", "--role", "admin"]);
+        assert!(
+            result.is_err(),
+            "noscope-3ez.8: --profile must conflict with --role"
+        );
+    }
+
+    #[test]
+    fn mint_profile_conflicts_with_ttl() {
+        let result =
+            crate::cli::parse_from_args(["noscope", "mint", "--profile", "dev", "--ttl", "3600"]);
+        assert!(
+            result.is_err(),
+            "noscope-3ez.8: --profile must conflict with --ttl"
+        );
+    }
+
+    #[test]
+    fn run_profile_only_parses_without_provider_role_ttl() {
+        let cli =
+            crate::cli::parse_from_args(["noscope", "run", "--profile", "dev", "--", "sleep", "1"]);
+        assert!(
+            cli.is_ok(),
+            "noscope-3ez.8: run --profile alone must parse: {:?}",
+            cli.err()
+        );
+    }
+
+    #[test]
+    fn run_profile_conflicts_with_provider() {
+        let result = crate::cli::parse_from_args([
+            "noscope",
+            "run",
+            "--profile",
+            "dev",
+            "--provider",
+            "aws",
+            "--",
+            "sleep",
             "1",
         ]);
         assert!(
-            cli.is_ok(),
-            "mint with --profile must parse: {:?}",
-            cli.err()
+            result.is_err(),
+            "noscope-3ez.8: run --profile must conflict with --provider"
+        );
+    }
+
+    #[test]
+    fn mint_requires_profile_or_provider_role_ttl() {
+        let result = crate::cli::parse_from_args(["noscope", "mint"]);
+        assert!(
+            result.is_err(),
+            "noscope-3ez.8: mint with no flags at all must fail"
         );
     }
 
