@@ -1,6 +1,6 @@
 ## noscope-f75 progress
 
-- Added run-mode OS signal registration for `SIGTERM`, `SIGINT`, and `SIGHUP` in `cmd_run` via `signal_hook::iterator::Signals`.
+- Added run-mode OS signal registration for `SIGTERM`, `SIGINT`, and `SIGHUP` in `run_child_with_os_signals` (called by `cmd_run`) via `signal_hook::iterator::Signals`.
 - Added `src/run_signal_wiring.rs` to connect parent signals to `SignalHandlingPolicy::on_shutdown_signal`, including:
   - forwarding shutdown signals to child process handling,
   - NS-028 double-signal escalation to `SIGKILL`,
