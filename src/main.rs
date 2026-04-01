@@ -484,7 +484,7 @@ fn resolve_run_specs_and_providers(
     noscope::Error,
 > {
     if let Some(profile_name) = &args.profile {
-        return resolve_profile_run_specs_and_providers(client, profile_name);
+        return resolve_profile_specs_and_providers(client, profile_name);
     }
 
     // Clap guarantees provider/role/ttl are present when --profile is absent.
@@ -513,42 +513,7 @@ fn resolve_run_specs_and_providers(
     Ok((specs, resolved_by_name))
 }
 
-fn resolve_profile_run_specs_and_providers(
-    client: &Client,
-    profile_name: &str,
-) -> Result<
-    (
-        Vec<noscope::credential_set::CredentialSpec>,
-        std::collections::HashMap<String, noscope::provider::ResolvedProvider>,
-    ),
-    noscope::Error,
-> {
-    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
-    let path = noscope::profile::profile_config_path(profile_name, xdg.as_deref())?;
-    let profile = noscope::profile::load_profile(&path)?;
-
-    let mut specs = Vec::with_capacity(profile.credentials.len());
-    let mut resolved_by_name = std::collections::HashMap::new();
-    for (idx, cred) in profile.credentials.iter().enumerate() {
-        let resolved = client.resolve_provider(&cred.provider, &ProviderOverrides::default())?;
-        let env_key = cred
-            .env_key
-            .clone()
-            .unwrap_or_else(|| format!("{}_TOKEN_{}", cred.provider.to_uppercase(), idx));
-        specs.push(CredentialSpec::new(
-            &cred.provider,
-            &cred.role,
-            cred.ttl,
-            &env_key,
-        ));
-        resolved_by_name
-            .entry(cred.provider.clone())
-            .or_insert(resolved);
-    }
-    Ok((specs, resolved_by_name))
-}
-
-fn resolve_profile_mint_specs_and_providers(
+fn resolve_profile_specs_and_providers(
     client: &Client,
     profile_name: &str,
 ) -> Result<
@@ -653,7 +618,7 @@ fn cmd_mint(args: cli::MintArgs, verbose: bool) -> Result<i32, noscope::Error> {
     client.check_stdout_not_terminal(std::io::stdout().is_terminal())?;
 
     let (specs, resolved_by_name) = if let Some(profile_name) = &args.profile {
-        resolve_profile_mint_specs_and_providers(&client, profile_name)?
+        resolve_profile_specs_and_providers(&client, profile_name)?
     } else {
         // Clap guarantees provider/role/ttl are present when --profile is absent.
         let role = args.role.expect("clap: required_unless_present");
@@ -2302,6 +2267,323 @@ mod run_mode_os_signal_e2e_tests {
             revoked.lines().filter(|line| *line == "tok-aws").count(),
             1,
             "NS-028: double-signal escalation must not trigger duplicate revocations"
+        );
+    }
+}
+
+#[cfg(test)]
+mod resolve_profile_dedup_tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    fn write_executable(path: &Path, script: &str) {
+        fs::write(path, script).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn write_provider_config(xdg: &Path, provider: &str, mint_cmd: &str) {
+        let dir = xdg.join("noscope").join("providers");
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = format!(
+            "contract_version = 1\n\n[commands]\nmint = \"{}\"\n",
+            mint_cmd
+        );
+        let path = dir.join(format!("{}.toml", provider));
+        fs::write(&path, cfg).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    fn scoped_env<T>(key: &str, value: &Path, f: impl FnOnce() -> T) -> T {
+        let old = std::env::var_os(key);
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        let out = f();
+        match old {
+            Some(prev) => unsafe { std::env::set_var(key, prev) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        out
+    }
+
+    /// The shared helper must exist and return specs + resolved providers
+    /// for a valid single-credential profile.
+    #[test]
+    fn shared_helper_resolves_single_credential_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile_dir = tmp.path().join("noscope").join("profiles");
+        fs::create_dir_all(&profile_dir).unwrap();
+
+        let mint_script = tmp.path().join("mint.sh");
+        write_executable(
+            &mint_script,
+            "#!/bin/sh\nprintf '{\"token\":\"secret\",\"expires_at\":\"2099-01-01T00:00:00Z\"}'\n",
+        );
+        write_provider_config(tmp.path(), "aws", mint_script.to_string_lossy().as_ref());
+
+        let profile_toml = "[[credentials]]\nprovider = \"aws\"\nrole = \"admin\"\nttl = 3600\n";
+        fs::write(profile_dir.join("dev.toml"), profile_toml).unwrap();
+        fs::set_permissions(
+            profile_dir.join("dev.toml"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+
+        let result = scoped_env("XDG_CONFIG_HOME", tmp.path(), || {
+            let client = Client::new(ClientOptions {
+                xdg_config_home: Some(tmp.path().to_path_buf()),
+                ..ClientOptions::default()
+            })
+            .unwrap();
+            resolve_profile_specs_and_providers(&client, "dev")
+        });
+
+        let (specs, resolved) = result.expect("shared helper must succeed for valid profile");
+        assert_eq!(specs.len(), 1, "must produce one spec per credential");
+        assert_eq!(specs[0].provider, "aws");
+        assert_eq!(specs[0].role, "admin");
+        assert_eq!(specs[0].ttl_secs, 3600);
+        assert!(
+            resolved.contains_key("aws"),
+            "must resolve the aws provider"
+        );
+    }
+
+    /// The shared helper must generate default env_key as {PROVIDER}_TOKEN_{idx}
+    /// when env_key is not specified in the profile.
+    #[test]
+    fn shared_helper_generates_default_env_key_from_provider_and_index() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile_dir = tmp.path().join("noscope").join("profiles");
+        fs::create_dir_all(&profile_dir).unwrap();
+
+        let mint_script = tmp.path().join("mint.sh");
+        write_executable(
+            &mint_script,
+            "#!/bin/sh\nprintf '{\"token\":\"secret\",\"expires_at\":\"2099-01-01T00:00:00Z\"}'\n",
+        );
+        write_provider_config(tmp.path(), "aws", mint_script.to_string_lossy().as_ref());
+
+        let profile_toml = "[[credentials]]\nprovider = \"aws\"\nrole = \"admin\"\nttl = 3600\n";
+        fs::write(profile_dir.join("dev.toml"), profile_toml).unwrap();
+        fs::set_permissions(
+            profile_dir.join("dev.toml"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+
+        let (specs, _) = scoped_env("XDG_CONFIG_HOME", tmp.path(), || {
+            let client = Client::new(ClientOptions {
+                xdg_config_home: Some(tmp.path().to_path_buf()),
+                ..ClientOptions::default()
+            })
+            .unwrap();
+            resolve_profile_specs_and_providers(&client, "dev")
+        })
+        .unwrap();
+
+        assert_eq!(
+            specs[0].env_key, "AWS_TOKEN_0",
+            "default env_key must be {{PROVIDER}}_TOKEN_{{idx}}"
+        );
+    }
+
+    /// When env_key IS specified in the profile, the shared helper must use it.
+    #[test]
+    fn shared_helper_uses_explicit_env_key_when_specified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile_dir = tmp.path().join("noscope").join("profiles");
+        fs::create_dir_all(&profile_dir).unwrap();
+
+        let mint_script = tmp.path().join("mint.sh");
+        write_executable(
+            &mint_script,
+            "#!/bin/sh\nprintf '{\"token\":\"secret\",\"expires_at\":\"2099-01-01T00:00:00Z\"}'\n",
+        );
+        write_provider_config(tmp.path(), "aws", mint_script.to_string_lossy().as_ref());
+
+        let profile_toml =
+            "[[credentials]]\nprovider = \"aws\"\nrole = \"admin\"\nttl = 3600\nenv_key = \"MY_CUSTOM_TOKEN\"\n";
+        fs::write(profile_dir.join("dev.toml"), profile_toml).unwrap();
+        fs::set_permissions(
+            profile_dir.join("dev.toml"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+
+        let (specs, _) = scoped_env("XDG_CONFIG_HOME", tmp.path(), || {
+            let client = Client::new(ClientOptions {
+                xdg_config_home: Some(tmp.path().to_path_buf()),
+                ..ClientOptions::default()
+            })
+            .unwrap();
+            resolve_profile_specs_and_providers(&client, "dev")
+        })
+        .unwrap();
+
+        assert_eq!(
+            specs[0].env_key, "MY_CUSTOM_TOKEN",
+            "explicit env_key must be preserved"
+        );
+    }
+
+    /// The shared helper must resolve multiple credentials and deduplicate
+    /// providers (using entry().or_insert).
+    #[test]
+    fn shared_helper_resolves_multi_credential_profile_with_provider_dedup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile_dir = tmp.path().join("noscope").join("profiles");
+        fs::create_dir_all(&profile_dir).unwrap();
+
+        let mint_script = tmp.path().join("mint.sh");
+        write_executable(
+            &mint_script,
+            "#!/bin/sh\nprintf '{\"token\":\"secret\",\"expires_at\":\"2099-01-01T00:00:00Z\"}'\n",
+        );
+        write_provider_config(tmp.path(), "aws", mint_script.to_string_lossy().as_ref());
+
+        let profile_toml = "\
+[[credentials]]\nprovider = \"aws\"\nrole = \"admin\"\nttl = 3600\n\n\
+[[credentials]]\nprovider = \"aws\"\nrole = \"readonly\"\nttl = 1800\n";
+        fs::write(profile_dir.join("multi.toml"), profile_toml).unwrap();
+        fs::set_permissions(
+            profile_dir.join("multi.toml"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+
+        let (specs, resolved) = scoped_env("XDG_CONFIG_HOME", tmp.path(), || {
+            let client = Client::new(ClientOptions {
+                xdg_config_home: Some(tmp.path().to_path_buf()),
+                ..ClientOptions::default()
+            })
+            .unwrap();
+            resolve_profile_specs_and_providers(&client, "multi")
+        })
+        .unwrap();
+
+        assert_eq!(specs.len(), 2, "must produce one spec per credential entry");
+        assert_eq!(specs[0].env_key, "AWS_TOKEN_0");
+        assert_eq!(specs[1].env_key, "AWS_TOKEN_1");
+        assert_eq!(
+            resolved.len(),
+            1,
+            "same provider used twice must be deduped in resolved map"
+        );
+    }
+
+    /// The shared helper must fail with an appropriate error when the profile
+    /// references a nonexistent provider.
+    #[test]
+    fn shared_helper_fails_for_nonexistent_provider() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile_dir = tmp.path().join("noscope").join("profiles");
+        fs::create_dir_all(&profile_dir).unwrap();
+
+        // No provider config written — provider doesn't exist
+
+        let profile_toml =
+            "[[credentials]]\nprovider = \"nonexistent\"\nrole = \"admin\"\nttl = 3600\n";
+        fs::write(profile_dir.join("bad.toml"), profile_toml).unwrap();
+        fs::set_permissions(
+            profile_dir.join("bad.toml"),
+            fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+
+        let result = scoped_env("XDG_CONFIG_HOME", tmp.path(), || {
+            let client = Client::new(ClientOptions {
+                xdg_config_home: Some(tmp.path().to_path_buf()),
+                ..ClientOptions::default()
+            })
+            .unwrap();
+            resolve_profile_specs_and_providers(&client, "bad")
+        });
+
+        assert!(
+            result.is_err(),
+            "shared helper must fail when provider doesn't exist"
+        );
+    }
+
+    /// The shared helper must fail when the profile does not exist.
+    #[test]
+    fn shared_helper_fails_for_missing_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let result = scoped_env("XDG_CONFIG_HOME", tmp.path(), || {
+            let client = Client::new(ClientOptions {
+                xdg_config_home: Some(tmp.path().to_path_buf()),
+                ..ClientOptions::default()
+            })
+            .unwrap();
+            resolve_profile_specs_and_providers(&client, "nonexistent")
+        });
+
+        assert!(
+            result.is_err(),
+            "shared helper must fail when profile file doesn't exist"
+        );
+    }
+
+    /// After deduplication, both the run and mint code paths must still
+    /// call the same shared function (verified by checking that the old
+    /// function names no longer exist as separate function definitions).
+    #[test]
+    fn dedup_eliminates_separate_run_and_mint_profile_resolvers() {
+        let src = std::fs::read_to_string(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+        )
+        .expect("failed to read src/main.rs");
+
+        // Count actual function definitions (lines starting with "fn " after trimming),
+        // not string literals in tests.
+        let run_fn_defs = src
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                trimmed.starts_with("fn resolve_profile_run_specs_and_providers(")
+            })
+            .count();
+        let mint_fn_defs = src
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                trimmed.starts_with("fn resolve_profile_mint_specs_and_providers(")
+            })
+            .count();
+
+        assert_eq!(
+            run_fn_defs, 0,
+            "resolve_profile_run_specs_and_providers must be eliminated by dedup"
+        );
+        assert_eq!(
+            mint_fn_defs, 0,
+            "resolve_profile_mint_specs_and_providers must be eliminated by dedup"
+        );
+    }
+
+    /// The shared helper function must exist.
+    #[test]
+    fn shared_helper_function_exists() {
+        let src = std::fs::read_to_string(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"),
+        )
+        .expect("failed to read src/main.rs");
+
+        let shared_fn_defs = src
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim();
+                trimmed.starts_with("fn resolve_profile_specs_and_providers(")
+            })
+            .count();
+
+        assert!(
+            shared_fn_defs >= 1,
+            "resolve_profile_specs_and_providers must exist as the shared helper"
         );
     }
 }
