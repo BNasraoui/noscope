@@ -11,3 +11,5 @@
 # Statesman
 .statesman/
 statesman.local.toml
+.provenance/cache/
+.provenance/wiki/
