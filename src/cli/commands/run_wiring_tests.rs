@@ -39,6 +39,8 @@ fn make_run_args(
         role: Some(role.to_string()),
         ttl: Some(ttl),
         profile,
+        env_key: None,
+        restart_before_expiry: None,
         log_format: log_format.to_string(),
         child_args,
     }

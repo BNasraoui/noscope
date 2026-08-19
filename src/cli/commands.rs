@@ -41,6 +41,7 @@ pub fn run_cli() -> ExitCode {
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use crate::app::mint::format_mint_failed_providers;
 use crate::app::resolve::CredentialSource;
@@ -102,6 +103,7 @@ fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, crate::Error> {
         args.provider.clone(),
         args.role.clone(),
         args.ttl,
+        args.env_key.clone(),
     )?;
     let (specs, resolved_by_name) = crate::app::resolve::resolve_specs_and_providers(
         &client,
@@ -150,6 +152,7 @@ fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, crate::Error> {
         &runtime,
         &resolved_by_name,
         &cred_set,
+        args.restart_before_expiry.map(Duration::from_secs),
     )?;
 
     Ok(child_exit)
@@ -212,8 +215,13 @@ fn cmd_mint(args: cli::MintArgs, verbose: bool) -> Result<i32, crate::Error> {
 
     client.check_stdout_not_terminal(std::io::stdout().is_terminal())?;
 
-    let source =
-        CredentialSource::from_cli(args.profile.clone(), args.provider, args.role, args.ttl)?;
+    let source = CredentialSource::from_cli(
+        args.profile.clone(),
+        args.provider,
+        args.role,
+        args.ttl,
+        args.env_key,
+    )?;
     let (specs, resolved_by_name) = crate::app::resolve::resolve_specs_and_providers(
         &client,
         &source,

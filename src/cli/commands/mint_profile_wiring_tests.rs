@@ -61,6 +61,7 @@ fn cmd_mint_with_profile_mints_from_profile_credentials() {
         role: None,
         ttl: None,
         profile: Some("dev".to_string()),
+        env_key: None,
         force_terminal: true,
     };
 
@@ -79,6 +80,7 @@ fn cmd_mint_without_profile_still_requires_provider_role_ttl() {
         role: Some("admin".to_string()),
         ttl: Some(3600),
         profile: None,
+        env_key: None,
         force_terminal: true,
     };
 

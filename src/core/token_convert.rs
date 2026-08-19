@@ -46,6 +46,7 @@ pub struct ConversionResult {
 /// - `token_id`: Optional provider-supplied or generated token identifier.
 /// - `provider`: The provider name (not in provider output).
 #[rule("rule_cross_single_conversion_path")]
+#[rule("rule_provider_supplied_token_id")]
 pub fn provider_output_to_scoped_token(
     output: ProviderOutput,
     role: &str,
@@ -59,6 +60,9 @@ pub fn provider_output_to_scoped_token(
     // manages zeroization of its own copy independently.
     let secret = SecretString::from(output.token.clone());
 
+    // The provider owns the lease identity when it supplies one
+    // (rule_provider_supplied_token_id); the caller's value is the fallback.
+    let token_id = output.token_id.clone().or(token_id);
     ScopedToken::new(secret, role, output.expires_at, token_id, provider)
 }
 

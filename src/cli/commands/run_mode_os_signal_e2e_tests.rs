@@ -48,6 +48,8 @@ fn make_run_args(child_script: &Path) -> cli::RunArgs {
         role: Some("admin".to_string()),
         ttl: Some(3600),
         profile: None,
+        env_key: None,
+        restart_before_expiry: None,
         log_format: "text".to_string(),
         child_args: vec![child_script.to_string_lossy().to_string()],
     }

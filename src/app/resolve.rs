@@ -14,6 +14,7 @@ use crate::core::credential_set::{validate_credential_specs, CredentialSpec};
 use crate::core::error::Error;
 use crate::ports::profile;
 use crate::ports::provider::ResolvedProvider;
+use provenance_macros::rule;
 
 /// Where the credential specs come from.
 pub enum CredentialSource {
@@ -21,6 +22,7 @@ pub enum CredentialSource {
         providers: Vec<String>,
         role: String,
         ttl_secs: u64,
+        env_key: Option<String>,
     },
     Profile {
         name: String,
@@ -36,6 +38,7 @@ impl CredentialSource {
         providers: Vec<String>,
         role: Option<String>,
         ttl: Option<u64>,
+        env_key: Option<String>,
     ) -> Result<Self, Error> {
         if let Some(name) = profile {
             return Ok(Self::Profile { name });
@@ -46,11 +49,13 @@ impl CredentialSource {
             providers,
             role,
             ttl_secs,
+            env_key,
         })
     }
 }
 
 /// Resolve a credential source into validated specs and their providers.
+#[rule("rule_env_key_flag")]
 pub fn resolve_specs_and_providers(
     client: &Client,
     source: &CredentialSource,
@@ -61,7 +66,13 @@ pub fn resolve_specs_and_providers(
             providers,
             role,
             ttl_secs,
+            env_key,
         } => {
+            // rule_env_key_flag: a caller-chosen env key names one
+            // credential, so it needs exactly one provider.
+            if env_key.is_some() && providers.len() != 1 {
+                return Err(Error::usage("--env-key requires exactly one --provider"));
+            }
             let req = MintRequest {
                 providers: providers.clone(),
                 role: role.clone(),
@@ -74,12 +85,10 @@ pub fn resolve_specs_and_providers(
             for provider_name in providers {
                 let resolved =
                     client.resolve_provider(provider_name, &ProviderOverrides::default())?;
-                specs.push(CredentialSpec::new(
-                    provider_name,
-                    role,
-                    *ttl_secs,
-                    &format!("{}_TOKEN", provider_name.to_uppercase()),
-                ));
+                let key = env_key
+                    .clone()
+                    .unwrap_or_else(|| format!("{}_TOKEN", provider_name.to_uppercase()));
+                specs.push(CredentialSpec::new(provider_name, role, *ttl_secs, &key));
                 resolved_by_name.insert(provider_name.clone(), resolved);
             }
             (specs, resolved_by_name)

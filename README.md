@@ -90,5 +90,8 @@ Current status:
 
 - currently implemented: TTL expiry via required `expires_at` on scoped tokens
 - currently implemented: explicit `revoke` workflow and run-mode signal handling
-- planned: stronger end-to-end revoke-on-exit guarantees across all termination paths
-- planned: further hardening and parity validation for process-group termination paths
+- currently implemented: revoke-on-exit on normal exit and on shutdown signals,
+  verified end-to-end (`rule_signals_signal_revocation_budget`, run-mode e2e tests)
+- currently implemented: process-group termination on child exit — no process
+  from the child's group survives noscope (`rule_group_termination_on_exit`;
+  Linux, where run mode creates the group)
