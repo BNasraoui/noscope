@@ -27,6 +27,14 @@ fn write_provider_config(xdg: &Path, provider: &str, mint_cmd: &str, refresh_cmd
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("chmod config");
 }
 
+/// ISO 8601 timestamp `seconds` from now, computed in Rust because
+/// GNU (`date -d`) and BSD (`date -v`) date flags are incompatible.
+fn iso_in(seconds: i64) -> String {
+    (chrono::Utc::now() + chrono::Duration::seconds(seconds))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string()
+}
+
 fn run_noscope(xdg: &Path, child: &str) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_noscope"))
         .env("XDG_CONFIG_HOME", xdg)
@@ -62,9 +70,11 @@ fn run_mode_executes_provider_refresh_command_when_due() {
     let mint = tmp.path().join("mint.sh");
     write_executable(
         &mint,
-        "#!/bin/sh\n\
-         expires=$(date -u -d '+2 seconds' +%Y-%m-%dT%H:%M:%SZ)\n\
-         printf '{\"token\":\"initial-secret\",\"expires_at\":\"%s\"}' \"$expires\"\n",
+        &format!(
+            "#!/bin/sh\n\
+             printf '{{\"token\":\"initial-secret\",\"expires_at\":\"{}\"}}'\n",
+            iso_in(2)
+        ),
     );
 
     let refresh = tmp.path().join("refresh.sh");
@@ -73,9 +83,9 @@ fn run_mode_executes_provider_refresh_command_when_due() {
         &format!(
             "#!/bin/sh\n\
              printf 'token=%s id=%s ttl=%s' \"$NOSCOPE_TOKEN\" \"$NOSCOPE_TOKEN_ID\" \"$NOSCOPE_TTL\" > {}\n\
-             expires=$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)\n\
-             printf '{{\"token\":\"rotated-secret\",\"expires_at\":\"%s\"}}' \"$expires\"\n",
-            marker.display()
+             printf '{{\"token\":\"rotated-secret\",\"expires_at\":\"{}\"}}'\n",
+            marker.display(),
+            iso_in(3600)
         ),
     );
 
@@ -163,9 +173,11 @@ fn run_mode_expiry_warns_without_stopping_child() {
     let mint = tmp.path().join("mint.sh");
     write_executable(
         &mint,
-        "#!/bin/sh\n\
-         expires=$(date -u -d '+1 second' +%Y-%m-%dT%H:%M:%SZ)\n\
-         printf '{\"token\":\"short-lived\",\"expires_at\":\"%s\"}' \"$expires\"\n",
+        &format!(
+            "#!/bin/sh\n\
+             printf '{{\"token\":\"short-lived\",\"expires_at\":\"{}\"}}'\n",
+            iso_in(1)
+        ),
     );
     write_provider_config(tmp.path(), "mock", mint.to_string_lossy().as_ref(), None);
 
