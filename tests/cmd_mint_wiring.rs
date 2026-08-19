@@ -115,7 +115,7 @@ fn cmd_mint_uses_atomic_orchestrator_behavior_on_provider_failure() {
     );
 }
 
-// The two NS-065 pty tests use util-linux `script -qefc`, which BSD/macOS
+// The two pty tests use util-linux `script -qefc`, which BSD/macOS
 // script(1) does not support (and BSD script does not reliably propagate
 // the child's exit status). The terminal check itself is plain
 // std::io::IsTerminal with no OS-specific behavior, so Linux-only
@@ -139,7 +139,7 @@ fn ns_065_cmd_mint_rejects_terminal_stdout_without_force() {
     assert_eq!(
         output.status.code(),
         Some(64),
-        "NS-065: mint should exit 64 when stdout is a terminal without --force"
+        "mint should exit 64 when stdout is a terminal without --force"
     );
 }
 
@@ -164,7 +164,7 @@ fn ns_065_cmd_mint_allows_terminal_stdout_with_force() {
     assert_eq!(
         output.status.code(),
         Some(0),
-        "NS-065: --force-terminal should allow mint output to tty"
+        "--force-terminal should allow mint output to tty"
     );
 }
 

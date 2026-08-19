@@ -1,25 +1,18 @@
-// noscope-9l0: CLI framework and binary entrypoint support.
-//
+// CLI framework and binary entrypoint support.
 // Provides the clap-based CLI definition and dispatch logic as a testable
 // library module. The actual binary entrypoint (src/main.rs) is a thin
 // wrapper that calls into this module.
-//
 // Provenance rules:
-// - NS-054: Exit codes become real (Error → process exit code)
-// - NS-071: Dry-run usable (dry-run subcommand)
-// - NS-074: Facade for workflows (all subcommands go through Client)
-// - NS-075: CLI parsing in adapter layer (clap types here, not in lib core)
 
 use clap::{Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
 use crate::error::Error;
 
-/// NS-054: Successful exit code.
+/// Successful exit code.
 pub const SUCCESS_EXIT_CODE: i32 = 0;
 
-/// NS-054: Map a noscope Error to a process exit code.
-///
+/// Map a noscope Error to a process exit code.
 /// Delegates to `Error::exit_code()` which uses the sysexits.h mapping
 /// defined in `NoscopeExitCode`. This function exists as the single
 /// point where CLI error handling translates errors to exit codes.
@@ -29,8 +22,7 @@ pub fn error_to_exit_code(err: &Error) -> i32 {
 
 /// Parse CLI arguments from an iterator (testable alternative to
 /// `Cli::parse()` which reads from `std::env::args_os()`).
-///
-/// NS-075: This is the adapter-layer entry point for CLI parsing.
+/// This is the adapter-layer entry point for CLI parsing.
 /// Returns `Err` for invalid input, `--help`, or `--version`.
 pub fn parse_from_args<I, T>(args: I) -> Result<Cli, clap::Error>
 where
@@ -39,10 +31,6 @@ where
 {
     Cli::try_parse_from(args)
 }
-
-// ---------------------------------------------------------------------------
-// Top-level CLI struct
-// ---------------------------------------------------------------------------
 
 /// Subprocess credential lifecycle manager.
 #[derive(Parser)]
@@ -76,11 +64,7 @@ pub enum OutputFormat {
     Json,
 }
 
-// ---------------------------------------------------------------------------
-// Subcommands
-// ---------------------------------------------------------------------------
-
-/// NS-074: All workflow subcommands routed through the Client facade.
+/// All workflow subcommands routed through the Client facade.
 #[derive(Subcommand)]
 pub enum Command {
     /// Mint credentials and run a child process with them in the environment.
@@ -109,10 +93,6 @@ pub enum Command {
     Completions(CompletionsArgs),
 }
 
-// ---------------------------------------------------------------------------
-// Subcommand argument structs
-// ---------------------------------------------------------------------------
-
 /// Arguments for the `run` subcommand.
 #[derive(Parser)]
 pub struct RunArgs {
@@ -129,13 +109,11 @@ pub struct RunArgs {
     pub ttl: Option<u64>,
 
     /// Use a named profile from `profiles/<name>.toml`.
-    ///
     /// When set, this cannot be combined with --provider, --role, or --ttl.
     #[arg(long)]
     pub profile: Option<String>,
 
     /// Runtime event log format written to stderr (`text` or `json`).
-    ///
     /// This only affects runtime event logs on stderr and does not change --output.
     #[arg(long, default_value = "text")]
     pub log_format: String,
@@ -161,7 +139,6 @@ pub struct MintArgs {
     pub ttl: Option<u64>,
 
     /// Use a named profile from `profiles/<name>.toml`.
-    ///
     /// When set, this cannot be combined with --provider, --role, or --ttl.
     #[arg(long)]
     pub profile: Option<String>,
@@ -244,17 +221,10 @@ pub struct CompletionsArgs {
 #[cfg(test)]
 mod tests {
     use provenance_macros::verifies;
-    // =========================================================================
-    // NS-054: Exit codes become real.
-    //
-    // The CLI must map Error::exit_code() to process exit codes. Every
-    // ErrorKind must produce the correct sysexits.h code when going through
-    // the CLI error-to-exit-code path.
-    // =========================================================================
 
     #[test]
     fn exit_codes_become_real_usage_error_maps_to_64() {
-        // NS-054: Usage errors must produce exit code 64 through the CLI
+        // Usage errors must produce exit code 64 through the CLI
         // error handling path.
         let exit = crate::cli::error_to_exit_code(&crate::Error::usage("bad flag"));
         assert_eq!(exit, 64);
@@ -307,16 +277,9 @@ mod tests {
         assert_eq!(exit, 0);
     }
 
-    // =========================================================================
-    // NS-071: Dry-run usable.
-    //
-    // The dry-run subcommand must be parseable from CLI args and must be
-    // recognized as a distinct subcommand.
-    // =========================================================================
-
     #[test]
     fn dry_run_usable_subcommand_is_parseable() {
-        // NS-071: "dry-run" must be a recognized subcommand.
+        // "dry-run" must be a recognized subcommand.
         let cli = crate::cli::parse_from_args([
             "noscope",
             "dry-run",
@@ -396,13 +359,6 @@ mod tests {
             _ => panic!("Expected DryRun subcommand"),
         }
     }
-
-    // =========================================================================
-    // NS-074: Facade for workflows.
-    //
-    // All subcommands must be routable through the CLI. The CLI must define
-    // all five subcommands: run, mint, revoke, validate, dry-run.
-    // =========================================================================
 
     #[test]
     fn facade_for_workflows_run_subcommand_parseable() {
@@ -585,14 +541,6 @@ mod tests {
         assert!(matches!(dry_run.command, crate::cli::Command::DryRun(_)));
     }
 
-    // =========================================================================
-    // NS-075: CLI parsing in adapter layer.
-    //
-    // The clap types and parsing logic must be in the CLI module (adapter
-    // layer), not in core library types. Core types are Client, MintRequest,
-    // etc. CLI types are Cli, Command, RunArgs, etc.
-    // =========================================================================
-
     #[test]
     fn cli_parsing_in_adapter_layer_cli_struct_is_distinct_from_client() {
         // The CLI struct must be a separate type from Client.
@@ -609,7 +557,7 @@ mod tests {
         ])
         .unwrap();
         let _client = crate::Client::new(crate::ClientOptions::default()).unwrap();
-        // Both exist and are separate types — NS-075 satisfied.
+        // Both exist and are separate types — satisfied.
     }
 
     #[test]
@@ -626,10 +574,6 @@ mod tests {
         assert!(result.is_err(), "Unknown subcommand must be an error");
     }
 
-    // =========================================================================
-    // --help and --version support.
-    // =========================================================================
-
     #[test]
     fn help_flag_is_recognized() {
         // --help should cause clap to produce an error (it writes to stdout
@@ -645,10 +589,6 @@ mod tests {
         let result = crate::cli::parse_from_args(["noscope", "--version"]);
         assert!(result.is_err());
     }
-
-    // =========================================================================
-    // Shell completions support.
-    // =========================================================================
 
     #[test]
     fn completions_subcommand_parseable() {
@@ -674,10 +614,6 @@ mod tests {
             );
         }
     }
-
-    // =========================================================================
-    // Subcommand argument validation — edge cases.
-    // =========================================================================
 
     #[test]
     fn mint_subcommand_requires_provider() {
@@ -734,16 +670,12 @@ mod tests {
         assert!(result.is_err(), "revoke without --provider must fail");
     }
 
-    // =========================================================================
-    // noscope-3ez.8: Profile is a first-class alternative to --provider/--role/--ttl.
-    // =========================================================================
-
     #[test]
     fn mint_profile_only_parses_without_provider_role_ttl() {
         let cli = crate::cli::parse_from_args(["noscope", "mint", "--profile", "dev"]);
         assert!(
             cli.is_ok(),
-            "noscope-3ez.8: mint --profile alone must parse: {:?}",
+            "mint --profile alone must parse: {:?}",
             cli.err()
         );
     }
@@ -758,30 +690,21 @@ mod tests {
             "--provider",
             "aws",
         ]);
-        assert!(
-            result.is_err(),
-            "noscope-3ez.8: --profile must conflict with --provider"
-        );
+        assert!(result.is_err(), "--profile must conflict with --provider");
     }
 
     #[test]
     fn mint_profile_conflicts_with_role() {
         let result =
             crate::cli::parse_from_args(["noscope", "mint", "--profile", "dev", "--role", "admin"]);
-        assert!(
-            result.is_err(),
-            "noscope-3ez.8: --profile must conflict with --role"
-        );
+        assert!(result.is_err(), "--profile must conflict with --role");
     }
 
     #[test]
     fn mint_profile_conflicts_with_ttl() {
         let result =
             crate::cli::parse_from_args(["noscope", "mint", "--profile", "dev", "--ttl", "3600"]);
-        assert!(
-            result.is_err(),
-            "noscope-3ez.8: --profile must conflict with --ttl"
-        );
+        assert!(result.is_err(), "--profile must conflict with --ttl");
     }
 
     #[test]
@@ -790,7 +713,7 @@ mod tests {
             crate::cli::parse_from_args(["noscope", "run", "--profile", "dev", "--", "sleep", "1"]);
         assert!(
             cli.is_ok(),
-            "noscope-3ez.8: run --profile alone must parse: {:?}",
+            "run --profile alone must parse: {:?}",
             cli.err()
         );
     }
@@ -810,22 +733,15 @@ mod tests {
         ]);
         assert!(
             result.is_err(),
-            "noscope-3ez.8: run --profile must conflict with --provider"
+            "run --profile must conflict with --provider"
         );
     }
 
     #[test]
     fn mint_requires_profile_or_provider_role_ttl() {
         let result = crate::cli::parse_from_args(["noscope", "mint"]);
-        assert!(
-            result.is_err(),
-            "noscope-3ez.8: mint with no flags at all must fail"
-        );
+        assert!(result.is_err(), "mint with no flags at all must fail");
     }
-
-    // =========================================================================
-    // Verbose flag support.
-    // =========================================================================
 
     #[test]
     fn verbose_flag_is_global() {
@@ -859,10 +775,6 @@ mod tests {
         .unwrap();
         assert!(!cli.verbose, "--verbose must default to false");
     }
-
-    // =========================================================================
-    // noscope-3ez.11: Improve help text quality and semantics.
-    // =========================================================================
 
     fn render_help(args: impl IntoIterator<Item = &'static str>) -> String {
         match crate::cli::parse_from_args(args) {
@@ -940,10 +852,6 @@ mod tests {
             "argument help should avoid internal rule identifiers"
         );
     }
-
-    // =========================================================================
-    // noscope-3ez.12: Doctor and init subcommands are parseable.
-    // =========================================================================
 
     #[test]
     fn doctor_subcommand_parseable() {

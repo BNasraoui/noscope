@@ -1,7 +1,7 @@
-// NS-004: Profile flatness constraint
-// NS-051: Profile schema
-// NS-052: Profile validation before minting
-// NS-053: Profile and CLI flag mutual exclusion
+// Profile flatness constraint
+// Profile schema
+// Profile validation before minting
+// Profile and CLI flag mutual exclusion
 
 use std::collections::HashSet;
 use std::fmt;
@@ -14,13 +14,12 @@ use crate::provider::check_config_permissions;
 use provenance_macros::rule;
 
 /// Known fields in a [[credentials]] entry.
-/// NS-051: provider (required), role (required), ttl (required), env_key (optional).
-/// NS-004/NS-051: Any field not in this set is an error.
+/// provider (required), role (required), ttl (required), env_key (optional).
+/// Any field not in this set is an error.
 const KNOWN_CREDENTIAL_FIELDS: &[&str] = &["provider", "role", "ttl", "env_key"];
 
 /// A single credential entry from a profile.
-///
-/// NS-004: Flat tuple of (provider, role, ttl) with optional env_key.
+/// Flat tuple of (provider, role, ttl) with optional env_key.
 /// No nesting, no inheritance, no composition.
 #[derive(Debug)]
 pub struct ProfileCredential {
@@ -31,8 +30,7 @@ pub struct ProfileCredential {
 }
 
 /// A parsed profile: a flat list of credential entries.
-///
-/// NS-004: This is deliberately flat — no extends, no overrides,
+/// This is deliberately flat — no extends, no overrides,
 /// no merge strategy. Just a Vec of credentials.
 #[derive(Debug)]
 pub struct Profile {
@@ -42,12 +40,12 @@ pub struct Profile {
 /// Error type for profile operations.
 #[derive(Debug)]
 pub enum ProfileError {
-    /// NS-051: Malformed profile TOML or schema violation.
+    /// Malformed profile TOML or schema violation.
     MalformedProfile { message: String },
-    /// NS-052: Profile validation failed (provider existence, env_key
+    /// Profile validation failed (provider existence, env_key
     /// uniqueness). Contains all problems found in a single pass.
     ValidationFailed { problems: Vec<String> },
-    /// NS-053: --profile used with forbidden credential flags.
+    /// --profile used with forbidden credential flags.
     FlagConflict { message: String },
     /// Profile file not found.
     NotFound { path: PathBuf },
@@ -105,10 +103,8 @@ impl fmt::Display for ProfileError {
 impl std::error::Error for ProfileError {}
 
 /// Compute the config file path for a named profile.
-///
 /// Uses XDG_CONFIG_HOME if provided, otherwise falls back to
 /// `$HOME/.config`.
-///
 /// Returns `Err` if the name contains path traversal characters.
 pub fn profile_config_path(
     name: &str,
@@ -118,7 +114,6 @@ pub fn profile_config_path(
 }
 
 /// Same as `profile_config_path` but with explicit HOME fallback.
-///
 /// Returns `Err` if the name contains path traversal characters.
 pub fn profile_config_path_with_home(
     name: &str,
@@ -128,8 +123,7 @@ pub fn profile_config_path_with_home(
     named_config_toml_path(xdg_config_home, Some(home), "profiles", name)
 }
 
-/// NS-051: Parse profile TOML content into a Profile.
-///
+/// Parse profile TOML content into a Profile.
 /// Validates schema: required fields, unknown credential fields = error,
 /// empty credentials = error. Unknown top-level fields are ignored.
 #[rule("rule_profile_schema")]
@@ -154,7 +148,7 @@ pub fn parse_profile_toml(content: &str) -> Result<Profile, ProfileError> {
             message: "'credentials' must be an array of tables".to_string(),
         })?;
 
-    // NS-051: empty array = error.
+    // empty array = error.
     if creds_array.is_empty() {
         return Err(ProfileError::MalformedProfile {
             message: "credentials array must not be empty".to_string(),
@@ -176,7 +170,7 @@ pub fn parse_profile_toml(content: &str) -> Result<Profile, ProfileError> {
             }
         };
 
-        // NS-004/NS-051: Check for unknown credential fields.
+        // Check for unknown credential fields.
         for key in entry_table.keys() {
             if !KNOWN_CREDENTIAL_FIELDS.contains(&key.as_str()) {
                 problems.push(format!("credentials[{}]: unknown field '{}'", i, key));
@@ -277,12 +271,10 @@ pub fn parse_profile_toml(content: &str) -> Result<Profile, ProfileError> {
     Ok(Profile { credentials })
 }
 
-/// NS-052: Validate a parsed profile before minting.
-///
+/// Validate a parsed profile before minting.
 /// Checks:
 /// - env_key uniqueness across all credentials
 /// - Provider existence (via the `provider_exists` callback)
-///
 /// All errors are collected and returned together (no fail-fast).
 /// Returns an empty Vec on success.
 pub fn validate_profile(profile: &Profile, provider_exists: &dyn Fn(&str) -> bool) -> Vec<String> {
@@ -308,8 +300,7 @@ pub fn validate_profile(profile: &Profile, provider_exists: &dyn Fn(&str) -> boo
     errors
 }
 
-/// NS-053: Check mutual exclusion between --profile and credential flags.
-///
+/// Check mutual exclusion between --profile and credential flags.
 /// --profile forbids --provider, --role, and --ttl.
 /// Returns Ok(()) if no conflict, Err with usage error if violated.
 pub fn check_profile_flag_exclusion(
@@ -348,7 +339,6 @@ pub fn check_profile_flag_exclusion(
 }
 
 /// Load a profile from disk.
-///
 /// Unlike provider config (which returns Ok(None) for missing files),
 /// an explicitly requested profile must exist. Returns an error if
 /// the file is missing or has insecure permissions.
@@ -382,11 +372,6 @@ mod tests {
     use provenance_macros::verifies;
     use std::path::{Path, PathBuf};
 
-    // =========================================================================
-    // NS-004: Profile flatness constraint — flat lists of (provider, role, ttl)
-    // tuples only; no inheritance/extends/overrides/composition.
-    // =========================================================================
-
     #[test]
     fn profile_flatness_constraint_is_flat_list_of_tuples() {
         // A valid profile is a flat array of credential entries.
@@ -414,7 +399,7 @@ ttl = 1800
 
     #[test]
     fn profile_flatness_constraint_no_extends_field() {
-        // NS-004: no inheritance — "extends" field in a credential is
+        // no inheritance — "extends" field in a credential is
         // an unknown field and must be rejected.
         let toml = r#"
 [[credentials]]
@@ -426,13 +411,13 @@ extends = "base-profile"
         let result = super::parse_profile_toml(toml);
         assert!(
             result.is_err(),
-            "NS-004: 'extends' field must be rejected as unknown credential field"
+            "'extends' field must be rejected as unknown credential field"
         );
     }
 
     #[test]
     fn profile_flatness_constraint_no_overrides_field() {
-        // NS-004: no overrides — "overrides" is an unknown credential field.
+        // no overrides — "overrides" is an unknown credential field.
         let toml = r#"
 [[credentials]]
 provider = "aws"
@@ -443,13 +428,13 @@ overrides = "something"
         let result = super::parse_profile_toml(toml);
         assert!(
             result.is_err(),
-            "NS-004: 'overrides' field must be rejected as unknown credential field"
+            "'overrides' field must be rejected as unknown credential field"
         );
     }
 
     #[test]
     fn profile_flatness_constraint_no_nested_profiles() {
-        // NS-004: no composition — credentials cannot contain nested credentials.
+        // no composition — credentials cannot contain nested credentials.
         let toml = r#"
 [[credentials]]
 provider = "aws"
@@ -464,15 +449,9 @@ ttl = 1800
         let result = super::parse_profile_toml(toml);
         assert!(
             result.is_err(),
-            "NS-004: nested credential structures must be rejected"
+            "nested credential structures must be rejected"
         );
     }
-
-    // =========================================================================
-    // NS-051: Profile schema — [[credentials]] entries with provider (required),
-    // role (required), ttl (required), env_key (optional); unknown top-level
-    // fields ignored; unknown credential fields = error; empty array = error.
-    // =========================================================================
 
     #[test]
     #[verifies("rule_profile_schema", examples)]
@@ -483,10 +462,7 @@ role = "admin"
 ttl = 3600
 "#;
         let result = super::parse_profile_toml(toml);
-        assert!(
-            result.is_err(),
-            "NS-051: missing 'provider' must be an error"
-        );
+        assert!(result.is_err(), "missing 'provider' must be an error");
     }
 
     #[test]
@@ -497,7 +473,7 @@ provider = "aws"
 ttl = 3600
 "#;
         let result = super::parse_profile_toml(toml);
-        assert!(result.is_err(), "NS-051: missing 'role' must be an error");
+        assert!(result.is_err(), "missing 'role' must be an error");
     }
 
     #[test]
@@ -508,7 +484,7 @@ provider = "aws"
 role = "admin"
 "#;
         let result = super::parse_profile_toml(toml);
-        assert!(result.is_err(), "NS-051: missing 'ttl' must be an error");
+        assert!(result.is_err(), "missing 'ttl' must be an error");
     }
 
     #[test]
@@ -522,7 +498,7 @@ ttl = 3600
         let profile = super::parse_profile_toml(toml).unwrap();
         assert!(
             profile.credentials[0].env_key.is_none(),
-            "NS-051: env_key should be None when not specified"
+            "env_key should be None when not specified"
         );
     }
 
@@ -539,13 +515,13 @@ env_key = "AWS_SESSION_TOKEN"
         assert_eq!(
             profile.credentials[0].env_key.as_deref(),
             Some("AWS_SESSION_TOKEN"),
-            "NS-051: env_key should be set when specified"
+            "env_key should be set when specified"
         );
     }
 
     #[test]
     fn profile_schema_unknown_top_level_fields_ignored() {
-        // NS-051: unknown top-level fields are ignored (forward-compat).
+        // unknown top-level fields are ignored (forward-compat).
         let toml = r#"
 description = "my dev profile"
 version = 2
@@ -559,13 +535,13 @@ ttl = 3600
         assert_eq!(
             profile.credentials.len(),
             1,
-            "NS-051: unknown top-level fields must be ignored"
+            "unknown top-level fields must be ignored"
         );
     }
 
     #[test]
     fn profile_schema_unknown_credential_field_is_error() {
-        // NS-051: unknown fields in [[credentials]] entries = error.
+        // unknown fields in [[credentials]] entries = error.
         let toml = r#"
 [[credentials]]
 provider = "aws"
@@ -576,21 +552,18 @@ region = "us-east-1"
         let result = super::parse_profile_toml(toml);
         assert!(
             result.is_err(),
-            "NS-051: unknown credential field 'region' must be an error"
+            "unknown credential field 'region' must be an error"
         );
     }
 
     #[test]
     fn profile_schema_empty_credentials_array_is_error() {
-        // NS-051: empty credentials array = error.
+        // empty credentials array = error.
         let toml = r#"
 credentials = []
 "#;
         let result = super::parse_profile_toml(toml);
-        assert!(
-            result.is_err(),
-            "NS-051: empty credentials array must be an error"
-        );
+        assert!(result.is_err(), "empty credentials array must be an error");
     }
 
     #[test]
@@ -602,7 +575,7 @@ description = "empty profile"
         let result = super::parse_profile_toml(toml);
         assert!(
             result.is_err(),
-            "NS-051: profile without credentials must be an error"
+            "profile without credentials must be an error"
         );
     }
 
@@ -615,7 +588,7 @@ role = "admin"
 ttl = 0
 "#;
         let result = super::parse_profile_toml(toml);
-        assert!(result.is_err(), "NS-051: ttl=0 must be an error");
+        assert!(result.is_err(), "ttl=0 must be an error");
     }
 
     #[test]
@@ -627,7 +600,7 @@ role = "admin"
 ttl = -100
 "#;
         let result = super::parse_profile_toml(toml);
-        assert!(result.is_err(), "NS-051: negative ttl must be an error");
+        assert!(result.is_err(), "negative ttl must be an error");
     }
 
     #[test]
@@ -663,12 +636,6 @@ project = "my-project"
         );
     }
 
-    // =========================================================================
-    // NS-052: Profile validation before minting — schema + env_key uniqueness
-    // + provider existence validated before any minting; all errors reported
-    // together; distinct exit code.
-    // =========================================================================
-
     #[test]
     fn profile_validation_env_key_uniqueness() {
         // Two credentials with the same env_key must be rejected.
@@ -687,10 +654,7 @@ env_key = "TOKEN"
 "#;
         let profile = super::parse_profile_toml(toml).unwrap();
         let errors = super::validate_profile(&profile, &|_name| true);
-        assert!(
-            !errors.is_empty(),
-            "NS-052: duplicate env_key must be reported"
-        );
+        assert!(!errors.is_empty(), "duplicate env_key must be reported");
         let all_msgs: String = errors
             .iter()
             .map(|e| e.to_string())
@@ -698,7 +662,7 @@ env_key = "TOKEN"
             .join("; ");
         assert!(
             all_msgs.contains("TOKEN"),
-            "NS-052: error must mention the duplicated env_key: {}",
+            "error must mention the duplicated env_key: {}",
             all_msgs
         );
     }
@@ -715,10 +679,7 @@ ttl = 3600
         let profile = super::parse_profile_toml(toml).unwrap();
         // Provider lookup returns false for the nonexistent provider.
         let errors = super::validate_profile(&profile, &|_name| false);
-        assert!(
-            !errors.is_empty(),
-            "NS-052: nonexistent provider must be reported"
-        );
+        assert!(!errors.is_empty(), "nonexistent provider must be reported");
         let all_msgs: String = errors
             .iter()
             .map(|e| e.to_string())
@@ -726,7 +687,7 @@ ttl = 3600
             .join("; ");
         assert!(
             all_msgs.contains("nonexistent-provider"),
-            "NS-052: error must name the missing provider: {}",
+            "error must name the missing provider: {}",
             all_msgs
         );
     }
@@ -752,7 +713,7 @@ env_key = "DUPE"
         // Should have: missing-a provider, missing-b provider, duplicate env_key
         assert!(
             errors.len() >= 3,
-            "NS-052: all errors must be reported together, got {} errors: {:?}",
+            "all errors must be reported together, got {} errors: {:?}",
             errors.len(),
             errors
         );
@@ -760,7 +721,7 @@ env_key = "DUPE"
 
     #[test]
     fn profile_validation_distinct_exit_code() {
-        // NS-052: profile validation errors use a distinct exit code.
+        // profile validation errors use a distinct exit code.
         let exit_code = super::ProfileError::ValidationFailed {
             problems: vec!["test".to_string()],
         };
@@ -830,18 +791,13 @@ ttl = 1800
         );
     }
 
-    // =========================================================================
-    // NS-053: Profile and CLI flag mutual exclusion — --profile forbids
-    // --provider/--role/--ttl; global flags remain valid.
-    // =========================================================================
-
     #[test]
     fn profile_cli_mutual_exclusion_profile_forbids_provider() {
         let result =
             super::check_profile_flag_exclusion(Some("my-profile"), Some("aws"), None, None);
         assert!(
             result.is_err(),
-            "NS-053: --profile with --provider must be rejected"
+            "--profile with --provider must be rejected"
         );
     }
 
@@ -849,20 +805,14 @@ ttl = 1800
     fn profile_cli_mutual_exclusion_profile_forbids_role() {
         let result =
             super::check_profile_flag_exclusion(Some("my-profile"), None, Some("admin"), None);
-        assert!(
-            result.is_err(),
-            "NS-053: --profile with --role must be rejected"
-        );
+        assert!(result.is_err(), "--profile with --role must be rejected");
     }
 
     #[test]
     fn profile_cli_mutual_exclusion_profile_forbids_ttl() {
         let result =
             super::check_profile_flag_exclusion(Some("my-profile"), None, None, Some(3600));
-        assert!(
-            result.is_err(),
-            "NS-053: --profile with --ttl must be rejected"
-        );
+        assert!(result.is_err(), "--profile with --ttl must be rejected");
     }
 
     #[test]
@@ -875,14 +825,14 @@ ttl = 1800
         );
         assert!(
             result.is_err(),
-            "NS-053: --profile with all credential flags must be rejected"
+            "--profile with all credential flags must be rejected"
         );
     }
 
     #[test]
     fn profile_cli_mutual_exclusion_profile_alone_is_valid() {
         let result = super::check_profile_flag_exclusion(Some("my-profile"), None, None, None);
-        assert!(result.is_ok(), "NS-053: --profile alone must be valid");
+        assert!(result.is_ok(), "--profile alone must be valid");
     }
 
     #[test]
@@ -892,7 +842,7 @@ ttl = 1800
             super::check_profile_flag_exclusion(None, Some("aws"), Some("admin"), Some(3600));
         assert!(
             result.is_ok(),
-            "NS-053: without --profile, credential flags are allowed"
+            "without --profile, credential flags are allowed"
         );
     }
 
@@ -904,12 +854,12 @@ ttl = 1800
         let msg = format!("{}", err);
         assert!(
             msg.contains("--provider") || msg.contains("--ttl"),
-            "NS-053: error must name the conflicting flags, got: {}",
+            "error must name the conflicting flags, got: {}",
             msg
         );
         assert!(
             msg.contains("--profile"),
-            "NS-053: error must mention --profile, got: {}",
+            "error must mention --profile, got: {}",
             msg
         );
     }
@@ -922,13 +872,9 @@ ttl = 1800
         assert_eq!(
             err.exit_code().as_raw(),
             64,
-            "NS-053: mutual exclusion violation must be usage error (64)"
+            "mutual exclusion violation must be usage error (64)"
         );
     }
-
-    // =========================================================================
-    // Profile path resolution (XDG Base Directory, like provider.rs)
-    // =========================================================================
 
     #[test]
     fn profile_path_under_xdg_config() {
@@ -950,20 +896,13 @@ ttl = 1800
         );
     }
 
-    // =========================================================================
-    // Profile loading (permission checks, missing file)
-    // =========================================================================
-
     #[test]
     #[verifies("rule_profile_named_must_exist", examples)]
     fn profile_load_missing_file_is_error() {
         // Unlike provider config (Ok(None) for missing), a profile that
         // was explicitly requested must exist.
         let result = super::load_profile(Path::new("/nonexistent/profile.toml"));
-        assert!(
-            result.is_err(),
-            "NS-051: explicitly requested profile must exist"
-        );
+        assert!(result.is_err(), "explicitly requested profile must exist");
     }
 
     #[test]
@@ -1016,11 +955,6 @@ ttl = 3600
         let profile = super::load_profile(&file_path).unwrap();
         assert_eq!(profile.credentials.len(), 1);
     }
-
-    // =========================================================================
-    // noscope-bsq.1.3: Profile permission checks must match provider policy —
-    // group-writable and world-accessible bits both rejected.
-    // =========================================================================
 
     fn valid_profile_toml() -> &'static str {
         r#"
@@ -1123,10 +1057,6 @@ ttl = 3600
             msg
         );
     }
-
-    // =========================================================================
-    // Edge cases discovered during Linus review.
-    // =========================================================================
 
     #[test]
     fn profile_schema_provider_wrong_type_is_error() {

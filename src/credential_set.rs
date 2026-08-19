@@ -1,10 +1,10 @@
-// NS-006: Atomic multi-credential minting
-// NS-045: Env key uniqueness
-// NS-046: Parallel minting timeout
-// NS-047: Atomic rollback follows revocation budget
-// NS-048: Independent refresh scheduling
-// NS-049: Single credential expiry preserves child
-// NS-050: Bounded parallelism for provider operations
+// Atomic multi-credential minting
+// Env key uniqueness
+// Parallel minting timeout
+// Atomic rollback follows revocation budget
+// Independent refresh scheduling
+// Single credential expiry preserves child
+// Bounded parallelism for provider operations
 
 use std::collections::HashMap;
 use std::fmt;
@@ -16,7 +16,6 @@ use crate::token::ScopedToken;
 use provenance_macros::rule;
 
 /// A specification for a single credential to mint.
-///
 /// Each spec corresponds to one provider invocation. The `env_key` is the
 /// environment variable name under which the minted credential will be
 /// injected into the child process.
@@ -61,12 +60,12 @@ pub struct MintFailure {
 /// Error type for credential set operations.
 #[derive(Debug)]
 pub enum CredentialSetError {
-    /// NS-045: Duplicate env_key across providers.
+    /// Duplicate env_key across providers.
     DuplicateEnvKey {
         env_key: String,
         providers: Vec<String>,
     },
-    /// NS-006: One or more providers failed during minting.
+    /// One or more providers failed during minting.
     /// Contains both the failures and the successfully minted tokens
     /// (which must be revoked for atomic rollback).
     MintFailed {
@@ -109,11 +108,11 @@ impl fmt::Display for CredentialSetError {
 
 impl std::error::Error for CredentialSetError {}
 
-/// NS-046 + NS-050: Configuration for multi-credential minting.
+/// Configuration for multi-credential minting.
 pub struct MintConfig {
-    /// NS-046: Per-provider timeout.
+    /// Per-provider timeout.
     pub per_provider_timeout: Duration,
-    /// NS-050: Maximum concurrent provider operations.
+    /// Maximum concurrent provider operations.
     pub max_concurrent: usize,
 }
 
@@ -144,7 +143,7 @@ impl MintConfig {
     }
 }
 
-/// NS-047: Budget for atomic rollback revocation attempts.
+/// Budget for atomic rollback revocation attempts.
 pub struct RollbackBudget {
     /// Timeout per revocation attempt.
     pub revoke_timeout: Duration,
@@ -154,7 +153,7 @@ pub struct RollbackBudget {
 
 impl Default for RollbackBudget {
     fn default() -> Self {
-        // NS-047: Same timeout/retry policy as signal-triggered revocation (NS-027).
+        // Same timeout/retry policy as signal-triggered revocation.
         // Reasonable defaults: 5s per attempt, 3 retries.
         Self {
             revoke_timeout: Duration::from_secs(5),
@@ -163,7 +162,7 @@ impl Default for RollbackBudget {
     }
 }
 
-/// NS-047: Log entry for rollback operations (success or failure).
+/// Log entry for rollback operations (success or failure).
 pub struct RollbackLogEntry {
     credential_id: String,
     provider: String,
@@ -198,8 +197,7 @@ impl RollbackLogEntry {
     }
 
     /// Format this entry as a log message.
-    ///
-    /// NS-047: Log failure with credential ID + TTL.
+    /// Log failure with credential ID + TTL.
     pub fn format_log(&self) -> String {
         let base = format!(
             "rollback: provider={} credential_id={} expires={}",
@@ -218,18 +216,18 @@ impl RollbackLogEntry {
     }
 }
 
-/// NS-049: What to do when a credential expires.
+/// What to do when a credential expires.
 #[derive(Debug)]
 pub enum ExpiryAction {
     /// Log a warning but do not terminate the child.
     LogWarning { message: String },
-    /// Terminate the child process. **Must never be used per NS-049.**
+    /// Terminate the child process. **Must never be used.**
     TerminateChild,
-    /// Re-mint the credential. **Must never be used per NS-049.**
+    /// Re-mint the credential. **Must never be used.**
     ReMint { provider: String },
 }
 
-/// NS-049: Policy for handling credential expiry.
+/// Policy for handling credential expiry.
 pub struct ExpiryPolicy;
 
 impl Default for ExpiryPolicy {
@@ -239,22 +237,21 @@ impl Default for ExpiryPolicy {
 }
 
 impl ExpiryPolicy {
-    /// NS-049: Determine the action for a single expired credential.
-    ///
+    /// Determine the action for a single expired credential.
     /// Always returns LogWarning — never terminates child or re-mints.
     #[rule("rule_expiry_log_only")]
     pub fn on_credential_expired(&self, provider: &str, token_id: &str) -> ExpiryAction {
         ExpiryAction::LogWarning {
             message: format!(
                 "credential expired: provider={} token_id={}; \
-                 child process preserved (NS-049); credential will not be re-minted",
+                 child process preserved; credential will not be re-minted",
                 provider, token_id
             ),
         }
     }
 }
 
-/// NS-048: A refresh schedule entry for one credential.
+/// A refresh schedule entry for one credential.
 #[derive(Debug)]
 pub struct RefreshSchedule {
     pub provider: String,
@@ -264,9 +261,8 @@ pub struct RefreshSchedule {
 }
 
 /// A set of minted credentials, ready for child process injection.
-///
 /// Not Clone — contains secrets via ScopedToken.
-/// Debug does not expose secret values (NS-005).
+/// Debug does not expose secret values.
 pub struct CredentialSet {
     entries: Vec<(CredentialSpec, ScopedToken)>,
 }
@@ -296,7 +292,6 @@ impl CredentialSet {
     }
 
     /// Build an environment variable map for child process injection.
-    ///
     /// Maps env_key -> raw secret value. The caller is responsible for
     /// injecting these into the child process environment.
     pub fn env_map(&self) -> HashMap<&str, &str> {
@@ -307,10 +302,9 @@ impl CredentialSet {
     }
 
     /// Iterate over the tokens in this credential set.
-    ///
     /// Returns references to the `ScopedToken` values only (not the specs).
     /// Used by the orchestrator to convert tokens to mint envelopes for
-    /// JSON output (NS-063).
+    /// JSON output.
     pub fn tokens(&self) -> impl Iterator<Item = &ScopedToken> {
         self.entries.iter().map(|(_, token)| token)
     }
@@ -320,8 +314,7 @@ impl CredentialSet {
         self.entries.iter().map(|(spec, token)| (spec, token))
     }
 
-    /// NS-048: Compute independent refresh schedules for all credentials.
-    ///
+    /// Compute independent refresh schedules for all credentials.
     /// Each credential gets its own schedule based on its own expires_at.
     /// No batching or synchronization across credentials.
     pub fn refresh_schedules(&self) -> Vec<RefreshSchedule> {
@@ -340,12 +333,11 @@ impl CredentialSet {
     }
 }
 
-/// NS-006: Resolve a collection of mint results into a credential set or error.
-///
+/// Resolve a collection of mint results into a credential set or error.
 /// If all results are Success, returns a CredentialSet.
 /// If any result is Failure, returns a CredentialSetError::MintFailed
 /// containing both the failures and the successfully minted tokens
-/// (for atomic rollback per NS-006).
+/// (for atomic rollback).
 pub fn resolve_mint_results(results: Vec<MintResult>) -> Result<CredentialSet, CredentialSetError> {
     let mut succeeded: Vec<(CredentialSpec, ScopedToken)> = Vec::new();
     let mut failed: Vec<MintFailure> = Vec::new();
@@ -367,7 +359,7 @@ pub fn resolve_mint_results(results: Vec<MintResult>) -> Result<CredentialSet, C
     if failed.is_empty() {
         Ok(CredentialSet::new(succeeded))
     } else {
-        // NS-006: Atomic rollback — return succeeded tokens so caller can revoke.
+        // Atomic rollback — return succeeded tokens so caller can revoke.
         let succeeded_tokens: Vec<ScopedToken> =
             succeeded.into_iter().map(|(_, token)| token).collect();
         Err(CredentialSetError::MintFailed {
@@ -377,8 +369,7 @@ pub fn resolve_mint_results(results: Vec<MintResult>) -> Result<CredentialSet, C
     }
 }
 
-/// NS-045: Validate that all credential specs have unique env_keys.
-///
+/// Validate that all credential specs have unique env_keys.
 /// If a duplicate is found, identifies ALL providers that share the same env_key.
 pub fn validate_env_key_uniqueness(specs: &[CredentialSpec]) -> Result<(), CredentialSetError> {
     // Build a map from env_key -> list of providers that use it.
@@ -403,11 +394,9 @@ pub fn validate_env_key_uniqueness(specs: &[CredentialSpec]) -> Result<(), Crede
     Ok(())
 }
 
-/// Validate credential specs before minting (includes NS-045 env_key check).
-///
+/// Validate credential specs before minting (includes env_key check).
 /// Checks:
 /// - Non-empty spec list
-/// - NS-045: env_key uniqueness
 pub fn validate_credential_specs(specs: &[CredentialSpec]) -> Result<(), CredentialSetError> {
     if specs.is_empty() {
         return Err(CredentialSetError::InvalidConfig {
@@ -418,8 +407,7 @@ pub fn validate_credential_specs(specs: &[CredentialSpec]) -> Result<(), Credent
     Ok(())
 }
 
-/// NS-048: Compute the refresh time for a single credential.
-///
+/// Compute the refresh time for a single credential.
 /// The refresh time is based on the credential's own expires_at,
 /// not any shared timer. Refreshes at 75% of the token's lifetime
 /// (i.e., when 75% of the time between now and expiry has elapsed).
@@ -433,7 +421,7 @@ pub fn compute_refresh_at(token: &ScopedToken) -> DateTime<Utc> {
     now + chrono::Duration::seconds(refresh_offset_secs)
 }
 
-/// NS-046: Format a timeout error message for a provider.
+/// Format a timeout error message for a provider.
 #[rule("rule_orchestration_timeout_error_names_provider")]
 pub fn format_timeout_error(provider: &str, timeout: Duration) -> String {
     format!(
@@ -466,11 +454,6 @@ mod tests {
         Utc::now() + chrono::Duration::hours(1)
     }
 
-    // =========================================================================
-    // NS-006: Atomic multi-credential minting — if any provider fails,
-    // revoke all minted, exit error; no partial credential sets.
-    // =========================================================================
-
     #[test]
     fn atomic_multi_credential_minting_all_succeed() {
         // When all providers succeed, the credential set contains all tokens.
@@ -491,7 +474,7 @@ mod tests {
         let outcome = resolve_mint_results(results);
         assert!(
             outcome.is_ok(),
-            "NS-006: all succeed should produce Ok credential set"
+            "all succeed should produce Ok credential set"
         );
         let set = outcome.unwrap();
         assert_eq!(set.len(), 2);
@@ -517,7 +500,7 @@ mod tests {
         let outcome = resolve_mint_results(results);
         assert!(
             outcome.is_err(),
-            "NS-006: any failure must fail the entire operation"
+            "any failure must fail the entire operation"
         );
     }
 
@@ -544,7 +527,7 @@ mod tests {
             } => {
                 assert!(
                     failed_providers.iter().any(|f| f.provider == "gcp"),
-                    "NS-006: error must identify which provider failed"
+                    "error must identify which provider failed"
                 );
             }
             other => panic!("Expected MintFailed, got: {:?}", other),
@@ -576,7 +559,7 @@ mod tests {
                 assert_eq!(
                     succeeded_tokens.len(),
                     1,
-                    "NS-006: error must include successfully minted tokens for rollback"
+                    "error must include successfully minted tokens for rollback"
                 );
                 assert_eq!(succeeded_tokens[0].provider(), "aws");
             }
@@ -609,17 +592,12 @@ mod tests {
                 assert_eq!(failed_providers.len(), 2);
                 assert!(
                     succeeded_tokens.is_empty(),
-                    "NS-006: no tokens to rollback when all fail"
+                    "no tokens to rollback when all fail"
                 );
             }
             other => panic!("Expected MintFailed, got: {:?}", other),
         }
     }
-
-    // =========================================================================
-    // NS-045: Env key uniqueness — reject credential sets with duplicate
-    // env_key; validate before minting; identify conflicting providers.
-    // =========================================================================
 
     #[test]
     fn env_key_uniqueness_rejects_duplicates() {
@@ -629,10 +607,7 @@ mod tests {
         ];
 
         let result = validate_env_key_uniqueness(&specs);
-        assert!(
-            result.is_err(),
-            "NS-045: duplicate env_key must be rejected"
-        );
+        assert!(result.is_err(), "duplicate env_key must be rejected");
     }
 
     #[test]
@@ -648,11 +623,11 @@ mod tests {
                 assert_eq!(env_key, "TOKEN");
                 assert!(
                     providers.contains(&"aws".to_string()),
-                    "NS-045: must identify aws as conflicting"
+                    "must identify aws as conflicting"
                 );
                 assert!(
                     providers.contains(&"gcp".to_string()),
-                    "NS-045: must identify gcp as conflicting"
+                    "must identify gcp as conflicting"
                 );
             }
             other => panic!("Expected DuplicateEnvKey, got: {:?}", other),
@@ -667,10 +642,7 @@ mod tests {
         ];
 
         let result = validate_env_key_uniqueness(&specs);
-        assert!(
-            result.is_ok(),
-            "NS-045: distinct env_keys should be allowed"
-        );
+        assert!(result.is_ok(), "distinct env_keys should be allowed");
     }
 
     #[test]
@@ -687,7 +659,7 @@ mod tests {
                 assert_eq!(
                     providers.len(),
                     3,
-                    "NS-045: must identify all three conflicting providers"
+                    "must identify all three conflicting providers"
                 );
             }
             other => panic!("Expected DuplicateEnvKey, got: {:?}", other),
@@ -705,7 +677,7 @@ mod tests {
         let result = validate_credential_specs(&specs);
         assert!(
             result.is_err(),
-            "NS-045: env_key uniqueness must be checked during pre-mint validation"
+            "env_key uniqueness must be checked during pre-mint validation"
         );
     }
 
@@ -723,18 +695,13 @@ mod tests {
         assert!(result.is_ok(), "Empty specs cannot have env_key conflicts");
     }
 
-    // =========================================================================
-    // NS-046: Parallel minting timeout — per-provider timeout (default 30s);
-    // exceed triggers atomic rollback per NS-006.
-    // =========================================================================
-
     #[test]
     fn parallel_minting_timeout_default_is_30_seconds() {
         let config = MintConfig::default();
         assert_eq!(
             config.per_provider_timeout,
             Duration::from_secs(30),
-            "NS-046: default per-provider timeout must be 30 seconds"
+            "default per-provider timeout must be 30 seconds"
         );
     }
 
@@ -747,7 +714,7 @@ mod tests {
         assert_eq!(
             config.per_provider_timeout,
             Duration::from_secs(60),
-            "NS-046: per-provider timeout must be configurable"
+            "per-provider timeout must be configurable"
         );
     }
 
@@ -773,7 +740,7 @@ mod tests {
         let err = resolve_mint_results(results).unwrap_err();
         assert!(
             matches!(err, CredentialSetError::MintFailed { .. }),
-            "NS-046: timeout must trigger atomic rollback"
+            "timeout must trigger atomic rollback"
         );
     }
 
@@ -782,28 +749,22 @@ mod tests {
         let timeout_error = format_timeout_error("slow-provider", Duration::from_secs(30));
         assert!(
             timeout_error.contains("30") || timeout_error.contains("timeout"),
-            "NS-046: timeout error must mention the timeout duration, got: {}",
+            "timeout error must mention the timeout duration, got: {}",
             timeout_error
         );
         assert!(
             timeout_error.contains("slow-provider"),
-            "NS-046: timeout error must mention the provider, got: {}",
+            "timeout error must mention the provider, got: {}",
             timeout_error
         );
     }
-
-    // =========================================================================
-    // NS-047: Atomic rollback follows revocation budget — same timeout/retry
-    // policy as signal-triggered revocation (NS-027); log failure with
-    // credential ID+TTL.
-    // =========================================================================
 
     #[test]
     fn atomic_rollback_follows_revocation_budget_has_timeout() {
         let budget = RollbackBudget::default();
         assert!(
             budget.revoke_timeout > Duration::ZERO,
-            "NS-047: rollback budget must have a non-zero revoke timeout"
+            "rollback budget must have a non-zero revoke timeout"
         );
     }
 
@@ -812,7 +773,7 @@ mod tests {
         let budget = RollbackBudget::default();
         assert!(
             budget.max_retries > 0,
-            "NS-047: rollback budget must allow at least one retry"
+            "rollback budget must allow at least one retry"
         );
     }
 
@@ -823,13 +784,13 @@ mod tests {
         let log_msg = entry.format_log();
         assert!(
             log_msg.contains("tok-aws-123"),
-            "NS-047: rollback log must contain credential ID, got: {}",
+            "rollback log must contain credential ID, got: {}",
             log_msg
         );
         // TTL should be represented somehow (either as duration or expiry time)
         assert!(
             log_msg.contains("TTL") || log_msg.contains("expires"),
-            "NS-047: rollback log must contain TTL info, got: {}",
+            "rollback log must contain TTL info, got: {}",
             log_msg
         );
     }
@@ -844,18 +805,13 @@ mod tests {
         let log_msg = entry.format_log();
         assert!(
             log_msg.contains("tok-gcp-456"),
-            "NS-047: failed rollback log must contain credential ID"
+            "failed rollback log must contain credential ID"
         );
         assert!(
             log_msg.contains("connection refused"),
-            "NS-047: failed rollback log must contain error reason"
+            "failed rollback log must contain error reason"
         );
     }
-
-    // =========================================================================
-    // NS-048: Independent refresh scheduling — each credential has own
-    // refresh timer based on its TTL/expires_at; no sync/batching.
-    // =========================================================================
 
     #[test]
     #[verifies("rule_refresh_schedule_75pct", examples)]
@@ -869,12 +825,12 @@ mod tests {
 
         assert_ne!(
             schedule_1h, schedule_30m,
-            "NS-048: credentials with different TTLs must have different refresh times"
+            "credentials with different TTLs must have different refresh times"
         );
         // The 30m credential should refresh before the 1h credential.
         assert!(
             schedule_30m < schedule_1h,
-            "NS-048: shorter-TTL credential must refresh sooner"
+            "shorter-TTL credential must refresh sooner"
         );
     }
 
@@ -887,7 +843,7 @@ mod tests {
         let refresh_at = compute_refresh_at(&token);
         assert!(
             refresh_at < expiry,
-            "NS-048: refresh must be scheduled before expiry"
+            "refresh must be scheduled before expiry"
         );
     }
 
@@ -904,7 +860,7 @@ mod tests {
         // They should be different even with 1-second TTL difference
         assert_ne!(
             schedule_a, schedule_b,
-            "NS-048: no batching — each credential gets its own schedule"
+            "no batching — each credential gets its own schedule"
         );
     }
 
@@ -918,14 +874,9 @@ mod tests {
 
         let refresh_at = compute_refresh_at(&token);
         // Refresh should be at some point between now and expiry
-        assert!(refresh_at > now, "NS-048: refresh must be in the future");
-        assert!(refresh_at < expiry, "NS-048: refresh must be before expiry");
+        assert!(refresh_at > now, "refresh must be in the future");
+        assert!(refresh_at < expiry, "refresh must be before expiry");
     }
-
-    // =========================================================================
-    // NS-049: Single credential expiry preserves child — one expired does
-    // not terminate child; log warning; do not re-mint.
-    // =========================================================================
 
     #[test]
     fn single_credential_expiry_preserves_child() {
@@ -933,7 +884,7 @@ mod tests {
         let action = policy.on_credential_expired("aws", "tok-aws-123");
         assert!(
             !matches!(action, ExpiryAction::TerminateChild),
-            "NS-049: single credential expiry must NOT terminate child"
+            "single credential expiry must NOT terminate child"
         );
     }
 
@@ -943,7 +894,7 @@ mod tests {
         let action = policy.on_credential_expired("aws", "tok-aws-123");
         assert!(
             matches!(action, ExpiryAction::LogWarning { .. }),
-            "NS-049: single credential expiry must log a warning, got: {:?}",
+            "single credential expiry must log a warning, got: {:?}",
             action
         );
     }
@@ -954,7 +905,7 @@ mod tests {
         let action = policy.on_credential_expired("aws", "tok-aws-123");
         assert!(
             !matches!(action, ExpiryAction::ReMint { .. }),
-            "NS-049: expired credential must NOT be re-minted"
+            "expired credential must NOT be re-minted"
         );
     }
 
@@ -967,12 +918,12 @@ mod tests {
             ExpiryAction::LogWarning { message } => {
                 assert!(
                     message.contains("aws"),
-                    "NS-049: warning must contain provider name, got: {}",
+                    "warning must contain provider name, got: {}",
                     message
                 );
                 assert!(
                     message.contains("tok-aws-123"),
-                    "NS-049: warning must contain token ID, got: {}",
+                    "warning must contain token ID, got: {}",
                     message
                 );
             }
@@ -991,18 +942,10 @@ mod tests {
         assert!(matches!(action_b, ExpiryAction::LogWarning { .. }));
     }
 
-    // =========================================================================
-    // NS-050: Bounded parallelism for provider operations — configurable
-    // max concurrent (default 8); prevents FD exhaustion/rate limits.
-    // =========================================================================
-
     #[test]
     fn bounded_parallelism_default_is_eight() {
         let config = MintConfig::default();
-        assert_eq!(
-            config.max_concurrent, 8,
-            "NS-050: default max concurrent must be 8"
-        );
+        assert_eq!(config.max_concurrent, 8, "default max concurrent must be 8");
     }
 
     #[test]
@@ -1014,7 +957,7 @@ mod tests {
         assert_eq!(
             config.per_provider_timeout,
             Duration::from_secs(60),
-            "NS-050: max concurrent must be configurable"
+            "max concurrent must be configurable"
         );
     }
 
@@ -1027,22 +970,15 @@ mod tests {
         };
         assert_eq!(
             config.max_concurrent, 1,
-            "NS-050: max concurrent must support minimum of 1"
+            "max concurrent must support minimum of 1"
         );
     }
 
     #[test]
     fn bounded_parallelism_zero_is_rejected() {
         let result = MintConfig::new(Duration::from_secs(30), 0);
-        assert!(
-            result.is_err(),
-            "NS-050: max_concurrent = 0 must be rejected"
-        );
+        assert!(result.is_err(), "max_concurrent = 0 must be rejected");
     }
-
-    // =========================================================================
-    // CredentialSpec and CredentialSet structural tests
-    // =========================================================================
 
     #[test]
     fn credential_spec_stores_all_fields() {
@@ -1090,10 +1026,6 @@ mod tests {
         static_assertions::assert_not_impl_any!(CredentialSet: Clone);
     }
 
-    // =========================================================================
-    // CredentialSetError tests
-    // =========================================================================
-
     #[test]
     fn credential_set_error_implements_std_error() {
         fn assert_error<T: std::error::Error>() {}
@@ -1138,10 +1070,6 @@ mod tests {
         );
     }
 
-    // =========================================================================
-    // validate_credential_specs integration
-    // =========================================================================
-
     #[test]
     fn validate_credential_specs_accepts_valid_set() {
         let specs = vec![
@@ -1158,10 +1086,6 @@ mod tests {
         let result = validate_credential_specs(&specs);
         assert!(result.is_err(), "Empty specs should be rejected");
     }
-
-    // =========================================================================
-    // Refresh schedule collection
-    // =========================================================================
 
     #[test]
     fn build_refresh_schedules_returns_one_per_credential() {
@@ -1181,7 +1105,7 @@ mod tests {
         assert_eq!(
             schedules.len(),
             2,
-            "NS-048: must return one schedule per credential"
+            "must return one schedule per credential"
         );
     }
 
@@ -1207,13 +1131,9 @@ mod tests {
         let aws_schedule = schedules.iter().find(|s| s.provider == "aws").unwrap();
         assert!(
             gcp_schedule.refresh_at < aws_schedule.refresh_at,
-            "NS-048: shorter TTL must refresh sooner"
+            "shorter TTL must refresh sooner"
         );
     }
-
-    // =========================================================================
-    // Edge cases discovered during Linus review.
-    // =========================================================================
 
     #[test]
     fn resolve_mint_results_empty_input_returns_empty_set() {
@@ -1279,7 +1199,7 @@ mod tests {
 
     #[test]
     fn credential_set_is_not_serializable() {
-        // NS-001: CredentialSet contains secrets — must not be serializable.
+        // CredentialSet contains secrets — must not be serializable.
         static_assertions::assert_not_impl_any!(CredentialSet: serde::Serialize);
     }
 

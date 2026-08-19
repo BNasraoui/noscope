@@ -1,8 +1,8 @@
-// NS-006: Atomic multi-credential minting (orchestrator integration)
-// NS-046: Parallel minting timeout (per-provider, via ExecConfig)
-// NS-047: Atomic rollback follows revocation budget
-// NS-050: Bounded parallelism for provider operations
-// NS-063: Mint mode JSON array output (format_mint_output wiring)
+// Atomic multi-credential minting (orchestrator integration)
+// Parallel minting timeout (per-provider, via ExecConfig)
+// Atomic rollback follows revocation budget
+// Bounded parallelism for provider operations
+// Mint mode JSON array output (format_mint_output wiring)
 
 use std::future::Future;
 use std::time::Instant;
@@ -18,18 +18,13 @@ use crate::mint::{format_mint_output, MintEnvelope};
 use crate::token_convert::scoped_token_to_mint_envelope;
 use provenance_macros::rule;
 
-/// NS-050 + NS-046 + NS-006: Execute provider mint operations in parallel
+/// Execute provider mint operations in parallel
 /// with bounded concurrency and per-provider timeouts.
-///
-/// - **NS-050**: Limits concurrent operations to `config.max_concurrent`
 ///   using a tokio semaphore.
-/// - **NS-046**: Each provider operation is bounded by
 ///   `config.per_provider_timeout`. Exceeding the timeout produces a
 ///   `MintResult::Failure`.
-/// - **NS-006**: Results are passed to `resolve_mint_results()` which
 ///   enforces atomic all-or-nothing semantics — any failure causes the
 ///   entire operation to fail, returning succeeded tokens for rollback.
-///
 /// The `mint_fn` closure takes a `&CredentialSpec` and returns a future
 /// that resolves to a `MintResult`. This allows the caller to inject
 /// arbitrary provider execution logic (subprocess, mock, etc.).
@@ -48,7 +43,7 @@ where
         return resolve_mint_results(Vec::new());
     }
 
-    // NS-050: Semaphore limits concurrency to max_concurrent.
+    // Semaphore limits concurrency to max_concurrent.
     let semaphore = std::sync::Arc::new(Semaphore::new(config.max_concurrent));
     let timeout = config.per_provider_timeout;
 
@@ -69,10 +64,10 @@ where
             emit_runtime_event(Event::new(EventType::MintStart, &provider_name));
             let started = Instant::now();
 
-            // NS-046: Per-provider timeout.
+            // Per-provider timeout.
             let result = tokio::time::timeout(timeout, fut).await;
 
-            // Drop the permit to free the semaphore slot (NS-050).
+            // Drop the permit to free the semaphore slot.
             drop(permit);
 
             match result {
@@ -96,7 +91,7 @@ where
                     mint_result
                 }
                 Err(_elapsed) => {
-                    // NS-046: Timeout produces a failure result.
+                    // Timeout produces a failure result.
                     // The spec is reconstructed with minimal fields — only
                     // `provider` and `env_key` are used by resolve_mint_results()
                     // for error reporting. Role and TTL are not relevant here.
@@ -124,13 +119,12 @@ where
         results.push(result);
     }
 
-    // NS-006: Atomic resolution — any failure fails the entire operation
-    // and returns succeeded tokens for rollback (NS-047).
+    // Atomic resolution — any failure fails the entire operation
+    // and returns succeeded tokens for rollback.
     resolve_mint_results(results)
 }
 
-/// NS-063: Format orchestrator output as a JSON array for stdout.
-///
+/// Format orchestrator output as a JSON array for stdout.
 /// Converts a successful `CredentialSet` into a JSON array of mint envelopes
 /// via `format_mint_output()`. Each credential becomes one envelope in the
 /// array.
@@ -172,11 +166,6 @@ mod tests {
     fn default_expiry() -> chrono::DateTime<Utc> {
         Utc::now() + chrono::Duration::hours(1)
     }
-
-    // =========================================================================
-    // NS-050: Bounded parallelism — the orchestrator must limit concurrent
-    // provider operations to MintConfig.max_concurrent using a semaphore.
-    // =========================================================================
 
     #[tokio::test]
     #[verifies("rule_orchestration_bounded_concurrency", examples)]
@@ -222,7 +211,7 @@ mod tests {
         assert!(results.is_ok(), "All providers succeeded, should be Ok");
         assert!(
             peak.load(Ordering::SeqCst) <= 2,
-            "NS-050: peak concurrency must not exceed max_concurrent=2, got: {}",
+            "peak concurrency must not exceed max_concurrent=2, got: {}",
             peak.load(Ordering::SeqCst)
         );
     }
@@ -270,15 +259,9 @@ mod tests {
         assert_eq!(
             peak.load(Ordering::SeqCst),
             1,
-            "NS-050: with max_concurrent=1, peak concurrency must be exactly 1"
+            "with max_concurrent=1, peak concurrency must be exactly 1"
         );
     }
-
-    // =========================================================================
-    // NS-046: Per-provider timeout — each provider operation is bounded by
-    // MintConfig.per_provider_timeout; exceeding it produces a Failure result
-    // which triggers atomic rollback via NS-006.
-    // =========================================================================
 
     #[tokio::test]
     #[verifies("rule_orchestration_per_provider_timeout", examples)]
@@ -304,7 +287,7 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "NS-046: provider exceeding timeout must result in failure"
+            "provider exceeding timeout must result in failure"
         );
     }
 
@@ -330,7 +313,7 @@ mod tests {
 
         assert!(
             result.is_ok(),
-            "NS-046: provider completing within timeout must succeed"
+            "provider completing within timeout must succeed"
         );
     }
 
@@ -364,25 +347,18 @@ mod tests {
                     failed_providers
                         .iter()
                         .any(|f| f.provider == "timeout-prov"),
-                    "NS-046: timeout error must identify which provider timed out"
+                    "timeout error must identify which provider timed out"
                 );
                 assert!(
                     failed_providers
                         .iter()
                         .any(|f| f.error.contains("timed out")),
-                    "NS-046: error message must mention timeout"
+                    "error message must mention timeout"
                 );
             }
             other => panic!("Expected MintFailed, got: {:?}", other),
         }
     }
-
-    // =========================================================================
-    // NS-006: Atomic rollback — if any provider fails, the entire mint
-    // operation fails and successfully minted tokens are returned for
-    // revocation. This tests the orchestrator's integration with
-    // resolve_mint_results().
-    // =========================================================================
 
     #[tokio::test]
     async fn atomic_rollback_one_failure_fails_all() {
@@ -415,7 +391,7 @@ mod tests {
 
         assert!(
             result.is_err(),
-            "NS-006: any failure must fail the entire operation"
+            "any failure must fail the entire operation"
         );
     }
 
@@ -456,20 +432,13 @@ mod tests {
                 assert_eq!(
                     succeeded_tokens.len(),
                     1,
-                    "NS-006: must return succeeded tokens for rollback"
+                    "must return succeeded tokens for rollback"
                 );
                 assert_eq!(succeeded_tokens[0].provider(), "ok-prov");
             }
             other => panic!("Expected MintFailed, got: {:?}", other),
         }
     }
-
-    // =========================================================================
-    // NS-047: Atomic rollback follows revocation budget — the orchestrator
-    // must pass succeeded tokens through for rollback when any provider fails.
-    // The rollback budget and logging are already implemented in
-    // credential_set; this tests the orchestrator wires them correctly.
-    // =========================================================================
 
     #[tokio::test]
     async fn atomic_rollback_timeout_triggers_rollback_with_succeeded_tokens() {
@@ -505,24 +474,18 @@ mod tests {
             } => {
                 assert!(
                     failed_providers.iter().any(|f| f.provider == "slow-prov"),
-                    "NS-047: slow provider must be in failed list"
+                    "slow provider must be in failed list"
                 );
                 assert_eq!(
                     succeeded_tokens.len(),
                     1,
-                    "NS-047: fast provider's token must be available for rollback"
+                    "fast provider's token must be available for rollback"
                 );
                 assert_eq!(succeeded_tokens[0].provider(), "fast-prov");
             }
             other => panic!("Expected MintFailed, got: {:?}", other),
         }
     }
-
-    // =========================================================================
-    // NS-063: Mint mode JSON array output — the orchestrator must produce
-    // output via format_mint_output() which returns a JSON array of all
-    // envelopes, or empty string on failure.
-    // =========================================================================
 
     #[tokio::test]
     async fn mint_output_json_array_on_success() {
@@ -551,12 +514,12 @@ mod tests {
         let output = super::format_orchestrator_output(&cred_set);
 
         let parsed: serde_json::Value =
-            serde_json::from_str(&output).expect("NS-063: output must be valid JSON");
-        assert!(parsed.is_array(), "NS-063: output must be a JSON array");
+            serde_json::from_str(&output).expect("output must be valid JSON");
+        assert!(parsed.is_array(), "output must be a JSON array");
         assert_eq!(
             parsed.as_array().unwrap().len(),
             2,
-            "NS-063: array must contain one element per provider"
+            "array must contain one element per provider"
         );
     }
 
@@ -580,12 +543,9 @@ mod tests {
         let result = super::mint_all(&specs, &config, mint_fn).await;
         assert!(result.is_err());
 
-        // On failure, no output should be produced (empty string per NS-063)
+        // On failure, no output should be produced (empty string)
         let output = format_mint_output(&[]);
-        assert!(
-            output.is_empty(),
-            "NS-063: on failure, output must be empty"
-        );
+        assert!(output.is_empty(), "on failure, output must be empty");
     }
 
     #[tokio::test]
@@ -614,13 +574,9 @@ mod tests {
         let output = super::format_orchestrator_output(&cred_set);
         assert!(
             !output.contains('\n'),
-            "NS-063: mint output must be single-line JSON"
+            "mint output must be single-line JSON"
         );
     }
-
-    // =========================================================================
-    // Integration: full orchestrator pipeline test
-    // =========================================================================
 
     #[tokio::test]
     async fn full_pipeline_multiple_providers_all_succeed() {
@@ -694,16 +650,12 @@ mod tests {
                 assert_eq!(failed_providers.len(), 2);
                 assert!(
                     succeeded_tokens.is_empty(),
-                    "NS-006: no tokens to rollback when all fail"
+                    "no tokens to rollback when all fail"
                 );
             }
             other => panic!("Expected MintFailed, got: {:?}", other),
         }
     }
-
-    // =========================================================================
-    // Edge cases discovered during Linus review.
-    // =========================================================================
 
     #[tokio::test]
     async fn format_orchestrator_output_empty_set() {
@@ -721,10 +673,7 @@ mod tests {
     async fn bounded_parallelism_max_concurrent_matches_default() {
         // Verify the orchestrator respects MintConfig::default().max_concurrent = 8.
         let config = MintConfig::default();
-        assert_eq!(
-            config.max_concurrent, 8,
-            "NS-050: default max_concurrent must be 8"
-        );
+        assert_eq!(config.max_concurrent, 8, "default max_concurrent must be 8");
     }
 
     #[tokio::test]

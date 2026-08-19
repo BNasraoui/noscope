@@ -1,5 +1,5 @@
-// NS-001: No credential storage
-// NS-019: Memory zeroization on drop
+// No credential storage
+// Memory zeroization on drop
 
 use chrono::{DateTime, Utc};
 use secrecy::{ExposeSecret, SecretString};
@@ -11,12 +11,7 @@ use crate::redaction::RedactedToken;
 use provenance_macros::rule;
 
 /// A scoped credential with mandatory expiry and zeroizing secret storage.
-///
 /// Design constraints:
-/// - NS-001: No Serialize impl — credentials must never be persisted to disk
-/// - NS-019: Value stored in SecretString (Zeroize + ZeroizeOnDrop)
-/// - NS-019: Does NOT implement Clone (prevents implicit copies without zeroization)
-/// - NS-016: expires_at is mandatory and non-optional
 #[rule("rule_token_mandatory_expiry")]
 pub struct ScopedToken {
     /// The credential value, stored in a zeroizing secret type.
@@ -31,7 +26,7 @@ pub struct ScopedToken {
     metadata: HashMap<String, String>,
 }
 
-// NS-019: Zeroize metadata fields on drop.
+// Zeroize metadata fields on drop.
 // SecretString already zeroizes on drop, but we also zeroize role/provider
 // metadata since they could be correlated with the token.
 impl Drop for ScopedToken {
@@ -47,12 +42,10 @@ impl Drop for ScopedToken {
 
 impl ScopedToken {
     /// Create a new ScopedToken from an already-constructed `SecretString`.
-    ///
     /// Takes ownership of the secret — no intermediate copies are created.
     /// The caller should construct `SecretString` directly from the credential
     /// source (e.g., parsing provider JSON output) to minimize copies.
-    ///
-    /// `expires_at` is mandatory per NS-016 — there is no constructor that
+    /// `expires_at` is mandatory — there is no constructor that
     /// omits it.
     pub fn new(
         value: SecretString,
@@ -122,7 +115,6 @@ impl ScopedToken {
     }
 
     /// Get the pre-computed RedactedToken for safe display/logging.
-    ///
     /// This never touches the secret value — the redacted form was computed
     /// once at construction time.
     pub fn redacted_value(&self) -> &RedactedToken {
@@ -130,7 +122,6 @@ impl ScopedToken {
     }
 
     /// Explicitly expose the secret value.
-    ///
     /// This is the ONLY way to get the raw credential — for injection into
     /// child process environment variables. The method name makes the intent
     /// explicit per the secrecy crate's conventions.
@@ -139,7 +130,7 @@ impl ScopedToken {
     }
 }
 
-/// NS-005 + NS-058: Display never shows the secret value.
+/// Display never shows the secret value.
 impl fmt::Display for ScopedToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -152,7 +143,7 @@ impl fmt::Display for ScopedToken {
     }
 }
 
-/// NS-058: Debug also never shows the secret value.
+/// Debug also never shows the secret value.
 impl fmt::Debug for ScopedToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ScopedToken")
@@ -188,12 +179,6 @@ mod tests {
             provider,
         )
     }
-
-    // =========================================================================
-    // NS-019: Memory zeroization on drop.
-    // Token types must implement Zeroize and ZeroizeOnDrop.
-    // Tokens must never be stored in types allowing implicit Clone.
-    // =========================================================================
 
     #[test]
     fn scoped_token_display_does_not_expose_secret() {
@@ -277,10 +262,6 @@ mod tests {
     fn scoped_token_is_not_clone() {
         static_assertions::assert_not_impl_any!(ScopedToken: Clone);
     }
-
-    // =========================================================================
-    // NS-001: No credential storage — never persist/cache/store to disk.
-    // =========================================================================
 
     #[test]
     fn scoped_token_is_not_serializable() {

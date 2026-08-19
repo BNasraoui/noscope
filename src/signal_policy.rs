@@ -1,24 +1,24 @@
-// NS-003: Revoke on exit guarantee
-// NS-011: TTL as safety net
-// NS-014: Revocation idempotency
-// NS-026: Signal forwarding policy
-// NS-027: Revocation timeout and retry budget
-// NS-028: Double-signal escalation
-// NS-029: Multi-credential revocation on signal
-// NS-066: Minimum TTL enforcement
-// NS-067: Maximum TTL enforcement
+// Revoke on exit guarantee
+// TTL as safety net
+// Revocation idempotency
+// Signal forwarding policy
+// Revocation timeout and retry budget
+// Double-signal escalation
+// Multi-credential revocation on signal
+// Minimum TTL enforcement
+// Maximum TTL enforcement
 
 use provenance_macros::rule;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
-/// NS-066: Minimum allowed TTL in seconds.
+/// Minimum allowed TTL in seconds.
 pub const MIN_TTL_SECS: u64 = 60;
 
-/// NS-067: Default maximum allowed TTL in seconds (12 hours).
+/// Default maximum allowed TTL in seconds (12 hours).
 pub const DEFAULT_MAX_TTL_SECS: u64 = 12 * 60 * 60;
 
-/// NS-026: Parent signal values relevant to policy decisions.
+/// Parent signal values relevant to policy decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParentSignal {
     Sigterm,
@@ -27,14 +27,14 @@ pub enum ParentSignal {
     Sigpipe,
 }
 
-/// NS-003: Why the child process exited.
+/// Why the child process exited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChildExitReason {
     ExitCode(i32),
     Signaled(i32),
 }
 
-/// NS-066 + NS-067: TTL bounds used by mint validation.
+/// TTL bounds used by mint validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TtlBounds {
     pub minimum_secs: u64,
@@ -50,7 +50,7 @@ impl Default for TtlBounds {
     }
 }
 
-/// NS-011 + NS-066 + NS-067: TTL validation errors.
+/// TTL validation errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TtlError {
     Missing,
@@ -78,7 +78,7 @@ impl std::fmt::Display for TtlError {
 
 impl std::error::Error for TtlError {}
 
-/// NS-027: Revocation budget (wall clock + retry parameters).
+/// Revocation budget (wall clock + retry parameters).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RevocationBudget {
     pub wall_clock_budget: Duration,
@@ -114,7 +114,7 @@ impl RevocationBudget {
     }
 }
 
-/// NS-029: Minimal descriptor for a credential that should be revoked.
+/// Minimal descriptor for a credential that should be revoked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveCredential {
     pub credential_id: String,
@@ -140,13 +140,13 @@ pub enum RevocationResultKind {
 }
 
 impl RevocationResultKind {
-    /// NS-014: already-revoked/expired are treated as success.
+    /// already-revoked/expired are treated as success.
     pub fn treated_as_success(&self) -> bool {
         matches!(self, Self::Revoked | Self::AlreadyRevoked | Self::Expired)
     }
 }
 
-/// NS-029: Per-credential revocation output.
+/// Per-credential revocation output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RevocationResult {
     pub credential_id: String,
@@ -154,7 +154,7 @@ pub struct RevocationResult {
     pub kind: RevocationResultKind,
 }
 
-/// NS-028: What to do after receiving a shutdown signal.
+/// What to do after receiving a shutdown signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShutdownDecision {
     pub started_graceful_shutdown: bool,
@@ -162,7 +162,7 @@ pub struct ShutdownDecision {
     pub abandon_revocation: bool,
 }
 
-/// NS-026 + NS-028: Signal handling policy and shutdown state.
+/// Signal handling policy and shutdown state.
 pub struct SignalHandlingPolicy {
     grace_period: Duration,
     shutdown_started: bool,
@@ -178,12 +178,12 @@ impl Default for SignalHandlingPolicy {
 }
 
 impl SignalHandlingPolicy {
-    /// NS-003: Attempt revocation on child exit regardless of reason.
+    /// Attempt revocation on child exit regardless of reason.
     pub fn should_attempt_revoke_on_exit(&self, _reason: ChildExitReason) -> bool {
         true
     }
 
-    /// NS-011 + NS-066 + NS-067: Never allow mint without bounded TTL.
+    /// Never allow mint without bounded TTL.
     #[rule("rule_ttl_bounds")]
     pub fn validate_ttl(ttl_secs: Option<u64>, bounds: &TtlBounds) -> Result<u64, TtlError> {
         let ttl = ttl_secs.ok_or(TtlError::Missing)?;
@@ -205,7 +205,7 @@ impl SignalHandlingPolicy {
         Ok(ttl)
     }
 
-    /// NS-014: Idempotent revocation classification.
+    /// Idempotent revocation classification.
     pub fn classify_revocation_result(&self, exit_code: i32, stderr: &str) -> RevocationResultKind {
         if exit_code == 0 {
             return RevocationResultKind::Revoked;
@@ -222,7 +222,7 @@ impl SignalHandlingPolicy {
         RevocationResultKind::Failed(stderr.to_string())
     }
 
-    /// NS-026: Forward TERM/HUP/INT to child process group; ignore PIPE.
+    /// Forward TERM/HUP/INT to child process group; ignore PIPE.
     #[rule("rule_signals_forward_set")]
     pub fn should_forward_to_child_group(&self, signal: ParentSignal) -> bool {
         matches!(
@@ -231,12 +231,12 @@ impl SignalHandlingPolicy {
         )
     }
 
-    /// NS-026: Configurable grace period before SIGKILL (default 30s).
+    /// Configurable grace period before SIGKILL (default 30s).
     pub fn shutdown_grace_period(&self) -> Duration {
         self.grace_period
     }
 
-    /// NS-028: Second TERM/INT during shutdown escalates immediately.
+    /// Second TERM/INT during shutdown escalates immediately.
     pub fn on_shutdown_signal(&mut self, signal: ParentSignal) -> ShutdownDecision {
         if matches!(signal, ParentSignal::Sigpipe) {
             return ShutdownDecision {
@@ -263,7 +263,7 @@ impl SignalHandlingPolicy {
         }
     }
 
-    /// NS-029: Revoke all active credentials in parallel; isolate failures.
+    /// Revoke all active credentials in parallel; isolate failures.
     #[rule("rule_signals_parallel_revocation_isolation")]
     pub async fn revoke_all_on_signal<F, Fut>(
         &self,

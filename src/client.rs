@@ -1,18 +1,8 @@
-// Noscope high-level API facade (noscope-cg8.1)
-//
+// Noscope high-level API facade
 // Provides a cohesive top-level API for core workflows (run, mint, revoke)
 // so consumers do not compose many low-level module helpers manually.
-//
 // Security invariants enforced:
-// - NS-001: No credential storage (no Serialize on secret-bearing types)
-// - NS-005: Redaction in all Display/Debug output
-// - NS-012: No tokens in process arguments
-// - NS-019: Memory zeroization on drop
-// - NS-020: Core dump prevention at construction
-// - NS-033: Template variable injection prevention (role validation)
-// - NS-058: Redaction at all log levels
-//
-// noscope-bsq.1.5: This module uses crate::error::Error as the single
+// This module uses crate::error::Error as the single
 // canonical error type. The old NoscopeError enum has been replaced by a
 // type alias (pub type NoscopeError = crate::error::Error) in lib.rs for
 // backward compatibility.
@@ -26,12 +16,7 @@ use crate::provider;
 use crate::provider_exec;
 use crate::security;
 
-// ---------------------------------------------------------------------------
-// ClientOptions
-// ---------------------------------------------------------------------------
-
 /// Configuration for the noscope [`Client`].
-///
 /// All fields have sensible defaults. Use `ClientOptions::default()` to start
 /// and override only the fields you need.
 pub struct ClientOptions {
@@ -43,12 +28,11 @@ pub struct ClientOptions {
     pub xdg_config_home: Option<PathBuf>,
     /// Override HOME for config fallback when XDG_CONFIG_HOME is unset.
     pub home: Option<PathBuf>,
-    /// If true, allow mint output to a terminal (overrides NS-065 check).
+    /// If true, allow mint output to a terminal (overrides check).
     pub force_terminal: bool,
     /// If true, include provider stderr on success.
     pub verbose: bool,
     /// Override the NOSCOPE_* env var layer for provider resolution.
-    ///
     /// When `None` (the default), reads `NOSCOPE_MINT_CMD`,
     /// `NOSCOPE_REFRESH_CMD`, and `NOSCOPE_REVOKE_CMD` from the process
     /// environment. When `Some(env)`, uses the provided values directly.
@@ -71,16 +55,10 @@ impl Default for ClientOptions {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Client
-// ---------------------------------------------------------------------------
-
 /// High-level facade for noscope operations.
-///
 /// Wraps provider resolution, mint validation, revoke validation, terminal
 /// detection, and dry-run into a single entry point. The `Client` calls
-/// `security::disable_core_dumps()` at construction time (NS-020).
-///
+/// `security::disable_core_dumps()` at construction time.
 /// Not Clone — holds configuration state that should not be duplicated
 /// carelessly.
 pub struct Client {
@@ -89,31 +67,25 @@ pub struct Client {
 
 impl Client {
     /// Create a new Client with the given options.
-    ///
-    /// NS-020: Disables core dumps immediately. Returns an error if the
+    /// Disables core dumps immediately. Returns an error if the
     /// platform does not support core dump suppression, allowing callers
     /// to detect and handle hardening failures (e.g., log a warning,
     /// abort the process, or proceed with degraded security).
-    ///
     /// For callers that prefer the old best-effort behavior, use
     /// [`Client::new_best_effort`] instead.
-    ///
     /// # Errors
-    ///
     /// Returns [`Error`] with [`ErrorKind::Security`] if
     /// `setrlimit(RLIMIT_CORE, 0)` fails (e.g., insufficient privileges).
     pub fn new(opts: ClientOptions) -> Result<Self, Error> {
-        // NS-020: Fail-fast core dump prevention.
+        // Fail-fast core dump prevention.
         security::disable_core_dumps()?;
         Ok(Self { opts })
     }
 
     /// Create a new Client with best-effort core dump hardening.
-    ///
-    /// NS-020: Attempts to disable core dumps but silently ignores
+    /// Attempts to disable core dumps but silently ignores
     /// failures. This preserves the original `Client::new` behavior
     /// for callers that cannot handle a fallible constructor.
-    ///
     /// **Prefer [`Client::new`]** in new code — it surfaces hardening
     /// failures so callers can make an informed decision.
     pub fn new_best_effort(opts: ClientOptions) -> Self {
@@ -122,9 +94,8 @@ impl Client {
     }
 
     /// Validate a mint request before execution.
-    ///
-    /// Checks: providers non-empty, role non-empty and safe (NS-033),
-    /// TTL > 0 (NS-062).
+    /// Checks: providers non-empty, role non-empty and safe,
+    /// TTL > 0.
     pub fn validate_mint(&self, req: &MintRequest) -> Result<(), Error> {
         // Delegate to existing mint validation.
         // Pass Some(ttl_secs) directly — validate_mint_args handles zero
@@ -136,14 +107,13 @@ impl Client {
         };
         mint::validate_mint_args(ttl_opt, &req.providers, &req.role)?;
 
-        // NS-033: Validate role for safe characters.
+        // Validate role for safe characters.
         provider_exec::validate_role(&req.role).map_err(|e| Error::usage(&format!("{}", e)))?;
 
         Ok(())
     }
 
-    /// NS-065: Check that stdout is not a terminal before mint output.
-    ///
+    /// Check that stdout is not a terminal before mint output.
     /// Respects `force_terminal` from [`ClientOptions`].
     pub fn check_stdout_not_terminal(&self, is_tty: bool) -> Result<(), Error> {
         mint::check_stdout_not_terminal(is_tty, self.opts.force_terminal)?;
@@ -151,9 +121,8 @@ impl Client {
     }
 
     /// Resolve a provider configuration by name, with optional overrides.
-    ///
     /// Delegates to the provider module's strict precedence resolution
-    /// (NS-007). The consumer does not need to import `provider::*` types.
+    ///. The consumer does not need to import `provider::*` types.
     pub fn resolve_provider(
         &self,
         name: &str,
@@ -188,7 +157,7 @@ impl Client {
         )?)
     }
 
-    /// NS-071: Generate dry-run output for a resolved provider.
+    /// Generate dry-run output for a resolved provider.
     pub fn dry_run(
         &self,
         resolved: &provider::ResolvedProvider,
@@ -199,12 +168,7 @@ impl Client {
     }
 }
 
-// ---------------------------------------------------------------------------
-// MintRequest
-// ---------------------------------------------------------------------------
-
 /// Input for a mint operation.
-///
 /// Contains everything needed to validate and execute a multi-provider mint.
 #[derive(Debug)]
 pub struct MintRequest {
@@ -216,13 +180,8 @@ pub struct MintRequest {
     pub ttl_secs: u64,
 }
 
-// ---------------------------------------------------------------------------
-// RevokeRequest
-// ---------------------------------------------------------------------------
-
 /// Input for a revoke operation.
-///
-/// NS-012: Never stores the raw token value. Only carries the opaque
+/// Never stores the raw token value. Only carries the opaque
 /// token_id and provider name needed for revocation.
 pub struct RevokeRequest {
     inner: mint::RevokeInput,
@@ -237,9 +196,8 @@ impl RevokeRequest {
     }
 
     /// Create a revoke request by parsing a mint JSON envelope.
-    ///
     /// Extracts only token_id and provider. The raw token field is read
-    /// but never stored (NS-012).
+    /// but never stored.
     pub fn from_mint_json(json_str: &str) -> Result<Self, Error> {
         let inner = mint::RevokeInput::from_mint_json(json_str)?;
         Ok(Self { inner })
@@ -256,13 +214,8 @@ impl RevokeRequest {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ProviderOverrides
-// ---------------------------------------------------------------------------
-
 /// CLI flag / env var overrides for provider configuration.
-///
-/// Maps to the highest-precedence layers in the NS-007 config resolution.
+/// Maps to the highest-precedence layers in config resolution.
 /// Use `ProviderOverrides::default()` for no overrides.
 #[derive(Default)]
 pub struct ProviderOverrides {
@@ -278,13 +231,9 @@ impl ProviderOverrides {
     }
 }
 
-// ---------------------------------------------------------------------------
-// NoscopeError type alias (noscope-bsq.1.5)
-// ---------------------------------------------------------------------------
 // The old NoscopeError enum has been replaced by a type alias pointing to
 // the canonical error::Error type. This preserves backward compatibility
 // for existing consumers while converging on a single public error surface.
-//
 // Migration for existing code:
 // - Old: match err { NoscopeError::Usage { message } => ... }
 //   New: match err.kind() { ErrorKind::Usage => ...; use err.message() }
@@ -297,11 +246,6 @@ impl ProviderOverrides {
 mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
-
-    // =========================================================================
-    // Acceptance 1: Common workflow requires significantly fewer direct
-    // module imports. The facade re-exports stable types from crate root.
-    // =========================================================================
 
     #[test]
     fn facade_client_type_exists() {
@@ -334,11 +278,6 @@ mod tests {
         assert_eq!(opts.provider_timeout, Duration::from_secs(60));
         assert_eq!(opts.max_concurrent, 4);
     }
-
-    // =========================================================================
-    // Acceptance 2: Facade methods return typed results/errors suitable
-    // for automation. A unified NoscopeError covers all failure modes.
-    // =========================================================================
 
     #[test]
     fn facade_error_type_exists_and_is_std_error() {
@@ -397,11 +336,6 @@ mod tests {
         );
     }
 
-    // =========================================================================
-    // Acceptance 2 (continued): MintRequest / RevokeRequest — typed input
-    // structs that validate before execution.
-    // =========================================================================
-
     #[test]
     fn facade_mint_request_validates_providers_required() {
         let client = super::Client::new(super::ClientOptions::default()).unwrap();
@@ -440,7 +374,7 @@ mod tests {
 
     #[test]
     fn facade_mint_request_validates_role_safe_characters() {
-        // NS-033: Role must be validated for safe characters.
+        // Role must be validated for safe characters.
         let client = super::Client::new(super::ClientOptions::default()).unwrap();
         let req = super::MintRequest {
             providers: vec!["aws".to_string()],
@@ -450,7 +384,7 @@ mod tests {
         let result = client.validate_mint(&req);
         assert!(
             result.is_err(),
-            "NS-033: Role with shell metacharacters must be rejected"
+            "Role with shell metacharacters must be rejected"
         );
     }
 
@@ -489,11 +423,7 @@ mod tests {
         assert!(result.is_err(), "Invalid JSON must be rejected");
     }
 
-    // =========================================================================
-    // Acceptance 3: Existing security invariants remain enforced.
-    // =========================================================================
-
-    // NS-020: Core dump prevention at client construction.
+    // Core dump prevention at client construction.
     #[test]
     fn facade_client_disables_core_dumps() {
         // After Client construction, core dumps must be disabled.
@@ -507,28 +437,25 @@ mod tests {
             assert_eq!(ret, 0);
             assert_eq!(
                 rlim.rlim_cur, 0,
-                "NS-020: core dumps must be disabled after Client construction"
+                "core dumps must be disabled after Client construction"
             );
             assert_eq!(rlim.rlim_max, 0);
         }
     }
 
-    // NS-065: Terminal detection for mint stdout.
+    // Terminal detection for mint stdout.
     #[test]
     fn facade_check_stdout_terminal_rejects_tty() {
         let client = super::Client::new(super::ClientOptions::default()).unwrap();
         let result = client.check_stdout_not_terminal(true);
-        assert!(
-            result.is_err(),
-            "NS-065: Mint to terminal stdout must be rejected"
-        );
+        assert!(result.is_err(), "Mint to terminal stdout must be rejected");
     }
 
     #[test]
     fn facade_check_stdout_terminal_allows_pipe() {
         let client = super::Client::new(super::ClientOptions::default()).unwrap();
         let result = client.check_stdout_not_terminal(false);
-        assert!(result.is_ok(), "NS-065: Pipe stdout must be allowed");
+        assert!(result.is_ok(), "Pipe stdout must be allowed");
     }
 
     #[test]
@@ -539,15 +466,8 @@ mod tests {
         })
         .unwrap();
         let result = client.check_stdout_not_terminal(true);
-        assert!(
-            result.is_ok(),
-            "NS-065: force_terminal must override TTY check"
-        );
+        assert!(result.is_ok(), "force_terminal must override TTY check");
     }
-
-    // =========================================================================
-    // Facade structural invariants.
-    // =========================================================================
 
     #[test]
     fn facade_client_is_not_clone() {
@@ -593,10 +513,6 @@ mod tests {
         static_assertions::assert_not_impl_any!(super::RevokeRequest: Clone);
     }
 
-    // =========================================================================
-    // Facade provider resolution shorthand.
-    // =========================================================================
-
     #[test]
     fn facade_resolve_provider_delegates_to_provider_module() {
         // Client exposes provider resolution without requiring the consumer
@@ -604,7 +520,7 @@ mod tests {
         let client = super::Client::new(super::ClientOptions::default()).unwrap();
         let result = client.resolve_provider("nonexistent", &super::ProviderOverrides::default());
         assert!(result.is_err(), "Nonexistent provider must return an error");
-        // Error message must enumerate checked locations (NS-044)
+        // Error message must enumerate checked locations
         let msg = format!("{}", result.unwrap_err());
         assert!(
             msg.contains("nonexistent"),
@@ -631,10 +547,6 @@ mod tests {
         assert!(overrides.has_any());
     }
 
-    // =========================================================================
-    // Facade dry-run support.
-    // =========================================================================
-
     #[test]
     fn facade_dry_run_produces_output() {
         // Dry-run mode must work through the facade without requiring
@@ -656,10 +568,6 @@ mod tests {
         );
     }
 
-    // =========================================================================
-    // Re-export verification: stable types accessible from crate root.
-    // =========================================================================
-
     #[test]
     fn facade_reexports_scoped_token_type() {
         // ScopedToken should be re-exported so consumers don't need
@@ -678,10 +586,6 @@ mod tests {
         fn _accepts_event(_e: &crate::event::Event) {}
         fn _accepts_event_type(_t: &crate::event::EventType) {}
     }
-
-    // =========================================================================
-    // Error conversion from internal error types (via error::Error From impls).
-    // =========================================================================
 
     #[test]
     fn facade_error_from_mint_error() {
@@ -723,18 +627,6 @@ mod tests {
         let msg = format!("{}", err);
         assert!(msg.contains("profile"), "Must mention profile: {}", msg);
     }
-
-    // =========================================================================
-    // noscope-bsq.1.2: NOSCOPE_* env overrides wired in Client::resolve_provider
-    //
-    // The bug: resolve_provider passes ProviderEnv::default() and ignores
-    // process environment. Tests below prove env overrides are observed
-    // end-to-end through the Client facade, and precedence is strict.
-    //
-    // Tests use the provider_env override in ClientOptions for determinism —
-    // mutating process env in parallel tests is inherently racy. The
-    // from_process_env() constructor is tested separately in provider::tests.
-    // =========================================================================
 
     // Rule: env overrides are observed end-to-end from Client (mint_cmd).
     #[test]
@@ -836,10 +728,10 @@ mod tests {
             crate::provider::ConfigSource::Flags,
             "source must be Flags when flags are set"
         );
-        // NS-007: no merging — env's refresh_cmd must NOT leak through
+        // no merging — env's refresh_cmd must NOT leak through
         assert!(
             resolved.refresh_cmd.is_none(),
-            "NS-007: flags layer wins entirely — env refresh_cmd must not merge"
+            "flags layer wins entirely — env refresh_cmd must not merge"
         );
     }
 
@@ -886,10 +778,10 @@ refresh = "/from/file/refresh"
             crate::provider::ConfigSource::EnvVars,
             "source must be EnvVars"
         );
-        // NS-007: no merging — file's refresh_cmd must NOT leak through
+        // no merging — file's refresh_cmd must NOT leak through
         assert!(
             resolved.refresh_cmd.is_none(),
-            "NS-007: env layer wins entirely — file refresh_cmd must not merge"
+            "env layer wins entirely — file refresh_cmd must not merge"
         );
     }
 
@@ -971,18 +863,6 @@ mint = "/from/file/mint"
             "default ClientOptions must not override provider_env (reads from process env)"
         );
     }
-
-    // =========================================================================
-    // noscope-bsq.1.4: Surface core-dump hardening failures from Client
-    // construction.
-    //
-    // Rules tested:
-    // 1. Client::new returns Result, exposing hardening failure to callers.
-    // 2. Backwards-compatible constructor (new_best_effort) still available.
-    // 3. Success path: Client::new succeeds on Linux (where setrlimit works).
-    // 4. Failure detection: callers can match on the error variant.
-    // 5. Documentation: public API docs describe the behavior.
-    // =========================================================================
 
     // Rule 1: Client::new must return Result<Client, Error>.
     #[test]

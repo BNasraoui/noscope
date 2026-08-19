@@ -1,11 +1,11 @@
-// NS-007: Strict config precedence
-// NS-042: Config follows XDG Base Directory
-// NS-043: Malformed config is hard error
-// NS-044: Provider not found enumerates checked locations
-// NS-069: Config file permission enforcement
-// NS-071: Dry-run mode
-// NS-072: Provider contract version
-// NS-073: Provider validation command
+// Strict config precedence
+// Config follows XDG Base Directory
+// Malformed config is hard error
+// Provider not found enumerates checked locations
+// Config file permission enforcement
+// Dry-run mode
+// Provider contract version
+// Provider validation command
 
 use std::collections::HashMap;
 use std::fmt;
@@ -16,15 +16,13 @@ use std::path::{Path, PathBuf};
 use crate::config_path::named_config_toml_path;
 use provenance_macros::rule;
 
-/// NS-072: The current provider contract version.
-///
+/// The current provider contract version.
 /// When mint output format, exit code protocol, or input contracts change,
 /// this version increments. noscope must support the current version and the
 /// immediately previous version for backward compatibility.
 pub const CURRENT_CONTRACT_VERSION: u32 = 1;
 
-/// NS-072: Return the list of supported contract versions.
-///
+/// Return the list of supported contract versions.
 /// Always includes the current version and the previous version (if one exists).
 /// Since version 1 is the first, there is no version 0 — only [1] is returned.
 pub fn supported_contract_versions() -> Vec<u32> {
@@ -35,8 +33,7 @@ pub fn supported_contract_versions() -> Vec<u32> {
     versions
 }
 
-/// NS-072: Validate that a contract version is supported.
-///
+/// Validate that a contract version is supported.
 /// Rejects versions not in the supported set.
 #[rule("rule_config_contract_version_gate")]
 pub fn validate_contract_version(version: u32) -> Result<(), ProviderConfigError> {
@@ -51,18 +48,18 @@ pub fn validate_contract_version(version: u32) -> Result<(), ProviderConfigError
 /// Error type for provider configuration failures.
 #[derive(Debug)]
 pub enum ProviderConfigError {
-    /// NS-043: Syntactically invalid TOML or missing required fields.
+    /// Syntactically invalid TOML or missing required fields.
     MalformedConfig { message: String },
-    /// NS-044: Provider not found at any layer.
+    /// Provider not found at any layer.
     ProviderNotFound {
         provider: String,
         checked_locations: Vec<String>,
     },
-    /// NS-069: Config file has insecure permissions.
+    /// Config file has insecure permissions.
     InsecurePermissions { path: PathBuf, mode: u32 },
-    /// NS-072: Unsupported provider contract version.
+    /// Unsupported provider contract version.
     UnsupportedContractVersion { version: u32, supported: Vec<u32> },
-    /// NS-073: Provider validation found problems.
+    /// Provider validation found problems.
     ValidationFailed { problems: Vec<String> },
 }
 
@@ -150,10 +147,8 @@ pub type ProviderFlags = ProviderCommandInput;
 pub type ProviderEnv = ProviderCommandInput;
 
 /// Read provider env overrides from the process environment.
-///
 /// Looks for `NOSCOPE_MINT_CMD`, `NOSCOPE_REFRESH_CMD`, and
 /// `NOSCOPE_REVOKE_CMD`. Missing or empty vars yield `None`.
-///
 /// This is a standalone function (not a method on `ProviderEnv`) because
 /// `ProviderEnv` is a type alias for `ProviderCommandInput`. An `impl`
 /// block on a type alias would leak the method onto `ProviderFlags` too,
@@ -170,7 +165,7 @@ pub fn provider_env_from_process() -> ProviderEnv {
     }
 }
 
-/// NS-041: Provider capability declaration.
+/// Provider capability declaration.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderCapabilities {
     /// Whether this provider supports token refresh.
@@ -182,7 +177,7 @@ pub struct ProviderCapabilities {
 /// Parsed provider config from a TOML file (lowest precedence).
 #[derive(Debug)]
 pub struct FileProviderConfig {
-    /// NS-072: Provider contract version from the config file.
+    /// Provider contract version from the config file.
     pub contract_version: u32,
     pub mint_cmd: String,
     pub refresh_cmd: Option<String>,
@@ -203,7 +198,7 @@ pub enum SelectedProviderConfigLayer {
 #[derive(Debug, Clone)]
 pub struct ResolvedProvider {
     pub name: String,
-    /// NS-072: Contract version from the file config layer.
+    /// Contract version from the file config layer.
     /// `None` when the config came from flags or env (which don't carry
     /// a contract version — they're overrides, not full configs).
     pub contract_version: Option<u32>,
@@ -214,11 +209,9 @@ pub struct ResolvedProvider {
     pub source: ConfigSource,
 }
 
-/// NS-042: Compute the config file path for a named provider.
-///
+/// Compute the config file path for a named provider.
 /// Uses XDG_CONFIG_HOME if provided, otherwise falls back to
 /// `$HOME/.config`.
-///
 /// Returns `Err` if the name contains path traversal characters.
 pub fn provider_config_path(
     name: &str,
@@ -227,9 +220,8 @@ pub fn provider_config_path(
     named_config_toml_path(xdg_config_home, None, "providers", name)
 }
 
-/// NS-042: Same as `provider_config_path` but with explicit HOME fallback.
+/// Same as `provider_config_path` but with explicit HOME fallback.
 /// Used when XDG_CONFIG_HOME is not set.
-///
 /// Returns `Err` if the name contains path traversal characters.
 pub fn provider_config_path_with_home(
     name: &str,
@@ -239,8 +231,7 @@ pub fn provider_config_path_with_home(
     named_config_toml_path(xdg_config_home, Some(home), "providers", name)
 }
 
-/// NS-043 + NS-072: Parse provider TOML content into a FileProviderConfig.
-///
+/// Parse provider TOML content into a FileProviderConfig.
 /// Returns MalformedConfig error for syntax errors or missing required fields.
 /// Returns UnsupportedContractVersion for versions outside the supported set.
 #[rule("rule_config_provider_toml_schema")]
@@ -252,7 +243,7 @@ pub fn parse_provider_toml(content: &str) -> Result<FileProviderConfig, Provider
                 message: e.to_string(),
             })?;
 
-    // NS-072: Parse and validate contract_version (required).
+    // Parse and validate contract_version (required).
     let contract_version = match table.get("contract_version") {
         Some(v) => match v.as_integer() {
             Some(n) if n > 0 => {
@@ -346,7 +337,7 @@ fn parse_optional_bool(table: &toml::Table, key: &str) -> Result<bool, ProviderC
     }
 }
 
-/// NS-041: Validate capability declarations against configured commands.
+/// Validate capability declarations against configured commands.
 #[rule("rule_cross_capability_consistency")]
 pub fn validate_declared_capabilities(
     caps: &ProviderCapabilities,
@@ -368,8 +359,7 @@ pub fn validate_declared_capabilities(
     Ok(())
 }
 
-/// NS-043 + NS-069: Load a provider config file from disk.
-///
+/// Load a provider config file from disk.
 /// Returns `Ok(None)` if the file does not exist (missing file = layer absent).
 /// Returns `Err` for permission issues, malformed TOML, or missing required fields.
 pub fn load_provider_file(path: &Path) -> Result<Option<FileProviderConfig>, ProviderConfigError> {
@@ -387,16 +377,13 @@ pub fn load_provider_file(path: &Path) -> Result<Option<FileProviderConfig>, Pro
 }
 
 /// Bitmask of permission bits that are insecure for secret-bearing config files.
-///
 /// - `0o020`: group-write — another user in the same group could modify secrets.
 /// - `0o007`: world (other) read/write/execute — anyone on the system could access.
-///
 /// Allowed: owner-only (0600, 0700, 0400) or owner+group-read (0640, 0750, 0440).
 /// Rejected: group-writable (0660, 0620) or world-accessible (0644, 0666, 0604).
 const INSECURE_MODE_BITS: u32 = 0o020 | 0o007;
 
-/// NS-069: Check that a config file has secure permissions.
-///
+/// Check that a config file has secure permissions.
 /// Secret-bearing config files must not be group-writable or world-accessible.
 /// See [`INSECURE_MODE_BITS`] for the exact policy.
 #[rule("rule_cross_config_file_permissions")]
@@ -417,11 +404,9 @@ pub fn check_config_permissions(path: &Path) -> Result<(), ProviderConfigError> 
     Ok(())
 }
 
-/// NS-007 + NS-044: Resolve provider configuration with strict precedence.
-///
+/// Resolve provider configuration with strict precedence.
 /// Precedence: flags > env vars > config file. No merging across layers.
 /// The highest-precedence layer that has ANY value wins entirely.
-///
 /// Returns ProviderNotFound with checked locations if no layer provides config.
 #[rule("rule_config_not_found_lists_locations")]
 pub fn resolve_provider_config(
@@ -438,7 +423,7 @@ pub fn resolve_provider_config(
 }
 
 /// Same as [`resolve_provider_config`], but names the config file location
-/// that was actually checked (NS-044) instead of recomputing it from the
+/// that was actually checked instead of recomputing it from the
 /// process environment.
 pub fn resolve_provider_config_at(
     name: &str,
@@ -479,7 +464,7 @@ pub fn resolve_provider_config_at(
         });
     }
 
-    // NS-044: No layer provided config — enumerate checked locations.
+    // No layer provided config — enumerate checked locations.
     Err(ProviderConfigError::ProviderNotFound {
         provider: name.to_string(),
         checked_locations: vec![
@@ -508,8 +493,7 @@ pub fn select_provider_config_layer(
     file_config.map(SelectedProviderConfigLayer::File)
 }
 
-/// NS-071: Generate dry-run output for a resolved provider.
-///
+/// Generate dry-run output for a resolved provider.
 /// Shows the mint command, role, TTL, and config source without executing anything.
 pub fn dry_run_output(config: &ResolvedProvider, role: &str, ttl_secs: u64) -> String {
     let source_label = match config.source {
@@ -542,8 +526,7 @@ pub fn dry_run_output(config: &ResolvedProvider, role: &str, ttl_secs: u64) -> S
     out
 }
 
-/// NS-073: Validate a resolved provider configuration.
-///
+/// Validate a resolved provider configuration.
 /// Checks that all configured commands exist and are executable.
 /// Does NOT execute any commands.
 #[rule("rule_validate_checks_without_running")]
@@ -637,11 +620,6 @@ VAULT_ADDR = "https://vault.example.com"
         }
     }
 
-    // =========================================================================
-    // NS-007: Strict config precedence — flags > env vars > config files;
-    // no merging across layers; highest-precedence wins entirely.
-    // =========================================================================
-
     #[test]
     fn strict_config_precedence_flags_win_over_env() {
         let flags = flags_with_mint_cmd("/from/flags/mint");
@@ -654,7 +632,7 @@ VAULT_ADDR = "https://vault.example.com"
         let resolved = resolve_provider_config("test-provider", &flags, &env, None).unwrap();
 
         assert_eq!(resolved.mint_cmd, "/from/flags/mint");
-        // NS-007: "no merging" — env's refresh_cmd must NOT leak through
+        // "no merging" — env's refresh_cmd must NOT leak through
         assert!(
             resolved.refresh_cmd.is_none(),
             "flags layer wins entirely — env refresh_cmd must not merge in"
@@ -685,7 +663,7 @@ VAULT_ADDR = "https://vault.example.com"
         let resolved = resolve_provider_config("mycloud", &flags, &env, Some(file_config)).unwrap();
 
         assert_eq!(resolved.mint_cmd, "/from/env/mint");
-        // NS-007: no merging — file's refresh_cmd must not leak through
+        // no merging — file's refresh_cmd must not leak through
         assert!(
             resolved.refresh_cmd.is_none(),
             "env layer wins entirely — file refresh_cmd must not merge in"
@@ -740,10 +718,6 @@ VAULT_ADDR = "https://vault.example.com"
         assert!(resolved.revoke_cmd.is_none());
     }
 
-    // =========================================================================
-    // NS-042: Config follows XDG Base Directory
-    // =========================================================================
-
     #[test]
     fn config_follows_xdg_base_directory() {
         let tmp = tempfile::tempdir().unwrap();
@@ -782,10 +756,6 @@ VAULT_ADDR = "https://vault.example.com"
             PathBuf::from("/custom/xdg/noscope/providers/gcp.toml")
         );
     }
-
-    // =========================================================================
-    // NS-043: Malformed config is hard error
-    // =========================================================================
 
     #[test]
     fn malformed_config_is_hard_error_syntax() {
@@ -838,10 +808,6 @@ mint = ""
         let result = parse_provider_toml(toml_with_empty_mint);
         assert!(result.is_err(), "Empty mint command must be error");
     }
-
-    // =========================================================================
-    // NS-044: Provider not found enumerates checked locations
-    // =========================================================================
 
     #[test]
     #[verifies("rule_config_not_found_lists_locations", examples)]
@@ -906,10 +872,6 @@ mint = ""
             msg
         );
     }
-
-    // =========================================================================
-    // NS-069: Config file permission enforcement
-    // =========================================================================
 
     #[test]
     #[verifies("rule_cross_config_file_permissions", examples)]
@@ -983,11 +945,6 @@ mint = ""
         let result = check_config_permissions(&file_path);
         assert!(result.is_ok(), "0400 (owner-read-only) should be allowed");
     }
-
-    // =========================================================================
-    // noscope-bsq.1.3: Tighten Unix config permission checks — group-writable
-    // and world-accessible bits must both be rejected for secret-bearing configs.
-    // =========================================================================
 
     #[test]
     fn config_permissions_rejects_group_writable_0660() {
@@ -1146,10 +1103,6 @@ mint = ""
         );
     }
 
-    // =========================================================================
-    // NS-071: Dry-run mode
-    // =========================================================================
-
     #[test]
     fn dry_run_mode_produces_output() {
         let config = ResolvedProvider {
@@ -1226,10 +1179,6 @@ mint = ""
             output
         );
     }
-
-    // =========================================================================
-    // NS-073: Provider validation command
-    // =========================================================================
 
     #[test]
     #[verifies("rule_validate_checks_without_running", examples)]
@@ -1373,10 +1322,6 @@ mint = ""
         assert!(result.is_err(), "Validation must check revoke_cmd too");
     }
 
-    // =========================================================================
-    // Edge cases discovered during review
-    // =========================================================================
-
     #[test]
     fn config_precedence_flags_without_mint_cmd_still_wins() {
         // If flags layer sets refresh_cmd but not mint_cmd, the flags layer
@@ -1483,15 +1428,9 @@ API_KEY_FILE = "/etc/secrets/key"
         );
     }
 
-    // =========================================================================
-    // NS-072: Provider contract version — config must include
-    // contract_version=1, reject unsupported versions, support current
-    // and previous version.
-    // =========================================================================
-
     #[test]
     fn provider_contract_version_must_be_present_in_config() {
-        // NS-072: A provider TOML config MUST include contract_version.
+        // A provider TOML config MUST include contract_version.
         // Omitting it is a hard error.
         let toml_without_version = r#"
 [commands]
@@ -1500,20 +1439,20 @@ mint = "/usr/bin/mint"
         let result = parse_provider_toml(toml_without_version);
         assert!(
             result.is_err(),
-            "NS-072: config without contract_version must be rejected"
+            "config without contract_version must be rejected"
         );
         let err = result.unwrap_err();
         let msg = format!("{}", err);
         assert!(
             msg.to_lowercase().contains("contract_version"),
-            "NS-072: error must mention contract_version, got: {}",
+            "error must mention contract_version, got: {}",
             msg
         );
     }
 
     #[test]
     fn provider_contract_version_accepts_current_version() {
-        // NS-072: contract_version = 1 (the current version) must be accepted.
+        // contract_version = 1 (the current version) must be accepted.
         let toml = r#"
 contract_version = 1
 
@@ -1523,14 +1462,14 @@ mint = "/usr/bin/mint"
         let config = parse_provider_toml(toml).unwrap();
         assert_eq!(
             config.contract_version, 1,
-            "NS-072: current version (1) must be accepted"
+            "current version (1) must be accepted"
         );
     }
 
     #[test]
     #[verifies("rule_config_contract_version_gate", examples)]
     fn provider_contract_version_rejects_unsupported_future_version() {
-        // NS-072: A version far beyond current must be rejected.
+        // A version far beyond current must be rejected.
         let toml = r#"
 contract_version = 99
 
@@ -1540,23 +1479,20 @@ mint = "/usr/bin/mint"
         let result = parse_provider_toml(toml);
         assert!(
             result.is_err(),
-            "NS-072: unsupported future version must be rejected"
+            "unsupported future version must be rejected"
         );
         let err = result.unwrap_err();
         match err {
             ProviderConfigError::UnsupportedContractVersion { version, .. } => {
                 assert_eq!(version, 99);
             }
-            other => panic!(
-                "NS-072: expected UnsupportedContractVersion, got: {:?}",
-                other
-            ),
+            other => panic!("expected UnsupportedContractVersion, got: {:?}", other),
         }
     }
 
     #[test]
     fn provider_contract_version_rejects_version_zero() {
-        // NS-072: Version 0 is not a valid contract version.
+        // Version 0 is not a valid contract version.
         let toml = r#"
 contract_version = 0
 
@@ -1564,12 +1500,12 @@ contract_version = 0
 mint = "/usr/bin/mint"
 "#;
         let result = parse_provider_toml(toml);
-        assert!(result.is_err(), "NS-072: version 0 must be rejected");
+        assert!(result.is_err(), "version 0 must be rejected");
     }
 
     #[test]
     fn provider_contract_version_rejects_negative_version() {
-        // NS-072: Negative versions are not valid.
+        // Negative versions are not valid.
         let toml = r#"
 contract_version = -1
 
@@ -1577,12 +1513,12 @@ contract_version = -1
 mint = "/usr/bin/mint"
 "#;
         let result = parse_provider_toml(toml);
-        assert!(result.is_err(), "NS-072: negative version must be rejected");
+        assert!(result.is_err(), "negative version must be rejected");
     }
 
     #[test]
     fn provider_contract_version_rejects_non_integer_type() {
-        // NS-072: contract_version must be an integer, not a string.
+        // contract_version must be an integer, not a string.
         let toml = r#"
 contract_version = "1"
 
@@ -1592,20 +1528,20 @@ mint = "/usr/bin/mint"
         let result = parse_provider_toml(toml);
         assert!(
             result.is_err(),
-            "NS-072: non-integer contract_version must be rejected"
+            "non-integer contract_version must be rejected"
         );
         let err = result.unwrap_err();
         let msg = format!("{}", err);
         assert!(
             msg.to_lowercase().contains("integer"),
-            "NS-072: error must mention expected type, got: {}",
+            "error must mention expected type, got: {}",
             msg
         );
     }
 
     #[test]
     fn provider_contract_version_stored_in_file_provider_config() {
-        // NS-072: The parsed FileProviderConfig must expose the contract_version.
+        // The parsed FileProviderConfig must expose the contract_version.
         let toml = r#"
 contract_version = 1
 
@@ -1618,7 +1554,7 @@ mint = "/usr/bin/mint"
 
     #[test]
     fn provider_contract_version_propagated_to_resolved_provider() {
-        // NS-072: The resolved provider must carry the contract_version
+        // The resolved provider must carry the contract_version
         // from the file config layer.
         let file_config = FileProviderConfig {
             contract_version: 1,
@@ -1640,26 +1576,26 @@ mint = "/usr/bin/mint"
         assert_eq!(
             resolved.contract_version,
             Some(1),
-            "NS-072: resolved provider must carry contract_version from file layer"
+            "resolved provider must carry contract_version from file layer"
         );
     }
 
     #[test]
     fn provider_contract_version_none_for_flags_and_env_layers() {
-        // NS-072: Flags and env layers don't specify contract_version
+        // Flags and env layers don't specify contract_version
         // (they're overrides, not full configs). contract_version is None.
         let flags = flags_with_mint_cmd("/from/flags/mint");
         let resolved =
             resolve_provider_config("test", &flags, &ProviderEnv::empty(), None).unwrap();
         assert_eq!(
             resolved.contract_version, None,
-            "NS-072: flags layer should not have contract_version"
+            "flags layer should not have contract_version"
         );
     }
 
     #[test]
     fn provider_contract_version_unsupported_error_display() {
-        // NS-072: Error message for unsupported version must be actionable.
+        // Error message for unsupported version must be actionable.
         let err = ProviderConfigError::UnsupportedContractVersion {
             version: 42,
             supported: vec![1],
@@ -1667,39 +1603,39 @@ mint = "/usr/bin/mint"
         let msg = format!("{}", err);
         assert!(
             msg.contains("42"),
-            "NS-072: error must mention the unsupported version, got: {}",
+            "error must mention the unsupported version, got: {}",
             msg
         );
         assert!(
             msg.contains("1"),
-            "NS-072: error must mention supported versions, got: {}",
+            "error must mention supported versions, got: {}",
             msg
         );
     }
 
     #[test]
     fn provider_contract_version_current_version_constant_is_one() {
-        // NS-072: The current contract version must be 1.
+        // The current contract version must be 1.
         assert_eq!(
             CURRENT_CONTRACT_VERSION, 1,
-            "NS-072: current contract version must be 1"
+            "current contract version must be 1"
         );
     }
 
     #[test]
     fn provider_contract_version_supported_versions_includes_current() {
-        // NS-072: The supported versions list must include the current version.
+        // The supported versions list must include the current version.
         let supported = supported_contract_versions();
         assert!(
             supported.contains(&CURRENT_CONTRACT_VERSION),
-            "NS-072: supported versions must include current version {}",
+            "supported versions must include current version {}",
             CURRENT_CONTRACT_VERSION
         );
     }
 
     #[test]
     fn provider_contract_version_backward_compat_supports_previous() {
-        // NS-072: Must support current and previous version.
+        // Must support current and previous version.
         // Since current = 1 and there's no version 0, only version 1 is valid now.
         // But the mechanism must be in place: when version 2 becomes current,
         // version 1 must remain supported.
@@ -1708,33 +1644,33 @@ mint = "/usr/bin/mint"
         assert_eq!(
             supported,
             vec![1],
-            "NS-072: at version 1, only version 1 should be supported (no v0 existed)"
+            "at version 1, only version 1 should be supported (no v0 existed)"
         );
     }
 
     #[test]
     fn provider_contract_version_validate_version_rejects_unsupported() {
-        // NS-072: validate_contract_version must reject unsupported versions.
+        // validate_contract_version must reject unsupported versions.
         let result = validate_contract_version(99);
         assert!(
             result.is_err(),
-            "NS-072: validate_contract_version must reject unsupported versions"
+            "validate_contract_version must reject unsupported versions"
         );
     }
 
     #[test]
     fn provider_contract_version_validate_version_accepts_current() {
-        // NS-072: validate_contract_version must accept the current version.
+        // validate_contract_version must accept the current version.
         let result = validate_contract_version(CURRENT_CONTRACT_VERSION);
         assert!(
             result.is_ok(),
-            "NS-072: validate_contract_version must accept current version"
+            "validate_contract_version must accept current version"
         );
     }
 
     #[test]
     fn provider_contract_version_rejects_float_type() {
-        // NS-072: contract_version must be an integer; TOML floats are rejected.
+        // contract_version must be an integer; TOML floats are rejected.
         let toml = r#"
 contract_version = 1.0
 
@@ -1742,28 +1678,22 @@ contract_version = 1.0
 mint = "/usr/bin/mint"
 "#;
         let result = parse_provider_toml(toml);
-        assert!(
-            result.is_err(),
-            "NS-072: float contract_version must be rejected"
-        );
+        assert!(result.is_err(), "float contract_version must be rejected");
         let err = result.unwrap_err();
         let msg = format!("{}", err);
         assert!(
             msg.to_lowercase().contains("integer"),
-            "NS-072: error must mention expected type, got: {}",
+            "error must mention expected type, got: {}",
             msg
         );
     }
 
     #[test]
     fn provider_contract_version_validate_rejects_zero_directly() {
-        // NS-072: validate_contract_version(0) must reject — version 0 never existed.
+        // validate_contract_version(0) must reject — version 0 never existed.
         // In practice the parser catches this first, but the public API must be safe.
         let result = validate_contract_version(0);
-        assert!(
-            result.is_err(),
-            "NS-072: validate_contract_version(0) must reject"
-        );
+        assert!(result.is_err(), "validate_contract_version(0) must reject");
     }
 
     #[test]
@@ -1796,10 +1726,6 @@ mint = "/usr/bin/mint"
         assert!(msg.contains("mint"), "Must list mint problem: {}", msg);
         assert!(msg.contains("revoke"), "Must list revoke problem: {}", msg);
     }
-
-    // =========================================================================
-    // noscope-cg8.5: Consolidate provider config and capability parsing
-    // =========================================================================
 
     #[test]
     fn consolidate_provider_config_single_authoritative_domain_model() {
@@ -1898,10 +1824,6 @@ refresh = "/usr/bin/refresh"
 
         assert!(matches!(selected, SelectedProviderConfigLayer::Flags(_)));
     }
-
-    // =========================================================================
-    // noscope-bsq.1.2: ProviderEnv::from_process_env reads NOSCOPE_* vars
-    // =========================================================================
 
     #[test]
     fn provider_env_from_process_returns_valid_struct() {

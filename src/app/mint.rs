@@ -1,6 +1,5 @@
 // The single mint execution path.
-//
-// NS-006 (atomic mint), NS-046 (per-provider timeout), NS-050 (bounded
+// (atomic mint), (per-provider timeout), (bounded
 // parallelism). Both `noscope run` and `noscope mint` call `mint_all`;
 // there is exactly one closure that turns a CredentialSpec into a
 // provider invocation.
@@ -20,11 +19,11 @@ use crate::token_convert::provider_output_to_scoped_token;
 
 /// Execution knobs for a mint run.
 pub struct MintOptions {
-    /// NS-046: Per-provider timeout.
+    /// Per-provider timeout.
     pub per_provider_timeout: Duration,
-    /// NS-035: Grace period after SIGTERM before SIGKILL.
+    /// Grace period after SIGTERM before SIGKILL.
     pub kill_grace_period: Duration,
-    /// NS-050: Maximum concurrent provider operations.
+    /// Maximum concurrent provider operations.
     pub max_concurrent: usize,
 }
 
@@ -97,7 +96,6 @@ pub async fn mint_one(
 }
 
 /// Mint every spec atomically with bounded parallelism.
-///
 /// Every spec's provider must be present in `resolved_by_name`.
 pub async fn mint_all(
     specs: &[CredentialSpec],

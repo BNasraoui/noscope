@@ -1,7 +1,6 @@
 use provenance_macros::rule;
 
 /// Shell-parse a command string into argv tokens.
-///
 /// Uses [`shlex::split`] for POSIX-correct quoting.  Falls back to
 /// whitespace splitting when the input contains unbalanced quotes so
 /// that callers always get *some* usable argv rather than an error.

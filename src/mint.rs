@@ -1,9 +1,9 @@
-// NS-060: Mint output envelope
-// NS-061: Revoke CLI input contract
-// NS-062: Mint mode TTL requirement
-// NS-063: Mint multi-provider atomicity
-// NS-064: Redaction exception for mint stdout
-// NS-065: Terminal detection for mint
+// Mint output envelope
+// Revoke CLI input contract
+// Mint mode TTL requirement
+// Mint multi-provider atomicity
+// Redaction exception for mint stdout
+// Terminal detection for mint
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -16,14 +16,12 @@ use crate::signal_policy::{SignalHandlingPolicy, TtlBounds};
 use crate::token::ScopedToken;
 use provenance_macros::rule;
 
-/// NS-060: Mint output envelope for stdout.
-///
-/// Contains the raw token value — this is the ONE place where NS-005
-/// (redaction) does not apply (NS-064). The `to_json()` method produces
+/// Mint output envelope for stdout.
+/// Contains the raw token value — the one place redaction does not
+/// apply, since stdout IS the credential channel. `to_json()` produces
 /// the stdout output; `to_log_string()` produces the redacted stderr form.
-///
 /// Not Clone — the raw token value should not be duplicated carelessly.
-/// NS-019: Token field is zeroized on drop.
+/// Token field is zeroized on drop.
 pub struct MintEnvelope {
     token: String,
     expires_at: DateTime<Utc>,
@@ -32,7 +30,7 @@ pub struct MintEnvelope {
     role: String,
 }
 
-// NS-019: Zeroize the raw token value on drop. The token is stored in a
+// Zeroize the raw token value on drop. The token is stored in a
 // plain String (not SecretString) because it needs to be serialized to
 // stdout JSON. We compensate by manually zeroizing on drop.
 impl Drop for MintEnvelope {
@@ -41,7 +39,7 @@ impl Drop for MintEnvelope {
     }
 }
 
-/// NS-005 + NS-064: Debug never shows the raw token value.
+/// Debug never shows the raw token value.
 /// The token is redacted in Debug output, matching the ScopedToken pattern.
 impl fmt::Debug for MintEnvelope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -57,7 +55,7 @@ impl fmt::Debug for MintEnvelope {
 }
 
 /// Internal serialization helper — keeps Serialize out of the public type.
-/// Field names match the NS-060 JSON contract exactly.
+/// Field names match JSON contract exactly.
 #[derive(Serialize)]
 #[rule("rule_token_mint_envelope_five_fields")]
 struct SerializableMintEnvelope<'a> {
@@ -86,9 +84,8 @@ impl MintEnvelope {
         }
     }
 
-    /// NS-060: Create a mint envelope from a ScopedToken.
-    ///
-    /// NS-064: This intentionally calls `expose_secret()` — the mint
+    /// Create a mint envelope from a ScopedToken.
+    /// This intentionally calls `expose_secret()` — the mint
     /// envelope is the designated path for outputting raw credentials.
     pub fn from_scoped_token(token: &ScopedToken) -> Self {
         Self {
@@ -100,9 +97,8 @@ impl MintEnvelope {
         }
     }
 
-    /// NS-060: Serialize to compact single-line JSON for stdout.
-    ///
-    /// NS-064: This output intentionally contains the raw token value.
+    /// Serialize to compact single-line JSON for stdout.
+    /// This output intentionally contains the raw token value.
     pub fn to_json(&self) -> String {
         let serializable = SerializableMintEnvelope {
             token: &self.token,
@@ -114,9 +110,8 @@ impl MintEnvelope {
         serde_json::to_string(&serializable).expect("MintEnvelope serialization should never fail")
     }
 
-    /// NS-064: Produce a redacted log string for stderr/log output.
-    ///
-    /// NS-005 still applies to stderr — the token value is replaced with
+    /// Produce a redacted log string for stderr/log output.
+    /// still applies to stderr — the token value is replaced with
     /// its redacted form.
     pub fn to_log_string(&self) -> String {
         let redacted = RedactedToken::new(&self.token, Some(&self.token_id));
@@ -127,10 +122,9 @@ impl MintEnvelope {
     }
 }
 
-/// NS-061: Input for the revoke subcommand.
-///
+/// Input for the revoke subcommand.
 /// Extracts only `token_id` and `provider` from the input source.
-/// The raw token value is never stored (NS-012).
+/// The raw token value is never stored.
 #[derive(Debug)]
 pub struct RevokeInput {
     token_id: String,
@@ -138,7 +132,7 @@ pub struct RevokeInput {
 }
 
 impl RevokeInput {
-    /// NS-061: Create revoke input from explicit --token-id and --provider flags.
+    /// Create revoke input from explicit --token-id and --provider flags.
     pub fn from_token_id_and_provider(token_id: &str, provider: &str) -> Self {
         Self {
             token_id: token_id.to_string(),
@@ -146,10 +140,9 @@ impl RevokeInput {
         }
     }
 
-    /// NS-061: Parse revoke input from a full mint JSON envelope via --from-stdin.
-    ///
+    /// Parse revoke input from a full mint JSON envelope via --from-stdin.
     /// Extracts only `token_id` and `provider`. The raw `token` field is
-    /// read from JSON but never stored (NS-012).
+    /// read from JSON but never stored.
     #[rule("rule_token_revoke_stdin_envelope")]
     pub fn from_mint_json(json_str: &str) -> Result<Self, MintError> {
         let parsed: serde_json::Value =
@@ -188,8 +181,7 @@ impl RevokeInput {
     }
 }
 
-/// NS-061/NS-012: Validate that revoke CLI arguments do not contain a --token flag.
-///
+/// Validate that revoke CLI arguments do not contain a --token flag.
 /// The `--token-id` flag is allowed (it's an opaque identifier, not a secret).
 /// The `--token` flag is rejected because it would pass raw secret values
 /// via CLI args, visible in /proc/*/cmdline.
@@ -202,7 +194,7 @@ pub fn validate_revoke_args(args: &[String]) -> Result<(), MintError> {
             return Err(MintError::InvalidInput {
                 message: format!(
                     "argument at index {} is --token; raw token values must not be \
-                     passed as CLI arguments (NS-012). Use --token-id or --from-stdin instead",
+                     passed as CLI arguments. Use --token-id or --from-stdin instead",
                     i
                 ),
             });
@@ -211,8 +203,7 @@ pub fn validate_revoke_args(args: &[String]) -> Result<(), MintError> {
     Ok(())
 }
 
-/// NS-062: Validate mint subcommand arguments.
-///
+/// Validate mint subcommand arguments.
 /// TTL is mandatory. At least one provider and a non-empty role are required.
 pub fn validate_mint_args(
     ttl_secs: Option<u64>,
@@ -223,7 +214,7 @@ pub fn validate_mint_args(
         MintError::InvalidInput {
             message: match e {
                 crate::signal_policy::TtlError::Missing => {
-                    "--ttl is required for mint mode (NS-062)".to_string()
+                    "--ttl is required for mint mode".to_string()
                 }
                 other => other.to_string(),
             },
@@ -245,11 +236,9 @@ pub fn validate_mint_args(
     Ok(ttl)
 }
 
-/// NS-063: Format mint output as a JSON array or empty string.
-///
+/// Format mint output as a JSON array or empty string.
 /// - Non-empty slice: serialized as a compact single-line JSON array.
 /// - Empty slice: returns empty string (represents total failure — no stdout).
-///
 /// This enforces atomicity: the caller collects ALL envelopes before calling
 /// this function, so partial output is structurally impossible.
 pub fn format_mint_output(envelopes: &[MintEnvelope]) -> String {
@@ -272,8 +261,7 @@ pub fn format_mint_output(envelopes: &[MintEnvelope]) -> String {
         .expect("MintEnvelope array serialization should never fail")
 }
 
-/// NS-065: Check that stdout is not a terminal.
-///
+/// Check that stdout is not a terminal.
 /// If `is_tty` is true and `force` is false, returns an error with exit code 64.
 /// Tokens in terminal scrollback are a security risk.
 #[rule("rule_cross_terminal_refusal")]
@@ -289,7 +277,7 @@ pub fn check_stdout_not_terminal(is_tty: bool, force: bool) -> Result<(), MintEr
 pub enum MintError {
     /// Invalid input (bad args, missing fields, etc.).
     InvalidInput { message: String },
-    /// NS-065: stdout is a terminal — tokens in scrollback are a risk.
+    /// stdout is a terminal — tokens in scrollback are a risk.
     TerminalDetected,
 }
 
@@ -325,12 +313,6 @@ mod tests {
     use provenance_macros::verifies;
     use serde_json::Value;
 
-    // =========================================================================
-    // NS-060: Mint output envelope — JSON to stdout: token (string),
-    // expires_at (ISO 8601), token_id (provider-supplied or UUID),
-    // provider, role.
-    // =========================================================================
-
     #[test]
     fn mint_output_envelope_contains_token_field() {
         let envelope = super::MintEnvelope::new(
@@ -345,7 +327,7 @@ mod tests {
         assert_eq!(
             parsed["token"].as_str().unwrap(),
             "secret-token-value",
-            "NS-060: envelope must contain 'token' field with raw value"
+            "envelope must contain 'token' field with raw value"
         );
     }
 
@@ -359,7 +341,7 @@ mod tests {
         // Must be valid ISO 8601 / RFC 3339
         let _parsed_dt: DateTime<Utc> = expires_str
             .parse()
-            .expect("NS-060: expires_at must be valid ISO 8601");
+            .expect("expires_at must be valid ISO 8601");
     }
 
     #[test]
@@ -376,7 +358,7 @@ mod tests {
         assert_eq!(
             parsed["token_id"].as_str().unwrap(),
             "provider-tok-id-42",
-            "NS-060: envelope must contain 'token_id' field"
+            "envelope must contain 'token_id' field"
         );
     }
 
@@ -394,7 +376,7 @@ mod tests {
         assert_eq!(
             parsed["provider"].as_str().unwrap(),
             "vault",
-            "NS-060: envelope must contain 'provider' field"
+            "envelope must contain 'provider' field"
         );
     }
 
@@ -412,7 +394,7 @@ mod tests {
         assert_eq!(
             parsed["role"].as_str().unwrap(),
             "read-only",
-            "NS-060: envelope must contain 'role' field"
+            "envelope must contain 'role' field"
         );
     }
 
@@ -432,7 +414,7 @@ mod tests {
         assert_eq!(
             obj.len(),
             5,
-            "NS-060: envelope must have exactly 5 fields (token, expires_at, token_id, provider, role), got: {:?}",
+            "envelope must have exactly 5 fields (token, expires_at, token_id, provider, role), got: {:?}",
             obj.keys().collect::<Vec<_>>()
         );
     }
@@ -449,7 +431,7 @@ mod tests {
         let json = envelope.to_json();
         assert!(
             !json.contains('\n'),
-            "NS-060: mint envelope JSON must be single-line"
+            "mint envelope JSON must be single-line"
         );
     }
 
@@ -475,11 +457,6 @@ mod tests {
         assert_eq!(parsed["token_id"].as_str().unwrap(), "tok-abc");
     }
 
-    // =========================================================================
-    // NS-061: Revoke CLI input contract — accept --token-id+--provider or
-    // full mint JSON via --from-stdin; token values never as CLI args (NS-012).
-    // =========================================================================
-
     #[test]
     fn revoke_input_from_token_id_and_provider() {
         let input = super::RevokeInput::from_token_id_and_provider("tok-abc-123", "aws");
@@ -500,7 +477,7 @@ mod tests {
     fn revoke_input_from_mint_json_rejects_invalid_json() {
         let bad_json = "not valid json {{{";
         let result = super::RevokeInput::from_mint_json(bad_json);
-        assert!(result.is_err(), "NS-061: invalid JSON must be rejected");
+        assert!(result.is_err(), "invalid JSON must be rejected");
     }
 
     #[test]
@@ -509,7 +486,7 @@ mod tests {
         let result = super::RevokeInput::from_mint_json(incomplete);
         assert!(
             result.is_err(),
-            "NS-061: mint JSON without token_id must be rejected"
+            "mint JSON without token_id must be rejected"
         );
     }
 
@@ -519,27 +496,27 @@ mod tests {
         let result = super::RevokeInput::from_mint_json(incomplete);
         assert!(
             result.is_err(),
-            "NS-061: mint JSON without provider must be rejected"
+            "mint JSON without provider must be rejected"
         );
     }
 
     #[test]
     fn revoke_input_does_not_store_token_value() {
-        // NS-012/NS-061: The revoke input must NOT retain the raw token value.
+        // The revoke input must NOT retain the raw token value.
         // Only token_id and provider are needed for revocation.
         let mint_json = r#"{"token":"super-secret-value","expires_at":"2025-01-01T00:00:00Z","token_id":"tok-99","provider":"gcp","role":"viewer"}"#;
         let input = super::RevokeInput::from_mint_json(mint_json).unwrap();
         let debug = format!("{:?}", input);
         assert!(
             !debug.contains("super-secret-value"),
-            "NS-061/NS-012: RevokeInput must not store the raw token value, got debug: {}",
+            "RevokeInput must not store the raw token value, got debug: {}",
             debug
         );
     }
 
     #[test]
     fn revoke_input_validates_no_token_value_in_cli_args() {
-        // NS-012: Token values must never appear as CLI arguments.
+        // Token values must never appear as CLI arguments.
         // validate_no_token_in_args checks that no argument looks like a raw token.
         let result = super::validate_revoke_args(&[
             "noscope".to_string(),
@@ -551,13 +528,13 @@ mod tests {
         ]);
         assert!(
             result.is_ok(),
-            "NS-061: --token-id and --provider args are allowed (not raw token values)"
+            "--token-id and --provider args are allowed (not raw token values)"
         );
     }
 
     #[test]
     fn revoke_input_rejects_raw_token_flag() {
-        // NS-012: A --token flag with the actual secret value must be rejected.
+        // A --token flag with the actual secret value must be rejected.
         let result = super::validate_revoke_args(&[
             "noscope".to_string(),
             "revoke".to_string(),
@@ -566,52 +543,39 @@ mod tests {
         ]);
         assert!(
             result.is_err(),
-            "NS-061/NS-012: --token flag with raw secret value must be rejected"
+            "--token flag with raw secret value must be rejected"
         );
     }
-
-    // =========================================================================
-    // NS-062: Mint mode TTL requirement — --ttl required; no refresh/revocation
-    // unless explicit noscope revoke; caller responsibility after mint.
-    // =========================================================================
 
     #[test]
     fn mint_ttl_requirement_ttl_is_mandatory() {
         let result = super::validate_mint_args(None, &["aws".to_string()], "admin");
-        assert!(
-            result.is_err(),
-            "NS-062: --ttl must be required for mint mode"
-        );
+        assert!(result.is_err(), "--ttl must be required for mint mode");
     }
 
     #[test]
     fn mint_ttl_requirement_accepts_valid_ttl() {
         let result = super::validate_mint_args(Some(3600), &["aws".to_string()], "admin");
-        assert!(result.is_ok(), "NS-062: valid TTL should be accepted");
+        assert!(result.is_ok(), "valid TTL should be accepted");
     }
 
     #[test]
     fn mint_ttl_requirement_rejects_zero_ttl() {
         let result = super::validate_mint_args(Some(0), &["aws".to_string()], "admin");
-        assert!(result.is_err(), "NS-062: zero TTL must be rejected");
+        assert!(result.is_err(), "zero TTL must be rejected");
     }
 
     #[test]
     fn mint_ttl_requirement_rejects_empty_providers() {
         let result = super::validate_mint_args(Some(3600), &[], "admin");
-        assert!(result.is_err(), "NS-062: at least one provider is required");
+        assert!(result.is_err(), "at least one provider is required");
     }
 
     #[test]
     fn mint_ttl_requirement_rejects_empty_role() {
         let result = super::validate_mint_args(Some(3600), &["aws".to_string()], "");
-        assert!(result.is_err(), "NS-062: empty role must be rejected");
+        assert!(result.is_err(), "empty role must be rejected");
     }
-
-    // =========================================================================
-    // NS-063: Mint multi-provider atomicity — follows NS-006; output is JSON
-    // array or nothing on failure; no partial stdout.
-    // =========================================================================
 
     #[test]
     fn mint_multi_provider_atomicity_single_provider_returns_object() {
@@ -624,10 +588,10 @@ mod tests {
         );
         let output = super::format_mint_output(&[envelope]);
         let parsed: Value = serde_json::from_str(&output).unwrap();
-        // Single provider: still a JSON array per NS-063
+        // Single provider: still a JSON array
         assert!(
             parsed.is_array(),
-            "NS-063: single provider output must be a JSON array, got: {}",
+            "single provider output must be a JSON array, got: {}",
             output
         );
         assert_eq!(parsed.as_array().unwrap().len(), 1);
@@ -653,25 +617,25 @@ mod tests {
         let parsed: Value = serde_json::from_str(&output).unwrap();
         assert!(
             parsed.is_array(),
-            "NS-063: multi-provider output must be a JSON array"
+            "multi-provider output must be a JSON array"
         );
         assert_eq!(parsed.as_array().unwrap().len(), 2);
     }
 
     #[test]
     fn mint_multi_provider_atomicity_empty_on_failure() {
-        // NS-063: On failure, output is nothing — empty string.
+        // On failure, output is nothing — empty string.
         let output = super::format_mint_output(&[]);
         assert!(
             output.is_empty(),
-            "NS-063: on failure (no successful mints), output must be empty, got: {:?}",
+            "on failure (no successful mints), output must be empty, got: {:?}",
             output
         );
     }
 
     #[test]
     fn mint_multi_provider_atomicity_no_partial_stdout() {
-        // NS-063: The output must be all-or-nothing. The function takes
+        // The output must be all-or-nothing. The function takes
         // a complete slice of envelopes — partial results are not representable.
         // This test verifies the API design: you can't add envelopes incrementally.
         let e1 = super::MintEnvelope::new(
@@ -706,18 +670,13 @@ mod tests {
         let output = super::format_mint_output(&[e1, e2]);
         assert!(
             !output.contains('\n'),
-            "NS-063: mint output must be single-line JSON"
+            "mint output must be single-line JSON"
         );
     }
 
-    // =========================================================================
-    // NS-064: Redaction exception for mint stdout — NS-005 does not apply to
-    // mint stdout (by definition contains token); still applies to stderr/logs.
-    // =========================================================================
-
     #[test]
     fn redaction_exception_mint_stdout_contains_raw_token() {
-        // NS-064: The mint envelope intentionally contains the raw token value.
+        // The mint envelope intentionally contains the raw token value.
         // This is the whole point of the mint subcommand.
         let envelope = super::MintEnvelope::new(
             "raw-secret-credential-12345",
@@ -729,13 +688,13 @@ mod tests {
         let json = envelope.to_json();
         assert!(
             json.contains("raw-secret-credential-12345"),
-            "NS-064: mint stdout must contain the raw token value"
+            "mint stdout must contain the raw token value"
         );
     }
 
     #[test]
     fn redaction_exception_stderr_still_redacted() {
-        // NS-064: NS-005 still applies to stderr/log messages.
+        // still applies to stderr/log messages.
         // MintEnvelope must provide a redacted form for logging purposes.
         let envelope = super::MintEnvelope::new(
             "secret-that-should-not-appear-in-logs",
@@ -747,7 +706,7 @@ mod tests {
         let log_msg = envelope.to_log_string();
         assert!(
             !log_msg.contains("secret-that-should-not-appear-in-logs"),
-            "NS-064: stderr/log output must still redact token value, got: {}",
+            "stderr/log output must still redact token value, got: {}",
             log_msg
         );
     }
@@ -764,58 +723,44 @@ mod tests {
         let log_msg = envelope.to_log_string();
         assert!(
             log_msg.contains("vault"),
-            "NS-064: log string should contain provider"
+            "log string should contain provider"
         );
         assert!(
             log_msg.contains("deployer"),
-            "NS-064: log string should contain role"
+            "log string should contain role"
         );
     }
-
-    // =========================================================================
-    // NS-065: Terminal detection for mint — if stdout isatty, warn to stderr
-    // and exit 64 unless --force; tokens in scrollback are a risk.
-    // =========================================================================
 
     #[test]
     #[verifies("rule_cross_terminal_refusal", examples)]
     fn terminal_detection_rejects_tty_stdout() {
-        // NS-065: If stdout is a terminal, mint should be rejected.
+        // If stdout is a terminal, mint should be rejected.
         let result = super::check_stdout_not_terminal(true, false);
-        assert!(
-            result.is_err(),
-            "NS-065: mint to terminal stdout must be rejected"
-        );
+        assert!(result.is_err(), "mint to terminal stdout must be rejected");
     }
 
     #[test]
     fn terminal_detection_allows_pipe_stdout() {
-        // NS-065: If stdout is a pipe (not a terminal), mint is allowed.
+        // If stdout is a pipe (not a terminal), mint is allowed.
         let result = super::check_stdout_not_terminal(false, false);
-        assert!(
-            result.is_ok(),
-            "NS-065: mint to piped stdout must be allowed"
-        );
+        assert!(result.is_ok(), "mint to piped stdout must be allowed");
     }
 
     #[test]
     fn terminal_detection_force_overrides_tty_check() {
-        // NS-065: --force flag overrides the terminal check.
+        // --force flag overrides the terminal check.
         let result = super::check_stdout_not_terminal(true, true);
-        assert!(
-            result.is_ok(),
-            "NS-065: --force must override terminal detection"
-        );
+        assert!(result.is_ok(), "--force must override terminal detection");
     }
 
     #[test]
     fn terminal_detection_exit_code_is_64() {
-        // NS-065: The exit code for terminal detection failure is 64 (usage error).
+        // The exit code for terminal detection failure is 64 (usage error).
         let err = super::check_stdout_not_terminal(true, false).unwrap_err();
         assert_eq!(
             err.exit_code().as_raw(),
             64,
-            "NS-065: terminal detection failure must exit with code 64"
+            "terminal detection failure must exit with code 64"
         );
     }
 
@@ -825,7 +770,7 @@ mod tests {
         let msg = format!("{}", err);
         assert!(
             msg.to_lowercase().contains("terminal") || msg.to_lowercase().contains("tty"),
-            "NS-065: error message must mention terminal/tty, got: {}",
+            "error message must mention terminal/tty, got: {}",
             msg
         );
     }
@@ -836,18 +781,14 @@ mod tests {
         let msg = format!("{}", err);
         assert!(
             msg.contains("--force"),
-            "NS-065: error message must mention --force flag, got: {}",
+            "error message must mention --force flag, got: {}",
             msg
         );
     }
 
-    // =========================================================================
-    // Edge cases discovered during Linus review.
-    // =========================================================================
-
     #[test]
     fn mint_envelope_debug_does_not_expose_raw_token() {
-        // NS-005/NS-064: Debug output must redact the token value.
+        // Debug output must redact the token value.
         let envelope = super::MintEnvelope::new(
             "super-secret-credential-that-must-not-leak",
             Utc::now() + chrono::Duration::hours(1),
@@ -889,7 +830,7 @@ mod tests {
 
     #[test]
     fn revoke_input_rejects_combined_token_equals_value_flag() {
-        // NS-012: --token=<secret> combined form must also be rejected.
+        // --token=<secret> combined form must also be rejected.
         let result = super::validate_revoke_args(&[
             "noscope".to_string(),
             "revoke".to_string(),
@@ -897,7 +838,7 @@ mod tests {
         ]);
         assert!(
             result.is_err(),
-            "NS-061/NS-012: --token=value combined form must be rejected"
+            "--token=value combined form must be rejected"
         );
     }
 
@@ -913,13 +854,13 @@ mod tests {
         ]);
         assert!(
             result.is_ok(),
-            "NS-061: --token-id=value combined form should be allowed"
+            "--token-id=value combined form should be allowed"
         );
     }
 
     #[test]
     fn revoke_input_from_mint_json_array_element() {
-        // NS-063 outputs a JSON array. Revoke should handle a single element
+        // outputs a JSON array. Revoke should handle a single element
         // extracted from that array.
         let array_element = r#"{"token":"secret","expires_at":"2025-01-01T00:00:00Z","token_id":"tok-from-array","provider":"aws","role":"admin"}"#;
         let input = super::RevokeInput::from_mint_json(array_element).unwrap();

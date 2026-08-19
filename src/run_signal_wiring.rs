@@ -208,7 +208,7 @@ mod tests {
         });
         assert!(
             forwarded_sigkill,
-            "NS-070: SIGKILL escalation path must emit signal_forwarded"
+            "SIGKILL escalation path must emit signal_forwarded"
         );
 
         crate::event::clear_test_event_collector();
@@ -239,7 +239,7 @@ mod tests {
             !lines
                 .iter()
                 .any(|line| line.contains("\"type\":\"signal_forwarded\"")),
-            "NS-070: failed signal forwarding must not emit signal_forwarded"
+            "failed signal forwarding must not emit signal_forwarded"
         );
 
         crate::event::clear_test_event_collector();

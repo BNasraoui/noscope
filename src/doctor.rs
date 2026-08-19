@@ -1,14 +1,5 @@
-// noscope-3ez.12: Doctor and init confidence commands.
-//
+// Doctor and init confidence commands.
 // Rules:
-// - NS-080: doctor checks config directory exists and is accessible
-// - NS-081: doctor checks each configured provider's TOML is parseable and permissions are secure
-// - NS-082: doctor checks each provider's mint command exists and is executable
-// - NS-083: doctor produces a structured report with pass/warn/fail per check
-// - NS-084: doctor exit code reflects worst status (0=all pass, 1=warnings, 78=failures)
-// - NS-085: init creates the config directory structure under XDG_CONFIG_HOME
-// - NS-086: init sets secure permissions (0700) on created directories
-// - NS-087: init is idempotent — running twice does not error or change permissions
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -16,10 +7,6 @@ use std::path::{Path, PathBuf};
 
 use crate::provider;
 use provenance_macros::rule;
-
-// ---------------------------------------------------------------------------
-// NS-083: Structured check types
-// ---------------------------------------------------------------------------
 
 /// Status of a single doctor check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,8 +65,7 @@ impl DoctorReport {
             .count()
     }
 
-    /// NS-084: Determine the exit code for the doctor report.
-    ///
+    /// Determine the exit code for the doctor report.
     /// - 0: all checks passed
     /// - 1: at least one warning (no failures)
     /// - 78: at least one failure (config error, sysexits.h)
@@ -94,10 +80,6 @@ impl DoctorReport {
     }
 }
 
-// ---------------------------------------------------------------------------
-// NS-085/NS-086/NS-087: Init result
-// ---------------------------------------------------------------------------
-
 /// Result from `noscope init`.
 #[derive(Debug)]
 pub struct InitResult {
@@ -105,12 +87,7 @@ pub struct InitResult {
     pub created_dirs: Vec<PathBuf>,
 }
 
-// ---------------------------------------------------------------------------
-// Doctor implementation
-// ---------------------------------------------------------------------------
-
 /// Run all doctor checks against the config tree rooted at `xdg_config_home`.
-///
 /// The `xdg_config_home` parameter is the XDG_CONFIG_HOME directory (or
 /// `$HOME/.config` if unset). Provider configs are expected at
 /// `<xdg_config_home>/noscope/providers/<name>.toml`.
@@ -119,7 +96,7 @@ pub fn run_doctor(xdg_config_home: &Path) -> DoctorReport {
     let mut checks = Vec::new();
     let noscope_dir = xdg_config_home.join("noscope");
 
-    // NS-080: Check config directory exists.
+    // Check config directory exists.
     if noscope_dir.is_dir() {
         checks.push(Check {
             name: "config_directory".to_string(),
@@ -151,7 +128,7 @@ pub fn run_doctor(xdg_config_home: &Path) -> DoctorReport {
             ),
         });
     } else {
-        // NS-081 + NS-082: Check each provider .toml file.
+        // Check each provider .toml file.
         check_providers(&providers_dir, &mut checks);
     }
 
@@ -186,7 +163,7 @@ fn check_providers(providers_dir: &Path, checks: &mut Vec<Check>) {
             .to_string();
         let check_name = format!("provider:{}", provider_name);
 
-        // NS-081: Check permissions first.
+        // Check permissions first.
         if let Err(e) = provider::check_config_permissions(&path) {
             checks.push(Check {
                 name: check_name,
@@ -196,7 +173,7 @@ fn check_providers(providers_dir: &Path, checks: &mut Vec<Check>) {
             continue;
         }
 
-        // NS-081: Parse the TOML.
+        // Parse the TOML.
         let content = match fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
@@ -227,7 +204,7 @@ fn check_providers(providers_dir: &Path, checks: &mut Vec<Check>) {
             message: format!("{} is valid", path.display()),
         });
 
-        // NS-082: Check mint command exists and is executable.
+        // Check mint command exists and is executable.
         check_command_health(
             &config.mint_cmd,
             &format!("provider:{}:mint_cmd", provider_name),
@@ -253,7 +230,6 @@ fn check_providers(providers_dir: &Path, checks: &mut Vec<Check>) {
 }
 
 /// Check whether a command path exists and is executable.
-///
 /// - Pass: exists and has execute bits
 /// - Warn: missing or not executable (config is valid but command can't run)
 fn check_command_health(cmd: &str, check_name: &str, checks: &mut Vec<Check>) {
@@ -297,17 +273,11 @@ fn check_command_health(cmd: &str, check_name: &str, checks: &mut Vec<Check>) {
     });
 }
 
-// ---------------------------------------------------------------------------
-// Init implementation
-// ---------------------------------------------------------------------------
-
-/// NS-085/NS-086/NS-087: Create the noscope config directory tree.
-///
+/// Create the noscope config directory tree.
 /// Creates:
 /// - `<xdg_config_home>/noscope/`
 /// - `<xdg_config_home>/noscope/providers/`
 /// - `<xdg_config_home>/noscope/profiles/`
-///
 /// All directories are created with mode 0700 (owner-only).
 /// Idempotent: existing directories are left unchanged.
 #[rule("rule_init_creates_0700")]
@@ -326,7 +296,7 @@ pub fn run_init(xdg_config_home: &Path) -> Result<InitResult, std::io::Error> {
             continue;
         }
         fs::create_dir_all(dir)?;
-        // NS-086: Secure permissions.
+        // Secure permissions.
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
         created.push(dir.clone());
     }
@@ -339,9 +309,6 @@ pub fn run_init(xdg_config_home: &Path) -> Result<InitResult, std::io::Error> {
 #[cfg(test)]
 mod tests {
     use provenance_macros::verifies;
-    // =========================================================================
-    // NS-080: doctor checks config directory exists and is accessible
-    // =========================================================================
 
     #[test]
     #[verifies("rule_doctor_checks", examples)]
@@ -398,11 +365,6 @@ mod tests {
             "check message must be non-empty"
         );
     }
-
-    // =========================================================================
-    // NS-081: doctor checks each configured provider's TOML is parseable
-    // and permissions are secure
-    // =========================================================================
 
     #[test]
     fn doctor_checks_provider_toml_parseable() {
@@ -504,10 +466,6 @@ mint = "/usr/bin/mint"
             "insecure permissions must fail"
         );
     }
-
-    // =========================================================================
-    // NS-082: doctor checks each provider's mint command exists and is executable
-    // =========================================================================
 
     #[test]
     fn doctor_warns_when_mint_command_not_found() {
@@ -640,10 +598,6 @@ mint = "{}"
         );
     }
 
-    // =========================================================================
-    // NS-083: doctor produces a structured report with pass/warn/fail per check
-    // =========================================================================
-
     #[test]
     fn doctor_report_has_structured_checks() {
         let tmp = tempfile::tempdir().unwrap();
@@ -700,11 +654,6 @@ mint = "{}"
         assert_eq!(report.warn_count(), 1);
         assert_eq!(report.fail_count(), 1);
     }
-
-    // =========================================================================
-    // NS-084: doctor exit code reflects worst status
-    // (0=all pass, 1=warnings, 78=failures)
-    // =========================================================================
 
     #[test]
     fn doctor_exit_code_zero_when_all_pass() {
@@ -786,10 +735,6 @@ mint = "{}"
         assert_eq!(report.exit_code(), 0);
     }
 
-    // =========================================================================
-    // NS-085: init creates the config directory structure under XDG_CONFIG_HOME
-    // =========================================================================
-
     #[test]
     fn init_creates_config_directory_structure() {
         let tmp = tempfile::tempdir().unwrap();
@@ -813,10 +758,6 @@ mint = "{}"
             "init result must report created directories"
         );
     }
-
-    // =========================================================================
-    // NS-086: init sets secure permissions (0700) on created directories
-    // =========================================================================
 
     #[test]
     #[verifies("rule_init_creates_0700", examples)]
@@ -854,10 +795,6 @@ mint = "{}"
             & 0o777;
         assert_eq!(mode, 0o700, "profiles dir must be 0700, got {:04o}", mode);
     }
-
-    // =========================================================================
-    // NS-087: init is idempotent — running twice does not error or change perms
-    // =========================================================================
 
     #[test]
     #[verifies("rule_init_idempotent", examples)]
@@ -898,10 +835,6 @@ mint = "{}"
         );
     }
 
-    // =========================================================================
-    // Doctor with no providers should still work
-    // =========================================================================
-
     #[test]
     fn doctor_with_no_providers_still_has_config_check() {
         let tmp = tempfile::tempdir().unwrap();
@@ -922,10 +855,6 @@ mint = "{}"
             "doctor should not have provider checks when no providers exist"
         );
     }
-
-    // =========================================================================
-    // Doctor checks profiles too
-    // =========================================================================
 
     #[test]
     fn doctor_checks_profiles_dir_existence() {
@@ -950,10 +879,6 @@ mint = "{}"
         }
     }
 
-    // =========================================================================
-    // CheckStatus has PartialEq, Eq, Debug, Clone, Copy
-    // =========================================================================
-
     #[test]
     fn check_status_is_eq_comparable() {
         assert_eq!(super::CheckStatus::Pass, super::CheckStatus::Pass);
@@ -971,10 +896,6 @@ mint = "{}"
         assert!(!s.is_empty());
     }
 
-    // =========================================================================
-    // DoctorReport and InitResult are Debug
-    // =========================================================================
-
     #[test]
     fn doctor_report_is_debug() {
         let report = super::DoctorReport { checks: vec![] };
@@ -990,10 +911,6 @@ mint = "{}"
         let s = format!("{:?}", result);
         assert!(!s.is_empty());
     }
-
-    // =========================================================================
-    // Edge cases discovered during Linus review.
-    // =========================================================================
 
     #[test]
     fn doctor_checks_refresh_and_revoke_commands_if_configured() {

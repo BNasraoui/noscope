@@ -1,10 +1,9 @@
 // The single spec-resolution path.
-//
 // Turns CLI input (direct flags or a profile name) into validated
 // CredentialSpecs plus the resolved provider for each spec. Every
 // credential passes the same validation regardless of where it came
-// from: TTL bounds (NS-011/NS-062), role character set (NS-033), and
-// env-key uniqueness (NS-045). Profiles previously bypassed the TTL
+// from: TTL bounds, role character set, and
+// env-key uniqueness. Profiles previously bypassed the TTL
 // and role checks; they no longer do.
 
 use std::collections::HashMap;
@@ -30,7 +29,6 @@ pub enum CredentialSource {
 
 impl CredentialSource {
     /// Build a source from CLI arguments.
-    ///
     /// Clap guarantees provider/role/ttl are present when --profile is
     /// absent, so missing values with no profile are a usage error.
     pub fn from_cli(
@@ -93,7 +91,7 @@ pub fn resolve_specs_and_providers(
             let mut specs = Vec::with_capacity(prof.credentials.len());
             let mut resolved_by_name = HashMap::new();
             for (idx, cred) in prof.credentials.iter().enumerate() {
-                // NS-011/NS-033/NS-062: profile credentials pass the same
+                // profile credentials pass the same
                 // validation as direct flags.
                 client.validate_mint(&MintRequest {
                     providers: vec![cred.provider.clone()],
@@ -121,7 +119,7 @@ pub fn resolve_specs_and_providers(
         }
     };
 
-    // NS-045: env keys must be unique across the whole set.
+    // env keys must be unique across the whole set.
     validate_credential_specs(&specs)?;
 
     Ok((specs, resolved_by_name))
@@ -281,7 +279,7 @@ mod tests {
         assert!(resolve_profile(tmp.path(), "nonexistent").is_err());
     }
 
-    // NS-033: profile credentials pass the same role validation as flags.
+    // profile credentials pass the same role validation as flags.
     #[test]
     #[verifies("rule_role_charset", examples)]
     fn profile_rejects_role_with_shell_metacharacters() {
@@ -295,11 +293,11 @@ mod tests {
 
         assert!(
             resolve_profile(tmp.path(), "evil").is_err(),
-            "NS-033: role with shell metacharacters must be rejected via profiles too"
+            "role with shell metacharacters must be rejected via profiles too"
         );
     }
 
-    // NS-011/NS-062: profile credentials pass the same TTL bounds as flags.
+    // profile credentials pass the same TTL bounds as flags.
     #[test]
     #[verifies("rule_ttl_bounds", examples)]
     fn profile_rejects_out_of_bounds_ttl() {
@@ -313,11 +311,11 @@ mod tests {
 
         assert!(
             resolve_profile(tmp.path(), "shortttl").is_err(),
-            "NS-011: TTL below the minimum bound must be rejected via profiles too"
+            "TTL below the minimum bound must be rejected via profiles too"
         );
     }
 
-    // NS-045: duplicate env keys are rejected on every path.
+    // duplicate env keys are rejected on every path.
     #[test]
     fn profile_rejects_duplicate_env_keys() {
         let tmp = tempfile::tempdir().unwrap();
@@ -331,7 +329,7 @@ mod tests {
 
         assert!(
             resolve_profile(tmp.path(), "dup").is_err(),
-            "NS-045: duplicate env keys must be rejected"
+            "duplicate env keys must be rejected"
         );
     }
 }

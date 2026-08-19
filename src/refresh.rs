@@ -1,8 +1,8 @@
-// NS-008: Refresh failure preserves child
-// NS-025: Refresh limitation documentation
-// NS-030: Refresh retry parameters
-// NS-031: Refresh failure independence
-// NS-032: Continuous refresh after failure
+// Refresh failure preserves child
+// Refresh limitation documentation
+// Refresh retry parameters
+// Refresh failure independence
+// Continuous refresh after failure
 
 use std::time::Duration;
 
@@ -13,8 +13,7 @@ use std::time::Instant;
 use crate::event::{emit_runtime_event, Event, EventType};
 use provenance_macros::rule;
 
-/// NS-008: What to do after a refresh failure.
-///
+/// What to do after a refresh failure.
 /// `KillChild` exists only to be explicitly rejected — no code path
 /// should ever produce it. The enum carries it so tests can assert
 /// the invariant `!matches!(action, KillChild)`.
@@ -23,10 +22,10 @@ pub enum RefreshAction {
     /// Schedule a retry after `delay`.
     Retry { delay: Duration },
     /// All retries exhausted or no time left — let the token expire naturally.
-    /// The child process is NOT terminated (NS-008).
+    /// The child process is NOT terminated.
     AllowExpiry,
     /// Terminate the child process. **Must never be used.** Exists only so
-    /// that NS-008 can be asserted as a negative constraint.
+    /// that can be asserted as a negative constraint.
     KillChild,
 }
 
@@ -35,12 +34,11 @@ pub enum RefreshAction {
 pub struct RefreshOutcome {
     /// The recommended action.
     pub action: RefreshAction,
-    /// NS-008: Whether a warning should be logged.
+    /// Whether a warning should be logged.
     pub log_warning: bool,
 }
 
-/// NS-030: Retry parameters for refresh exponential backoff.
-///
+/// Retry parameters for refresh exponential backoff.
 /// - base 1s, 2x multiplier, max 4 retries, +/-25% jitter
 /// - total retry window <= 50% remaining token lifetime
 #[derive(Debug)]
@@ -69,7 +67,6 @@ impl Default for RetryParams {
 
 impl RetryParams {
     /// Compute the base delay (without jitter) for a given attempt number.
-    ///
     /// attempt 0 → base_delay, attempt 1 → base_delay * multiplier, etc.
     /// Saturates at `u32::MAX` multiplier to avoid overflow on large attempt values.
     pub fn base_delay_for_attempt(&self, attempt: u32) -> Duration {
@@ -78,7 +75,6 @@ impl RetryParams {
     }
 
     /// Compute a jittered delay for a given attempt.
-    ///
     /// The delay is `base_delay * multiplier^attempt * (1 +/- jitter_fraction)`.
     /// Jitter is uniformly distributed in [-jitter_fraction, +jitter_fraction].
     pub fn jittered_delay_for_attempt(&self, attempt: u32) -> Duration {
@@ -100,8 +96,7 @@ impl RetryParams {
     }
 
     /// Compute the worst-case (max jitter) total retry window across all attempts.
-    ///
-    /// NS-030: This must be <= 50% of `remaining_lifetime`.
+    /// This must be <= 50% of `remaining_lifetime`.
     pub fn max_retry_window(&self, remaining_lifetime: Duration) -> Duration {
         let mut total_ms: f64 = 0.0;
         for attempt in 0..self.max_retries {
@@ -117,8 +112,7 @@ impl RetryParams {
     }
 }
 
-/// NS-008 + NS-030: Refresh failure policy.
-///
+/// Refresh failure policy.
 /// Determines what to do when a credential refresh attempt fails.
 /// Never kills the child. Uses exponential backoff with jitter.
 #[derive(Default)]
@@ -133,15 +127,13 @@ impl RefreshPolicy {
     }
 
     /// Evaluate a refresh failure and return the recommended outcome.
-    ///
     /// - `attempt`: zero-based attempt index within the current retry window.
     /// - `remaining_lifetime`: time until the current token expires.
-    ///
-    /// NS-008: Never returns `KillChild`. Always returns `log_warning: true`.
-    /// NS-030: Respects max_retries and 50%-of-remaining-lifetime cap.
+    /// Never returns `KillChild`. Always returns `log_warning: true`.
+    /// Respects max_retries and 50%-of-remaining-lifetime cap.
     #[rule("rule_refresh_never_kills_child")]
     pub fn on_refresh_failure(&self, attempt: u32, remaining_lifetime: Duration) -> RefreshOutcome {
-        // NS-030: No retries if there's no remaining lifetime.
+        // No retries if there's no remaining lifetime.
         if remaining_lifetime.is_zero() {
             return RefreshOutcome {
                 action: RefreshAction::AllowExpiry,
@@ -149,7 +141,7 @@ impl RefreshPolicy {
             };
         }
 
-        // NS-030: Past max retries → allow natural expiry.
+        // Past max retries → allow natural expiry.
         if attempt >= self.params.max_retries {
             return RefreshOutcome {
                 action: RefreshAction::AllowExpiry,
@@ -159,7 +151,7 @@ impl RefreshPolicy {
 
         let delay = self.params.jittered_delay_for_attempt(attempt);
 
-        // NS-030: Total retry window must fit within 50% of remaining lifetime.
+        // Total retry window must fit within 50% of remaining lifetime.
         // This is a per-attempt check — the caller drives attempts sequentially,
         // so each check guarantees the individual delay fits in the remaining budget.
         // The worst-case cumulative window is validated by RetryParams::max_retry_window().
@@ -178,8 +170,7 @@ impl RefreshPolicy {
     }
 }
 
-/// NS-025: Generate the startup warning for rotate/refresh mode.
-///
+/// Generate the startup warning for rotate/refresh mode.
 /// Environment variable injection is point-in-time: the child process
 /// receives the env vars at spawn time and cannot see updates. This
 /// warning must be emitted at startup when rotate mode is enabled.
@@ -191,8 +182,7 @@ pub fn rotate_mode_startup_warning() -> &'static str {
      but the running child retains the original environment values."
 }
 
-/// NS-031: Per-credential refresh state tracker.
-///
+/// Per-credential refresh state tracker.
 /// Each credential in multi-credential mode gets its own `RefreshTracker`.
 /// One tracker's failures never affect another's state.
 #[derive(Debug)]
@@ -318,7 +308,6 @@ impl RefreshRuntimeLoop {
     }
 
     /// Run one refresh tick for all credentials due at `now`.
-    ///
     /// Uses `child_alive` as the AgentProcess lifecycle guard: once the child
     /// exits, no further refresh commands are executed.
     #[rule("rule_refresh_due_only_child_alive")]
@@ -425,7 +414,7 @@ impl RefreshRuntimeLoop {
                     now + chrono::Duration::from_std(delay).unwrap_or_default();
             }
             RefreshAction::AllowExpiry => {
-                // NS-032: Keep participating in normal refresh cadence.
+                // Keep participating in normal refresh cadence.
                 credential.next_refresh_at = normal_refresh_at(&credential.token, now);
             }
             RefreshAction::KillChild => {
@@ -517,8 +506,7 @@ impl RefreshTracker {
         self.consecutive_failures
     }
 
-    /// NS-032: Whether refresh should still be attempted.
-    ///
+    /// Whether refresh should still be attempted.
     /// Always returns `true` — a failure window never permanently disables
     /// refresh. The caller is responsible for scheduling the next attempt
     /// at the normal interval.
@@ -526,7 +514,7 @@ impl RefreshTracker {
         true
     }
 
-    /// NS-032: Reset the retry window after the normal refresh interval
+    /// Reset the retry window after the normal refresh interval
     /// has elapsed. This allows a fresh set of retries.
     pub fn reset_retry_window(&mut self) {
         self.consecutive_failures = 0;
@@ -534,7 +522,6 @@ impl RefreshTracker {
 }
 
 /// Cheap pseudo-random fraction in [0, 1) for jitter.
-///
 /// Uses thread-local state seeded from the system clock. This is NOT
 /// cryptographically secure — it's only used for retry jitter timing.
 fn pseudo_random_fraction() -> f64 {
@@ -570,12 +557,6 @@ mod tests {
     use provenance_macros::verifies;
     use std::time::Duration;
 
-    // =========================================================================
-    // NS-008: Refresh failure preserves child — must not terminate child;
-    // retry with exponential backoff; log warning; allow current token until
-    // TTL expiry.
-    // =========================================================================
-
     #[test]
     #[verifies("rule_refresh_never_kills_child", examples)]
     fn refresh_failure_preserves_child_action_is_not_kill() {
@@ -586,7 +567,7 @@ mod tests {
         let outcome = policy.on_refresh_failure(0, remaining_lifetime);
         assert!(
             !matches!(outcome.action, RefreshAction::KillChild),
-            "NS-008: refresh failure must never kill the child process"
+            "refresh failure must never kill the child process"
         );
     }
 
@@ -598,7 +579,7 @@ mod tests {
         let outcome = policy.on_refresh_failure(0, remaining_lifetime);
         assert!(
             matches!(outcome.action, RefreshAction::Retry { .. }),
-            "NS-008: first failure should schedule a retry, got: {:?}",
+            "first failure should schedule a retry, got: {:?}",
             outcome.action
         );
     }
@@ -611,7 +592,7 @@ mod tests {
         let outcome = policy.on_refresh_failure(0, remaining_lifetime);
         assert!(
             outcome.log_warning,
-            "NS-008: refresh failure must produce a log warning"
+            "refresh failure must produce a log warning"
         );
     }
 
@@ -625,15 +606,10 @@ mod tests {
         let outcome = policy.on_refresh_failure(4, remaining_lifetime);
         assert!(
             matches!(outcome.action, RefreshAction::AllowExpiry),
-            "NS-008: after exhausting retries, must allow token to expire naturally, got: {:?}",
+            "after exhausting retries, must allow token to expire naturally, got: {:?}",
             outcome.action
         );
     }
-
-    // =========================================================================
-    // NS-025: Refresh limitation documentation — env var injection is
-    // point-in-time; warn at startup for rotate mode.
-    // =========================================================================
 
     #[test]
     fn refresh_limitation_documentation_startup_warning() {
@@ -642,7 +618,7 @@ mod tests {
         let warning = rotate_mode_startup_warning();
         assert!(
             !warning.is_empty(),
-            "NS-025: must produce a non-empty startup warning"
+            "must produce a non-empty startup warning"
         );
     }
 
@@ -653,7 +629,7 @@ mod tests {
         assert!(
             warning.to_lowercase().contains("point-in-time")
                 || warning.to_lowercase().contains("point in time"),
-            "NS-025: warning must mention point-in-time nature of env vars, got: {}",
+            "warning must mention point-in-time nature of env vars, got: {}",
             warning
         );
     }
@@ -664,16 +640,10 @@ mod tests {
         let warning = rotate_mode_startup_warning();
         assert!(
             warning.to_lowercase().contains("environment"),
-            "NS-025: warning must mention environment variables, got: {}",
+            "warning must mention environment variables, got: {}",
             warning
         );
     }
-
-    // =========================================================================
-    // NS-030: Refresh retry parameters — exponential backoff with jitter:
-    // base 1s, 2x multiplier, max 4 retries, +/-25% jitter;
-    // total retry window <= 50% remaining lifetime.
-    // =========================================================================
 
     #[test]
     fn refresh_retry_parameters_base_delay_is_one_second() {
@@ -681,20 +651,20 @@ mod tests {
         assert_eq!(
             params.base_delay,
             Duration::from_secs(1),
-            "NS-030: base delay must be 1 second"
+            "base delay must be 1 second"
         );
     }
 
     #[test]
     fn refresh_retry_parameters_multiplier_is_two() {
         let params = RetryParams::default();
-        assert_eq!(params.multiplier, 2, "NS-030: multiplier must be 2x");
+        assert_eq!(params.multiplier, 2, "multiplier must be 2x");
     }
 
     #[test]
     fn refresh_retry_parameters_max_retries_is_four() {
         let params = RetryParams::default();
-        assert_eq!(params.max_retries, 4, "NS-030: max retries must be 4");
+        assert_eq!(params.max_retries, 4, "max retries must be 4");
     }
 
     #[test]
@@ -702,7 +672,7 @@ mod tests {
         let params = RetryParams::default();
         assert!(
             (params.jitter_fraction - 0.25).abs() < f64::EPSILON,
-            "NS-030: jitter fraction must be 0.25 (+/-25%), got: {}",
+            "jitter fraction must be 0.25 (+/-25%), got: {}",
             params.jitter_fraction
         );
     }
@@ -734,7 +704,7 @@ mod tests {
             let max = Duration::from_millis(1250);
             assert!(
                 delay >= min && delay <= max,
-                "NS-030: jittered delay for attempt 0 must be in [750ms, 1250ms], got: {:?}",
+                "jittered delay for attempt 0 must be in [750ms, 1250ms], got: {:?}",
                 delay
             );
         }
@@ -750,7 +720,7 @@ mod tests {
             let max = Duration::from_secs(5);
             assert!(
                 delay >= min && delay <= max,
-                "NS-030: jittered delay for attempt 2 must be in [3s, 5s], got: {:?}",
+                "jittered delay for attempt 2 must be in [3s, 5s], got: {:?}",
                 delay
             );
         }
@@ -766,7 +736,7 @@ mod tests {
         let half_remaining = remaining / 2;
         assert!(
             max_window <= half_remaining,
-            "NS-030: total retry window ({:?}) must be <= 50% of remaining lifetime ({:?})",
+            "total retry window ({:?}) must be <= 50% of remaining lifetime ({:?})",
             max_window,
             half_remaining
         );
@@ -783,7 +753,7 @@ mod tests {
             RefreshAction::Retry { delay } => {
                 assert!(
                     delay <= Duration::from_secs(1),
-                    "NS-030: retry delay must fit within 50% remaining lifetime, got: {:?}",
+                    "retry delay must fit within 50% remaining lifetime, got: {:?}",
                     delay
                 );
             }
@@ -791,7 +761,7 @@ mod tests {
                 // Also acceptable — if there's no room for even one retry
             }
             RefreshAction::KillChild => {
-                panic!("NS-008: must never kill child");
+                panic!("must never kill child");
             }
         }
     }
@@ -804,15 +774,10 @@ mod tests {
         let outcome = policy.on_refresh_failure(0, remaining);
         assert!(
             matches!(outcome.action, RefreshAction::AllowExpiry),
-            "NS-030: with zero remaining lifetime, should allow expiry, got: {:?}",
+            "with zero remaining lifetime, should allow expiry, got: {:?}",
             outcome.action
         );
     }
-
-    // =========================================================================
-    // NS-031: Refresh failure independence — in multi-credential mode,
-    // one failure must not affect others.
-    // =========================================================================
 
     #[test]
     fn refresh_failure_independence_separate_trackers() {
@@ -829,14 +794,14 @@ mod tests {
         assert_eq!(
             tracker_b.consecutive_failures(),
             0,
-            "NS-031: credential-b must not be affected by credential-a failures"
+            "credential-b must not be affected by credential-a failures"
         );
 
         tracker_b.record_success();
         assert_eq!(
             tracker_a.consecutive_failures(),
             3,
-            "NS-031: credential-a must not be affected by credential-b success"
+            "credential-a must not be affected by credential-b success"
         );
     }
 
@@ -851,7 +816,7 @@ mod tests {
         assert_eq!(
             tracker.consecutive_failures(),
             0,
-            "NS-031: success should reset own failure counter"
+            "success should reset own failure counter"
         );
     }
 
@@ -860,11 +825,6 @@ mod tests {
         let tracker = RefreshTracker::new("my-aws-cred");
         assert_eq!(tracker.credential_id(), "my-aws-cred");
     }
-
-    // =========================================================================
-    // NS-032: Continuous refresh after failure — single failure window does
-    // not permanently disable refresh; keep trying at normal interval.
-    // =========================================================================
 
     #[test]
     #[verifies("rule_refresh_never_disabled_for_good", examples)]
@@ -884,7 +844,7 @@ mod tests {
 
         assert!(
             tracker.should_attempt_refresh(),
-            "NS-032: refresh must not be permanently disabled after a failure window"
+            "refresh must not be permanently disabled after a failure window"
         );
     }
 
@@ -905,7 +865,7 @@ mod tests {
         assert_eq!(tracker.consecutive_failures(), 0);
         assert!(
             tracker.should_attempt_refresh(),
-            "NS-032: after success, refresh must be fully enabled"
+            "after success, refresh must be fully enabled"
         );
     }
 
@@ -926,13 +886,9 @@ mod tests {
         assert_eq!(
             tracker.consecutive_failures(),
             0,
-            "NS-032: resetting retry window must clear failure count"
+            "resetting retry window must clear failure count"
         );
     }
-
-    // =========================================================================
-    // Edge cases discovered during Linus review.
-    // =========================================================================
 
     #[test]
     fn refresh_failure_preserves_child_never_kills_at_any_attempt() {
@@ -942,7 +898,7 @@ mod tests {
             let outcome = policy.on_refresh_failure(attempt, Duration::from_secs(3600));
             assert!(
                 !matches!(outcome.action, RefreshAction::KillChild),
-                "NS-008: attempt {} must never produce KillChild",
+                "attempt {} must never produce KillChild",
                 attempt
             );
         }

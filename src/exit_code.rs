@@ -1,13 +1,12 @@
-// NS-010: Provider error exit codes
-// NS-054: noscope exit code range (sysexits.h)
-// NS-055: Signal-terminated provider handling
-// NS-056: Multi-provider error reporting
+// Provider error exit codes
+// noscope exit code range (sysexits.h)
+// Signal-terminated provider handling
+// Multi-provider error reporting
 
 use provenance_macros::rule;
 use std::fmt;
 
-/// NS-010: Provider exit code protocol.
-///
+/// Provider exit code protocol.
 /// Providers MUST use these exit codes so noscope can give actionable feedback.
 /// 0=success, 1=general error, 2=auth failure, 3=role/scope not found,
 /// 4=provider unavailable/timeout.
@@ -26,7 +25,7 @@ pub enum ProviderExitCode {
 }
 
 impl ProviderExitCode {
-    /// Return the raw integer exit code per NS-010.
+    /// Return the raw integer exit code.
     pub fn as_raw(self) -> i32 {
         match self {
             Self::Success => 0,
@@ -68,8 +67,7 @@ impl fmt::Display for ProviderExitCode {
     }
 }
 
-/// NS-054: noscope's own exit codes, based on sysexits.h.
-///
+/// noscope's own exit codes, based on sysexits.h.
 /// When noscope itself fails (not the child), it uses these codes.
 /// When the child process ran, its exit code is passed through via `ChildExit`.
 /// `Success` is used when noscope completes without running a child (e.g.
@@ -92,7 +90,7 @@ pub enum NoscopeExitCode {
     Permission,
     /// 78 — Configuration error (malformed config).
     ConfigError,
-    /// 79 — Profile validation failed (NS-052).
+    /// 79 — Profile validation failed.
     ProfileValidation,
     /// Child process ran — pass through its exit code directly.
     ChildExit(i32),
@@ -133,8 +131,7 @@ impl fmt::Display for NoscopeExitCode {
     }
 }
 
-/// NS-055: Result of interpreting a raw provider exit status.
-///
+/// Result of interpreting a raw provider exit status.
 /// For signal-terminated providers (exit > 128), the exit code is mapped to
 /// `GeneralError` (1) and the signal number is extracted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,8 +145,7 @@ pub struct ProviderExitResult {
 
 impl ProviderExitResult {
     /// Format a message suitable for writing to stderr.
-    ///
-    /// NS-055: If signal-terminated, the message includes the signal number.
+    /// If signal-terminated, the message includes the signal number.
     pub fn stderr_message(&self) -> String {
         match self.signal_number {
             Some(sig) => format!(
@@ -175,8 +171,7 @@ impl fmt::Display for ProviderExitResult {
     }
 }
 
-/// NS-055: Interpret a raw provider exit code.
-///
+/// Interpret a raw provider exit code.
 /// - Known codes (0-4): mapped directly to `ProviderExitCode`.
 /// - Exit > 128: treated as signal-terminated, mapped to `GeneralError`,
 ///   signal number = raw - 128.
@@ -209,12 +204,6 @@ pub fn interpret_provider_exit(raw: i32) -> ProviderExitResult {
 mod tests {
     use super::*;
     use provenance_macros::verifies;
-
-    // =========================================================================
-    // NS-010: Provider error exit codes.
-    // 0=success, 1=general error, 2=auth failure, 3=role/scope not found,
-    // 4=provider unavailable/timeout.
-    // =========================================================================
 
     #[test]
     fn provider_exit_code_success_is_zero() {
@@ -279,13 +268,6 @@ mod tests {
         assert!(ProviderExitCode::RoleNotFound.is_error());
         assert!(ProviderExitCode::Unavailable.is_error());
     }
-
-    // =========================================================================
-    // NS-054: noscope exit code range — sysexits.h.
-    // 64=usage, 65=mint failure, 66=config not found, 69=unavailable,
-    // 70=internal, 77=permission, 78=config error.
-    // Child exit code used when child ran.
-    // =========================================================================
 
     #[test]
     fn noscope_exit_code_success_is_zero() {
@@ -404,12 +386,6 @@ mod tests {
             NoscopeExitCode::ChildExit(0).as_raw()
         );
     }
-
-    // =========================================================================
-    // NS-055: Signal-terminated provider handling.
-    // Exit >128 treated as exit 1 (general error), include signal number
-    // in stderr message.
-    // =========================================================================
 
     #[test]
     fn signal_terminated_provider_maps_to_general_error() {

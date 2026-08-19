@@ -1,5 +1,4 @@
-// NS-077: Typed machine-readable public error taxonomy
-//
+// Typed machine-readable public error taxonomy
 // Replace stringly, ad-hoc error aggregation with a typed top-level
 // error hierarchy that is ergonomic for humans and machine consumers (agents).
 
@@ -8,12 +7,7 @@ use std::fmt;
 use crate::exit_code::NoscopeExitCode;
 use provenance_macros::rule;
 
-// ---------------------------------------------------------------------------
-// ErrorKind — machine-readable error category
-// ---------------------------------------------------------------------------
-
 /// Machine-readable error category for programmatic consumers.
-///
 /// Each variant maps to a stable string tag via [`ErrorKind::as_str`] and
 /// a noscope exit code via the parent [`Error::exit_code`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,19 +59,13 @@ impl fmt::Display for ErrorKind {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Error — typed top-level error
-// ---------------------------------------------------------------------------
-
 /// Typed top-level error for the noscope public API.
-///
 /// Designed for both human and machine consumers:
 /// - [`Error::kind`] returns a machine-readable [`ErrorKind`].
 /// - [`Error::message`] returns the human-readable detail string.
 /// - [`Error::provider_name`] returns the provider name (if applicable).
 /// - [`Error::errors`] returns inner errors for multi-error cases.
-/// - [`Error::exit_code`] maps to a noscope exit code (NS-054).
-///
+/// - [`Error::exit_code`] maps to a noscope exit code.
 /// Multi-error cases (e.g. multiple provider failures) are represented
 /// via [`Error::multi`] without flattening into brittle strings.
 pub struct Error {
@@ -139,7 +127,6 @@ impl Error {
     }
 
     /// Create a multi-error aggregating multiple failures.
-    ///
     /// Multi-errors preserve individual error kinds, provider names, and
     /// messages — no flattening into a single string.
     pub fn multi(errors: Vec<Error>) -> Self {
@@ -180,7 +167,7 @@ impl Error {
         &self.inner
     }
 
-    /// Map this error to a process exit code (NS-054).
+    /// Map this error to a process exit code.
     pub fn exit_code(&self) -> i32 {
         // Multi-error: use MintFailure (65) since multi-errors represent
         // multi-provider failures.
@@ -243,10 +230,6 @@ impl std::error::Error for Error {
     }
 }
 
-// ---------------------------------------------------------------------------
-// From conversions for internal error types
-// ---------------------------------------------------------------------------
-
 impl From<crate::mint::MintError> for Error {
     fn from(e: crate::mint::MintError) -> Self {
         Self::usage(&format!("{}", e))
@@ -294,22 +277,6 @@ impl From<crate::config_path::ConfigPathError> for Error {
 #[cfg(test)]
 mod tests {
     use provenance_macros::verifies;
-    // =========================================================================
-    // NS-077: Typed machine-readable public error taxonomy.
-    //
-    // Acceptance criteria:
-    // 1. Public API returns typed errors with actionable categories.
-    // 2. Multi-error cases are representable without flattening into
-    //    brittle strings.
-    // 3. Existing exit-code mapping and logging behavior remains consistent.
-    // =========================================================================
-
-    // -------------------------------------------------------------------------
-    // Acceptance 1: Typed errors with actionable categories.
-    //
-    // Each variant carries structured fields (not just a String) so machine
-    // consumers can programmatically inspect the error without parsing text.
-    // -------------------------------------------------------------------------
 
     #[test]
     fn typed_error_taxonomy_has_usage_variant() {
@@ -389,13 +356,6 @@ mod tests {
         let err = super::Error::usage("missing --ttl flag");
         assert_eq!(err.message(), "missing --ttl flag");
     }
-
-    // -------------------------------------------------------------------------
-    // Acceptance 2: Multi-error cases are representable.
-    //
-    // When multiple providers fail, the errors are collected in a Vec,
-    // not flattened into a single string.
-    // -------------------------------------------------------------------------
 
     #[test]
     fn typed_error_taxonomy_multi_error_holds_multiple_errors() {
@@ -481,12 +441,6 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // Acceptance 3: Existing exit-code mapping remains consistent.
-    //
-    // Each error kind maps to the same exit codes as the old NoscopeError.
-    // -------------------------------------------------------------------------
-
     #[test]
     fn typed_error_taxonomy_usage_exit_code_is_64() {
         let err = super::Error::usage("bad flag");
@@ -537,13 +491,6 @@ mod tests {
         assert_eq!(multi.exit_code(), 65);
     }
 
-    // -------------------------------------------------------------------------
-    // Display and Debug safety.
-    //
-    // Display messages must be stable for humans.
-    // Debug must not leak secrets.
-    // -------------------------------------------------------------------------
-
     #[test]
     fn typed_error_taxonomy_display_is_human_readable() {
         let err = super::Error::usage("missing --ttl flag");
@@ -590,10 +537,6 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // std::error::Error impl.
-    // -------------------------------------------------------------------------
-
     #[test]
     fn typed_error_taxonomy_implements_std_error() {
         fn assert_error<T: std::error::Error>() {}
@@ -609,13 +552,6 @@ mod tests {
     fn typed_error_taxonomy_is_sync() {
         static_assertions::assert_impl_all!(super::Error: Sync);
     }
-
-    // -------------------------------------------------------------------------
-    // From conversions from existing error types.
-    //
-    // The new Error type must accept conversions from all existing module
-    // error types so callers can use `?` seamlessly.
-    // -------------------------------------------------------------------------
 
     #[test]
     fn typed_error_taxonomy_from_mint_error() {
@@ -689,10 +625,6 @@ mod tests {
         assert!(matches!(err.kind(), super::ErrorKind::Provider));
     }
 
-    // -------------------------------------------------------------------------
-    // ErrorKind string representation for machine consumers.
-    // -------------------------------------------------------------------------
-
     #[test]
     fn typed_error_taxonomy_kind_as_str() {
         // Machine consumers should be able to get a stable string tag.
@@ -704,10 +636,6 @@ mod tests {
         assert_eq!(super::ErrorKind::Internal.as_str(), "internal");
     }
 
-    // -------------------------------------------------------------------------
-    // ErrorKind: PartialEq, Eq, Clone, Copy for convenience.
-    // -------------------------------------------------------------------------
-
     #[test]
     fn typed_error_taxonomy_kind_is_eq_comparable() {
         assert_eq!(super::ErrorKind::Usage, super::ErrorKind::Usage);
@@ -718,10 +646,6 @@ mod tests {
     fn typed_error_taxonomy_kind_is_copy() {
         static_assertions::assert_impl_all!(super::ErrorKind: Copy);
     }
-
-    // -------------------------------------------------------------------------
-    // Source chaining: Error can carry a source error.
-    // -------------------------------------------------------------------------
 
     #[test]
     fn typed_error_taxonomy_source_chaining() {

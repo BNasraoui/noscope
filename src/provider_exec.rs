@@ -1,14 +1,14 @@
-// NS-009: Provider output contract
-// NS-033: Template variable injection prevention
-// NS-034: Missing expires_at computed from requested TTL
-// NS-035: Provider command execution timeout
-// NS-036: Provider stdout size limit
-// NS-037: TTL format is integer seconds for providers
-// NS-038: Revoke command receives token via env var
-// NS-039: Refresh command receives token via env var
-// NS-040: Provider stderr handling
-// NS-041: Provider capability declaration
-// NS-068: Provider command environment sandboxing
+// Provider output contract
+// Template variable injection prevention
+// Missing expires_at computed from requested TTL
+// Provider command execution timeout
+// Provider stdout size limit
+// TTL format is integer seconds for providers
+// Revoke command receives token via env var
+// Refresh command receives token via env var
+// Provider stderr handling
+// Provider capability declaration
+// Provider command environment sandboxing
 
 use std::collections::HashMap;
 use std::fmt;
@@ -20,25 +20,24 @@ use zeroize::Zeroize;
 use crate::exit_code::{interpret_provider_exit, ProviderExitResult};
 use provenance_macros::rule;
 
-/// NS-036: Maximum provider stdout size in bytes (1 MiB).
+/// Maximum provider stdout size in bytes (1 MiB).
 pub const MAX_STDOUT_BYTES: usize = 1024 * 1024;
 
-/// NS-040: Maximum stderr bytes captured on failure.
+/// Maximum stderr bytes captured on failure.
 pub const MAX_STDERR_CAPTURE_BYTES: usize = 4096;
 
-/// NS-009 + NS-034: Parsed provider command output.
-///
+/// Parsed provider command output.
 /// Contains the token value and expiry time. If the provider did not
 /// supply `expires_at`, it is computed from the requested TTL and
 /// `expires_at_provided` is `false` (the caller should emit a warning
-/// per NS-034).
+///).
 pub struct ProviderOutput {
     /// The raw token string from the provider.
     pub token: String,
     /// The expiry time — either from the provider or computed from TTL.
     pub expires_at: DateTime<Utc>,
     /// Whether the provider explicitly supplied `expires_at`.
-    /// `false` means it was computed from `now() + requested_ttl` (NS-034).
+    /// `false` means it was computed from `now() + requested_ttl`.
     pub expires_at_provided: bool,
 }
 
@@ -53,7 +52,7 @@ impl fmt::Debug for ProviderOutput {
     }
 }
 
-// NS-019: Zeroize the raw token value on drop, matching MintEnvelope pattern.
+// Zeroize the raw token value on drop, matching MintEnvelope pattern.
 // ProviderOutput is a transient parsing result, but the token lives in memory
 // until this struct is dropped.
 impl Drop for ProviderOutput {
@@ -65,15 +64,15 @@ impl Drop for ProviderOutput {
 /// Error type for provider command execution.
 #[derive(Debug)]
 pub enum ProviderExecError {
-    /// NS-009: Provider output violated the JSON contract.
+    /// Provider output violated the JSON contract.
     OutputContract { message: String },
-    /// NS-035: Provider command timed out.
+    /// Provider command timed out.
     Timeout { timeout: Duration },
-    /// NS-036: Provider stdout exceeded size limit.
+    /// Provider stdout exceeded size limit.
     StdoutTooLarge { size: usize, limit: usize },
-    /// NS-033: Invalid role string.
+    /// Invalid role string.
     InvalidRole { role: String, reason: String },
-    /// NS-041: Capability/config inconsistency.
+    /// Capability/config inconsistency.
     CapabilityMismatch { message: String },
     /// Config parsing error (not a provider output issue).
     ConfigParse { message: String },
@@ -81,8 +80,7 @@ pub enum ProviderExecError {
 
 impl ProviderExecError {
     /// Map this error to a provider exit code.
-    ///
-    /// NS-035: Timeout is treated as exit code 4 (Unavailable).
+    /// Timeout is treated as exit code 4 (Unavailable).
     pub fn as_provider_exit_code(&self) -> i32 {
         match self {
             Self::Timeout { .. } => 4,
@@ -122,11 +120,11 @@ impl fmt::Display for ProviderExecError {
 
 impl std::error::Error for ProviderExecError {}
 
-/// NS-035: Configuration for provider command execution.
+/// Configuration for provider command execution.
 pub struct ExecConfig {
-    /// NS-035: Command timeout (default 30s).
+    /// Command timeout (default 30s).
     pub timeout: Duration,
-    /// NS-035: Grace period after SIGTERM before SIGKILL (default 5s).
+    /// Grace period after SIGTERM before SIGKILL (default 5s).
     pub kill_grace_period: Duration,
 }
 
@@ -139,24 +137,23 @@ impl Default for ExecConfig {
     }
 }
 
-/// NS-041: Provider capability declaration.
-///
+/// Provider capability declaration.
 /// Owned by crate::provider so capability parsing/validation shares the same
 /// parsing flow as provider config.
 pub type ProviderCapabilities = crate::provider::ProviderCapabilities;
 
-/// NS-040: Policy for handling provider stderr.
+/// Policy for handling provider stderr.
 pub struct StderrPolicy {
     discard: bool,
 }
 
 impl StderrPolicy {
-    /// NS-040: On success, discard stderr unless verbose.
+    /// On success, discard stderr unless verbose.
     pub fn on_success(verbose: bool) -> Self {
         Self { discard: !verbose }
     }
 
-    /// NS-040: On failure, always capture stderr.
+    /// On failure, always capture stderr.
     pub fn on_failure() -> Self {
         Self { discard: false }
     }
@@ -167,15 +164,10 @@ impl StderrPolicy {
     }
 }
 
-// ---------------------------------------------------------------------------
-// NS-009 + NS-034: Parse provider JSON output
-// ---------------------------------------------------------------------------
-
-/// NS-009: Parse provider command stdout as JSON.
-///
+/// Parse provider command stdout as JSON.
 /// Extracts `token` (required, string) and `expires_at` (optional, ISO 8601).
 /// If `expires_at` is absent, computes `now() + requested_ttl_secs` and sets
-/// `expires_at_provided = false` so the caller can emit the NS-034 warning.
+/// `expires_at_provided = false` so the caller can emit warning.
 #[rule("rule_exec_expiry_fallback")]
 #[rule("rule_exec_output_token_contract")]
 pub fn parse_provider_output(
@@ -187,7 +179,7 @@ pub fn parse_provider_output(
             message: format!("invalid JSON: {}", e),
         })?;
 
-    // NS-009: 'token' is required and must be a non-empty string.
+    // 'token' is required and must be a non-empty string.
     let token = parsed
         .get("token")
         .and_then(|v| v.as_str())
@@ -201,7 +193,7 @@ pub fn parse_provider_output(
         });
     }
 
-    // NS-009 + NS-034: 'expires_at' is optional.
+    // 'expires_at' is optional.
     let (expires_at, provided) = match parsed.get("expires_at").and_then(|v| v.as_str()) {
         Some(s) => {
             let dt: DateTime<Utc> = s.parse().map_err(|e| ProviderExecError::OutputContract {
@@ -210,7 +202,7 @@ pub fn parse_provider_output(
             (dt, true)
         }
         None => {
-            // NS-034: Compute from requested TTL.
+            // Compute from requested TTL.
             let dt = Utc::now() + chrono::Duration::seconds(requested_ttl_secs as i64);
             (dt, false)
         }
@@ -223,12 +215,7 @@ pub fn parse_provider_output(
     })
 }
 
-// ---------------------------------------------------------------------------
-// NS-033: Role validation and template variable substitution
-// ---------------------------------------------------------------------------
-
-/// NS-033: Validate that a role string contains only safe characters.
-///
+/// Validate that a role string contains only safe characters.
 /// Allowed: alphanumeric, hyphens, underscores, dots.
 /// Rejected: empty string, spaces, shell metacharacters, slashes, etc.
 #[rule("rule_role_charset")]
@@ -255,8 +242,7 @@ pub fn validate_role(role: &str) -> Result<(), ProviderExecError> {
     Ok(())
 }
 
-/// NS-033 + NS-037: Substitute template variables in an argv array.
-///
+/// Substitute template variables in an argv array.
 /// Replaces `{role}` with the role string and `{ttl}` with TTL as integer
 /// seconds. This is pure string replacement on each element of the array —
 /// no shell is involved.
@@ -269,11 +255,7 @@ pub fn substitute_template_vars(template: &[String], role: &str, ttl_secs: u64) 
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// NS-036: Stdout size limit
-// ---------------------------------------------------------------------------
-
-/// NS-036: Check that provider stdout does not exceed 1 MiB.
+/// Check that provider stdout does not exceed 1 MiB.
 #[rule("rule_exec_stdout_1mib_cap")]
 pub fn check_stdout_size_limit(size: usize) -> Result<(), ProviderExecError> {
     if size > MAX_STDOUT_BYTES {
@@ -285,16 +267,11 @@ pub fn check_stdout_size_limit(size: usize) -> Result<(), ProviderExecError> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// NS-038: Revoke command environment variables
-// ---------------------------------------------------------------------------
-
-/// NS-038: Build environment variables for a revoke command.
-///
+/// Build environment variables for a revoke command.
 /// Sets NOSCOPE_TOKEN_ID only. Revocation addresses a lease by
 /// identifier; the credential value is never passed to a revoke command
 /// (res_revoke_contract_identifier_only). Does NOT set NOSCOPE_TTL
-/// (that's only for refresh per NS-039).
+/// (that's only for refresh).
 #[rule("rule_revoke_identifier_only")]
 pub fn build_revoke_env(token_id: &str) -> HashMap<String, String> {
     let mut env = HashMap::new();
@@ -302,20 +279,14 @@ pub fn build_revoke_env(token_id: &str) -> HashMap<String, String> {
     env
 }
 
-/// NS-038: Check if a revoke command exit code indicates success.
-///
+/// Check if a revoke command exit code indicates success.
 /// Exit 0 is success, including the case where the token was already revoked.
 #[rule("rule_cross_revoke_idempotent_exit0")]
 pub fn is_revoke_success(exit_code: i32) -> bool {
     exit_code == 0
 }
 
-// ---------------------------------------------------------------------------
-// NS-039: Refresh command environment variables
-// ---------------------------------------------------------------------------
-
-/// NS-039: Build environment variables for a refresh command.
-///
+/// Build environment variables for a refresh command.
 /// Sets NOSCOPE_TOKEN, NOSCOPE_TOKEN_ID, and NOSCOPE_TTL (integer seconds).
 pub fn build_refresh_env(token: &str, token_id: &str, ttl_secs: u64) -> HashMap<String, String> {
     let mut env = HashMap::new();
@@ -325,12 +296,7 @@ pub fn build_refresh_env(token: &str, token_id: &str, ttl_secs: u64) -> HashMap<
     env
 }
 
-// ---------------------------------------------------------------------------
-// NS-040: Provider stderr handling
-// ---------------------------------------------------------------------------
-
-/// NS-040: Capture stderr up to the size limit.
-///
+/// Capture stderr up to the size limit.
 /// Truncates to `MAX_STDERR_CAPTURE_BYTES` (4096 bytes).
 #[rule("rule_exec_stderr_truncate")]
 pub fn capture_stderr(stderr: &str) -> &str {
@@ -346,8 +312,7 @@ pub fn capture_stderr(stderr: &str) -> &str {
     }
 }
 
-/// NS-040: Redact known token values from stderr.
-///
+/// Redact known token values from stderr.
 /// Replaces each occurrence of a known token with `[redacted]`.
 #[rule("rule_exec_stderr_redaction")]
 pub fn redact_stderr(stderr: &str, known_tokens: &[&str]) -> String {
@@ -360,12 +325,7 @@ pub fn redact_stderr(stderr: &str, known_tokens: &[&str]) -> String {
     result
 }
 
-// ---------------------------------------------------------------------------
-// NS-041: Provider capability declaration
-// ---------------------------------------------------------------------------
-
-/// NS-041: Parse capability booleans from provider TOML content.
-///
+/// Parse capability booleans from provider TOML content.
 /// Looks for top-level `supports_refresh` and `supports_revoke` booleans.
 /// Defaults to `false` if absent.
 pub fn parse_capabilities_from_toml(
@@ -379,9 +339,8 @@ pub fn parse_capabilities_from_toml(
     Ok(parsed.capabilities)
 }
 
-/// NS-041: Validate that capability declarations are consistent with
+/// Validate that capability declarations are consistent with
 /// configured commands.
-///
 /// If `supports_refresh` is true, a refresh command must be present.
 /// If `supports_revoke` is true, a revoke command must be present.
 pub fn validate_capabilities(
@@ -396,12 +355,7 @@ pub fn validate_capabilities(
     )
 }
 
-// ---------------------------------------------------------------------------
-// NS-068: Provider command environment sandboxing
-// ---------------------------------------------------------------------------
-
-/// NS-068: Build a minimal sandboxed environment for provider commands.
-///
+/// Build a minimal sandboxed environment for provider commands.
 /// Contains only PATH, HOME, and LANG from the current environment.
 /// All other environment variables are excluded.
 pub fn build_sandboxed_env() -> HashMap<String, String> {
@@ -419,12 +373,7 @@ pub fn build_sandboxed_env() -> HashMap<String, String> {
     env
 }
 
-// ---------------------------------------------------------------------------
-// noscope-6a9: Provider command execution engine
-// ---------------------------------------------------------------------------
-
 /// Result of executing a provider command.
-///
 /// Contains all outputs from the subprocess: stdout, stderr, exit code,
 /// parsed output (if applicable), and whether the command timed out.
 #[derive(Debug)]
@@ -432,35 +381,26 @@ pub struct ProviderExecResult {
     /// Raw stdout from the provider command.
     pub stdout: String,
     /// Captured stderr, truncated to [`MAX_STDERR_CAPTURE_BYTES`] and
-    /// redacted of known token values (NS-040).
+    /// redacted of known token values.
     pub stderr: String,
-    /// Interpreted exit code (NS-010).
+    /// Interpreted exit code.
     pub exit_result: ProviderExitResult,
     /// Parsed provider output. `Ok` on exit 0 with valid JSON,
     /// `Err` for timeout, oversized stdout, or parse failure.
     pub parsed_output: Result<ProviderOutput, ProviderExecError>,
-    /// Whether the command was killed due to timeout (NS-035).
+    /// Whether the command was killed due to timeout.
     pub timed_out: bool,
 }
 
 /// Execute a provider command in a sandboxed environment.
-///
 /// This is the core execution engine that ties together all policy building
 /// blocks:
-/// - **NS-068**: Subprocess runs with [`build_sandboxed_env()`] as its base env.
-/// - **NS-036**: Stdout is checked against [`MAX_STDOUT_BYTES`].
-/// - **NS-040**: Stderr is truncated, token values are redacted.
-/// - **NS-035**: Timeout enforced via SIGTERM then SIGKILL after grace period.
-/// - **NS-009**: Stdout parsed through [`parse_provider_output()`].
-/// - **NS-010**: Exit code mapped through [`interpret_provider_exit()`].
-///
 /// # Arguments
 /// - `argv`: Command and arguments (no shell involved).
 /// - `extra_env`: Additional environment variables (e.g. NOSCOPE_TOKEN) merged
 ///   on top of the sandboxed base env.
 /// - `config`: Execution configuration (timeout, grace period).
-/// - `requested_ttl_secs`: TTL passed to [`parse_provider_output()`] for NS-034.
-///
+/// - `requested_ttl_secs`: TTL used to compute expiry when the provider omits it.
 /// # Returns
 /// - `Ok(ProviderExecResult)` with all execution results.
 /// - `Err(std::io::Error)` if the command could not be spawned.
@@ -478,13 +418,13 @@ pub async fn execute_provider_command(
         ));
     }
 
-    // NS-068: Build sandboxed environment, then overlay extra vars.
+    // Build sandboxed environment, then overlay extra vars.
     let mut env = build_sandboxed_env();
     for (k, v) in extra_env {
         env.insert(k.clone(), v.clone());
     }
 
-    // Collect known token values for stderr redaction (NS-040).
+    // Collect known token values for stderr redaction.
     let known_tokens: Vec<String> = extra_env
         .iter()
         .filter(|(k, _)| k.starts_with("NOSCOPE_TOKEN"))
@@ -496,11 +436,11 @@ pub async fn execute_provider_command(
     if argv.len() > 1 {
         cmd.args(&argv[1..]);
     }
-    // If the caller's future is dropped (e.g. the orchestrator's NS-046
+    // If the caller's future is dropped (e.g. the orchestrator's
     // per-provider timeout fires), the provider must not keep running and
     // mint a credential nobody ever sees.
     cmd.kill_on_drop(true);
-    // NS-035: the provider leads its own process group so that timeout
+    // the provider leads its own process group so that timeout
     // escalation reaches every process the provider spawned, not only the
     // direct child. Without this a `sh -c '... ; sleep'` provider leaves
     // an orphan holding the output pipes after SIGKILL.
@@ -545,7 +485,7 @@ pub async fn execute_provider_command(
         buf
     });
 
-    // NS-035: Enforce timeout with SIGTERM then SIGKILL escalation.
+    // Enforce timeout with SIGTERM then SIGKILL escalation.
     let timed_out;
     let wait_result = tokio::time::timeout(config.timeout, child.wait()).await;
 
@@ -580,15 +520,15 @@ pub async fn execute_provider_command(
     let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
     let raw_stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
 
-    // NS-040: Capture stderr (truncate), then redact known tokens.
+    // Capture stderr (truncate), then redact known tokens.
     let captured = capture_stderr(&raw_stderr);
     let token_refs: Vec<&str> = known_tokens.iter().map(|s| s.as_str()).collect();
     let stderr = redact_stderr(captured, &token_refs);
 
-    // NS-010: Map exit code through interpret_provider_exit().
+    // Map exit code through interpret_provider_exit().
     let raw_exit = exit_status.code().unwrap_or(1);
     let exit_result = if timed_out {
-        // NS-035: Timeout is treated as exit 4 (Unavailable).
+        // Timeout is treated as exit 4 (Unavailable).
         interpret_provider_exit(4)
     } else {
         interpret_provider_exit(raw_exit)
@@ -600,11 +540,11 @@ pub async fn execute_provider_command(
             timeout: config.timeout,
         })
     } else {
-        // NS-036: Check stdout size limit first.
+        // Check stdout size limit first.
         match check_stdout_size_limit(stdout.len()) {
             Err(e) => Err(e),
             Ok(()) => {
-                // NS-009: Parse output only on exit 0.
+                // Parse output only on exit 0.
                 if raw_exit == 0 {
                     parse_provider_output(&stdout, requested_ttl_secs)
                 } else {
@@ -629,11 +569,9 @@ pub async fn execute_provider_command(
 }
 
 /// Send a Unix signal to a provider's whole process group.
-///
 /// The provider was made a process-group leader at spawn, so a negative
 /// pid targets the group per POSIX and the signal reaches every process
-/// the provider started (NS-035).
-///
+/// the provider started.
 /// Best-effort: if the process has already exited, the signal is silently ignored.
 fn send_signal(child: &tokio::process::Child, signal: libc::c_int) {
     if let Some(pid) = child.id() {
@@ -649,11 +587,6 @@ mod tests {
     use provenance_macros::verifies;
     use std::time::Duration;
 
-    // =========================================================================
-    // NS-009: Provider output contract — JSON with 'token' (required) and
-    // 'expires_at' (optional ISO 8601).
-    // =========================================================================
-
     #[test]
     #[verifies("rule_exec_output_token_contract", examples)]
     fn provider_output_contract_parses_valid_json_with_token_and_expires_at() {
@@ -661,7 +594,7 @@ mod tests {
         let result = super::parse_provider_output(json, 3600);
         assert!(
             result.is_ok(),
-            "NS-009: valid JSON with token and expires_at must parse, got: {:?}",
+            "valid JSON with token and expires_at must parse, got: {:?}",
             result
         );
         let output = result.unwrap();
@@ -676,10 +609,7 @@ mod tests {
     fn provider_output_contract_token_is_required() {
         let json = r#"{"expires_at": "2026-03-30T12:00:00Z"}"#;
         let result = super::parse_provider_output(json, 3600);
-        assert!(
-            result.is_err(),
-            "NS-009: JSON without 'token' must be rejected"
-        );
+        assert!(result.is_err(), "JSON without 'token' must be rejected");
         let err = result.unwrap_err();
         let msg = format!("{}", err);
         assert!(
@@ -693,30 +623,24 @@ mod tests {
     fn provider_output_contract_empty_token_is_rejected() {
         let json = r#"{"token": ""}"#;
         let result = super::parse_provider_output(json, 3600);
-        assert!(
-            result.is_err(),
-            "NS-009: empty 'token' value must be rejected"
-        );
+        assert!(result.is_err(), "empty 'token' value must be rejected");
     }
 
     #[test]
     fn provider_output_contract_token_must_be_string() {
         let json = r#"{"token": 12345}"#;
         let result = super::parse_provider_output(json, 3600);
-        assert!(
-            result.is_err(),
-            "NS-009: non-string 'token' must be rejected"
-        );
+        assert!(result.is_err(), "non-string 'token' must be rejected");
     }
 
     #[test]
     fn provider_output_contract_expires_at_is_optional() {
-        // NS-009 says expires_at is optional; NS-034 governs the fallback.
+        // says expires_at is optional; governs the fallback.
         let json = r#"{"token": "my-secret-token-123"}"#;
         let result = super::parse_provider_output(json, 3600);
         assert!(
             result.is_ok(),
-            "NS-009: JSON without expires_at must be accepted, got: {:?}",
+            "JSON without expires_at must be accepted, got: {:?}",
             result
         );
         let output = result.unwrap();
@@ -732,14 +656,14 @@ mod tests {
         let result = super::parse_provider_output(json, 3600);
         assert!(
             result.is_err(),
-            "NS-009: invalid ISO 8601 expires_at must be rejected"
+            "invalid ISO 8601 expires_at must be rejected"
         );
     }
 
     #[test]
     fn provider_output_contract_rejects_invalid_json() {
         let result = super::parse_provider_output("not json {{{", 3600);
-        assert!(result.is_err(), "NS-009: invalid JSON must be rejected");
+        assert!(result.is_err(), "invalid JSON must be rejected");
     }
 
     #[test]
@@ -747,13 +671,8 @@ mod tests {
         // Provider may include extra fields; noscope ignores them.
         let json = r#"{"token": "tok", "expires_at": "2026-03-30T12:00:00Z", "extra": "ignored"}"#;
         let result = super::parse_provider_output(json, 3600);
-        assert!(result.is_ok(), "NS-009: extra fields should be ignored");
+        assert!(result.is_ok(), "extra fields should be ignored");
     }
-
-    // =========================================================================
-    // NS-033: Template variable injection prevention — argv array substitution,
-    // never shell; role validated alphanumeric+hyphens+underscores+dots.
-    // =========================================================================
 
     #[test]
     fn template_variable_injection_prevention_role_valid_alphanumeric() {
@@ -769,19 +688,19 @@ mod tests {
     fn template_variable_injection_prevention_role_rejects_shell_metacharacters() {
         assert!(
             super::validate_role("admin; rm -rf /").is_err(),
-            "NS-033: role with semicolon must be rejected"
+            "role with semicolon must be rejected"
         );
         assert!(
             super::validate_role("admin$(whoami)").is_err(),
-            "NS-033: role with command substitution must be rejected"
+            "role with command substitution must be rejected"
         );
         assert!(
             super::validate_role("admin`whoami`").is_err(),
-            "NS-033: role with backtick must be rejected"
+            "role with backtick must be rejected"
         );
         assert!(
             super::validate_role("admin|cat /etc/passwd").is_err(),
-            "NS-033: role with pipe must be rejected"
+            "role with pipe must be rejected"
         );
     }
 
@@ -789,7 +708,7 @@ mod tests {
     fn template_variable_injection_prevention_role_rejects_empty() {
         assert!(
             super::validate_role("").is_err(),
-            "NS-033: empty role must be rejected"
+            "empty role must be rejected"
         );
     }
 
@@ -797,7 +716,7 @@ mod tests {
     fn template_variable_injection_prevention_role_rejects_spaces() {
         assert!(
             super::validate_role("admin user").is_err(),
-            "NS-033: role with spaces must be rejected"
+            "role with spaces must be rejected"
         );
     }
 
@@ -805,11 +724,11 @@ mod tests {
     fn template_variable_injection_prevention_role_rejects_slashes() {
         assert!(
             super::validate_role("admin/subdir").is_err(),
-            "NS-033: role with forward slash must be rejected"
+            "role with forward slash must be rejected"
         );
         assert!(
             super::validate_role("admin\\subdir").is_err(),
-            "NS-033: role with backslash must be rejected"
+            "role with backslash must be rejected"
         );
     }
 
@@ -863,11 +782,6 @@ mod tests {
         assert_eq!(result[1], "7200");
     }
 
-    // =========================================================================
-    // NS-034: Missing expires_at computed from requested TTL — now() +
-    // requested_ttl with warning.
-    // =========================================================================
-
     #[test]
     #[verifies("rule_exec_expiry_fallback", examples)]
     fn missing_expires_at_computed_from_requested_ttl() {
@@ -876,16 +790,13 @@ mod tests {
         let result = super::parse_provider_output(json, 3600).unwrap();
         let after = chrono::Utc::now();
 
-        assert!(
-            !result.expires_at_provided,
-            "NS-034: expires_at was not provided"
-        );
+        assert!(!result.expires_at_provided, "expires_at was not provided");
         // The computed expires_at should be approximately now + 3600s
         let expected_min = before + chrono::Duration::seconds(3600);
         let expected_max = after + chrono::Duration::seconds(3600);
         assert!(
             result.expires_at >= expected_min && result.expires_at <= expected_max,
-            "NS-034: computed expires_at should be now + requested_ttl, got: {:?}, expected between {:?} and {:?}",
+            "computed expires_at should be now + requested_ttl, got: {:?}, expected between {:?} and {:?}",
             result.expires_at,
             expected_min,
             expected_max
@@ -898,7 +809,7 @@ mod tests {
         let result = super::parse_provider_output(json, 3600).unwrap();
         assert!(
             !result.expires_at_provided,
-            "NS-034: expires_at was not provided, warning should be generated"
+            "expires_at was not provided, warning should be generated"
         );
         // The caller checks expires_at_provided to emit the warning.
     }
@@ -911,14 +822,9 @@ mod tests {
         assert_eq!(
             result.expires_at.year(),
             2099,
-            "NS-034: provided expires_at must be used as-is"
+            "provided expires_at must be used as-is"
         );
     }
-
-    // =========================================================================
-    // NS-035: Provider command execution timeout — default 30s, SIGTERM then
-    // SIGKILL after 5s, treat as exit 4.
-    // =========================================================================
 
     #[test]
     fn provider_command_execution_timeout_default_is_30_seconds() {
@@ -926,7 +832,7 @@ mod tests {
         assert_eq!(
             config.timeout,
             Duration::from_secs(30),
-            "NS-035: default provider command timeout must be 30s"
+            "default provider command timeout must be 30s"
         );
     }
 
@@ -936,7 +842,7 @@ mod tests {
         assert_eq!(
             config.kill_grace_period,
             Duration::from_secs(5),
-            "NS-035: SIGKILL grace period after SIGTERM must be 5s"
+            "SIGKILL grace period after SIGTERM must be 5s"
         );
     }
 
@@ -949,20 +855,16 @@ mod tests {
         assert_eq!(
             result.as_provider_exit_code(),
             4,
-            "NS-035: timeout must be treated as exit code 4 (unavailable)"
+            "timeout must be treated as exit code 4 (unavailable)"
         );
     }
-
-    // =========================================================================
-    // NS-036: Provider stdout size limit — reject output exceeding 1 MiB.
-    // =========================================================================
 
     #[test]
     fn provider_stdout_size_limit_accepts_small_output() {
         let small = "x".repeat(1024); // 1 KiB
         assert!(
             super::check_stdout_size_limit(small.len()).is_ok(),
-            "NS-036: 1 KiB output must be accepted"
+            "1 KiB output must be accepted"
         );
     }
 
@@ -971,7 +873,7 @@ mod tests {
         let exactly_1_mib = 1024 * 1024;
         assert!(
             super::check_stdout_size_limit(exactly_1_mib).is_ok(),
-            "NS-036: exactly 1 MiB output must be accepted"
+            "exactly 1 MiB output must be accepted"
         );
     }
 
@@ -981,7 +883,7 @@ mod tests {
         let over_1_mib = (1024 * 1024) + 1;
         assert!(
             super::check_stdout_size_limit(over_1_mib).is_err(),
-            "NS-036: output exceeding 1 MiB must be rejected"
+            "output exceeding 1 MiB must be rejected"
         );
     }
 
@@ -990,14 +892,9 @@ mod tests {
         assert_eq!(
             super::MAX_STDOUT_BYTES,
             1024 * 1024,
-            "NS-036: stdout size limit must be exactly 1 MiB"
+            "stdout size limit must be exactly 1 MiB"
         );
     }
-
-    // =========================================================================
-    // NS-037: TTL format is integer seconds for providers — human durations
-    // are CLI concern only.
-    // =========================================================================
 
     #[test]
     fn ttl_format_is_integer_seconds_for_providers() {
@@ -1006,7 +903,7 @@ mod tests {
         let result = super::substitute_template_vars(&template, "role", 3600);
         assert_eq!(
             result[1], "3600",
-            "NS-037: TTL must be formatted as integer seconds string"
+            "TTL must be formatted as integer seconds string"
         );
     }
 
@@ -1017,17 +914,11 @@ mod tests {
         // Must be "7200", not "2h" or "120m" or anything else
         assert!(
             result[1].parse::<u64>().is_ok(),
-            "NS-037: TTL must be a pure integer string, got: {}",
+            "TTL must be a pure integer string, got: {}",
             result[1]
         );
         assert_eq!(result[1], "7200");
     }
-
-    // =========================================================================
-    // NS-038: Revoke command receives the lease identifier via env var —
-    // NOSCOPE_TOKEN_ID only (res_revoke_contract_identifier_only);
-    // exit 0 for already-revoked.
-    // =========================================================================
 
     #[test]
     fn revoke_command_env_vars_include_noscope_token_id() {
@@ -1035,7 +926,7 @@ mod tests {
         assert_eq!(
             env.get("NOSCOPE_TOKEN_ID").map(|s| s.as_str()),
             Some("tok-abc"),
-            "NS-038: revoke env must include NOSCOPE_TOKEN_ID"
+            "revoke env must include NOSCOPE_TOKEN_ID"
         );
     }
 
@@ -1049,7 +940,7 @@ mod tests {
         );
         assert!(
             !env.contains_key("NOSCOPE_TTL"),
-            "NS-038: revoke must NOT include NOSCOPE_TTL"
+            "revoke must NOT include NOSCOPE_TTL"
         );
         assert_eq!(env.len(), 1, "identifier is the whole revoke contract");
     }
@@ -1062,7 +953,7 @@ mod tests {
         // This tests the interpret function recognizes this pattern.
         assert!(
             super::is_revoke_success(0),
-            "NS-038: exit 0 from revoke must be treated as success (including already-revoked)"
+            "exit 0 from revoke must be treated as success (including already-revoked)"
         );
     }
 
@@ -1070,14 +961,9 @@ mod tests {
     fn revoke_command_non_zero_exit_is_failure() {
         assert!(
             !super::is_revoke_success(1),
-            "NS-038: exit 1 from revoke is failure"
+            "exit 1 from revoke is failure"
         );
     }
-
-    // =========================================================================
-    // NS-039: Refresh command receives token via env var — NOSCOPE_TOKEN,
-    // NOSCOPE_TOKEN_ID, NOSCOPE_TTL; same JSON output as mint.
-    // =========================================================================
 
     #[test]
     fn refresh_command_env_vars_include_noscope_token() {
@@ -1085,7 +971,7 @@ mod tests {
         assert_eq!(
             env.get("NOSCOPE_TOKEN").map(|s| s.as_str()),
             Some("secret-token"),
-            "NS-039: refresh env must include NOSCOPE_TOKEN"
+            "refresh env must include NOSCOPE_TOKEN"
         );
     }
 
@@ -1095,7 +981,7 @@ mod tests {
         assert_eq!(
             env.get("NOSCOPE_TOKEN_ID").map(|s| s.as_str()),
             Some("tok-id-123"),
-            "NS-039: refresh env must include NOSCOPE_TOKEN_ID"
+            "refresh env must include NOSCOPE_TOKEN_ID"
         );
     }
 
@@ -1105,7 +991,7 @@ mod tests {
         assert_eq!(
             env.get("NOSCOPE_TTL").map(|s| s.as_str()),
             Some("7200"),
-            "NS-039: refresh env must include NOSCOPE_TTL as integer seconds"
+            "refresh env must include NOSCOPE_TTL as integer seconds"
         );
     }
 
@@ -1119,28 +1005,23 @@ mod tests {
 
     #[test]
     fn refresh_command_output_same_contract_as_mint() {
-        // NS-039: refresh output uses same JSON format as mint
+        // refresh output uses same JSON format as mint
         let json = r#"{"token": "refreshed-token", "expires_at": "2026-12-31T23:59:59Z"}"#;
         let result = super::parse_provider_output(json, 3600);
         assert!(
             result.is_ok(),
-            "NS-039: refresh output must parse with same contract as mint"
+            "refresh output must parse with same contract as mint"
         );
         let output = result.unwrap();
         assert_eq!(output.token, "refreshed-token");
     }
-
-    // =========================================================================
-    // NS-040: Provider stderr handling — capture 4096 bytes on failure,
-    // discard on success unless --verbose, redact tokens.
-    // =========================================================================
 
     #[test]
     fn provider_stderr_handling_capture_limit_is_4096_bytes() {
         assert_eq!(
             super::MAX_STDERR_CAPTURE_BYTES,
             4096,
-            "NS-040: stderr capture limit must be 4096 bytes"
+            "stderr capture limit must be 4096 bytes"
         );
     }
 
@@ -1151,7 +1032,7 @@ mod tests {
         let captured = super::capture_stderr(&long_stderr);
         assert!(
             captured.len() <= 4096,
-            "NS-040: captured stderr must be <= 4096 bytes, got: {}",
+            "captured stderr must be <= 4096 bytes, got: {}",
             captured.len()
         );
     }
@@ -1160,10 +1041,7 @@ mod tests {
     fn provider_stderr_handling_preserves_short_stderr() {
         let short = "error: auth failed";
         let captured = super::capture_stderr(short);
-        assert_eq!(
-            captured, short,
-            "NS-040: short stderr should be preserved verbatim"
-        );
+        assert_eq!(captured, short, "short stderr should be preserved verbatim");
     }
 
     #[test]
@@ -1172,12 +1050,12 @@ mod tests {
         let captured = super::redact_stderr(stderr_with_token, &["abc123secret456789xyz"]);
         assert!(
             !captured.contains("abc123secret456789xyz"),
-            "NS-040: known token values must be redacted from stderr, got: {}",
+            "known token values must be redacted from stderr, got: {}",
             captured
         );
         assert!(
             captured.contains("[redacted]"),
-            "NS-040: redacted token must be replaced with [redacted], got: {}",
+            "redacted token must be replaced with [redacted], got: {}",
             captured
         );
     }
@@ -1196,7 +1074,7 @@ mod tests {
         let captured = super::redact_stderr(stderr, &[]);
         assert_eq!(
             captured, stderr,
-            "NS-040: with no known tokens, stderr should be unchanged"
+            "with no known tokens, stderr should be unchanged"
         );
     }
 
@@ -1205,7 +1083,7 @@ mod tests {
         let policy = super::StderrPolicy::on_success(false);
         assert!(
             policy.should_discard(),
-            "NS-040: on success without --verbose, stderr should be discarded"
+            "on success without --verbose, stderr should be discarded"
         );
     }
 
@@ -1214,7 +1092,7 @@ mod tests {
         let policy = super::StderrPolicy::on_success(true);
         assert!(
             !policy.should_discard(),
-            "NS-040: on success with --verbose, stderr should be kept"
+            "on success with --verbose, stderr should be kept"
         );
     }
 
@@ -1223,26 +1101,15 @@ mod tests {
         let policy = super::StderrPolicy::on_failure();
         assert!(
             !policy.should_discard(),
-            "NS-040: on failure, stderr must always be captured"
+            "on failure, stderr must always be captured"
         );
     }
-
-    // =========================================================================
-    // NS-041: Provider capability declaration — supports_refresh,
-    // supports_revoke booleans in config.
-    // =========================================================================
 
     #[test]
     fn provider_capability_declaration_default_no_refresh_no_revoke() {
         let caps = super::ProviderCapabilities::default();
-        assert!(
-            !caps.supports_refresh,
-            "NS-041: default should NOT support refresh"
-        );
-        assert!(
-            !caps.supports_revoke,
-            "NS-041: default should NOT support revoke"
-        );
+        assert!(!caps.supports_refresh, "default should NOT support refresh");
+        assert!(!caps.supports_revoke, "default should NOT support revoke");
     }
 
     #[test]
@@ -1279,18 +1146,12 @@ refresh = "/usr/bin/refresh"
         let caps = super::parse_capabilities_from_toml(toml);
         assert!(
             caps.is_ok(),
-            "NS-041: valid capability TOML must parse, got: {:?}",
+            "valid capability TOML must parse, got: {:?}",
             caps
         );
         let caps = caps.unwrap();
-        assert!(
-            caps.supports_refresh,
-            "NS-041: supports_refresh should be true"
-        );
-        assert!(
-            !caps.supports_revoke,
-            "NS-041: supports_revoke should be false"
-        );
+        assert!(caps.supports_refresh, "supports_refresh should be true");
+        assert!(!caps.supports_revoke, "supports_revoke should be false");
     }
 
     #[test]
@@ -1304,11 +1165,11 @@ mint = "/usr/bin/mint"
         let caps = super::parse_capabilities_from_toml(toml).unwrap();
         assert!(
             !caps.supports_refresh,
-            "NS-041: absent supports_refresh defaults to false"
+            "absent supports_refresh defaults to false"
         );
         assert!(
             !caps.supports_revoke,
-            "NS-041: absent supports_revoke defaults to false"
+            "absent supports_revoke defaults to false"
         );
     }
 
@@ -1323,7 +1184,7 @@ mint = "/usr/bin/mint"
         let has_revoke_cmd = false;
         assert!(
             super::validate_capabilities(&caps, false, has_revoke_cmd).is_err(),
-            "NS-041: supports_revoke=true without revoke command should be rejected"
+            "supports_revoke=true without revoke command should be rejected"
         );
     }
 
@@ -1336,7 +1197,7 @@ mint = "/usr/bin/mint"
         let has_refresh_cmd = false;
         assert!(
             super::validate_capabilities(&caps, has_refresh_cmd, false).is_err(),
-            "NS-041: supports_refresh=true without refresh command should be rejected"
+            "supports_refresh=true without refresh command should be rejected"
         );
     }
 
@@ -1348,31 +1209,17 @@ mint = "/usr/bin/mint"
         };
         assert!(
             super::validate_capabilities(&caps, true, true).is_ok(),
-            "NS-041: consistent capability config should pass"
+            "consistent capability config should pass"
         );
     }
-
-    // =========================================================================
-    // NS-068: Provider command environment sandboxing — minimal env: PATH,
-    // HOME, LANG only.
-    // =========================================================================
 
     #[test]
     fn provider_command_environment_sandboxing_only_path_home_lang() {
         let env = super::build_sandboxed_env();
         // Must contain exactly PATH, HOME, LANG
-        assert!(
-            env.contains_key("PATH"),
-            "NS-068: sandboxed env must include PATH"
-        );
-        assert!(
-            env.contains_key("HOME"),
-            "NS-068: sandboxed env must include HOME"
-        );
-        assert!(
-            env.contains_key("LANG"),
-            "NS-068: sandboxed env must include LANG"
-        );
+        assert!(env.contains_key("PATH"), "sandboxed env must include PATH");
+        assert!(env.contains_key("HOME"), "sandboxed env must include HOME");
+        assert!(env.contains_key("LANG"), "sandboxed env must include LANG");
     }
 
     #[test]
@@ -1390,7 +1237,7 @@ mint = "/usr/bin/mint"
         for var in &forbidden {
             assert!(
                 !env.contains_key(*var),
-                "NS-068: sandboxed env must NOT include {}, but it does",
+                "sandboxed env must NOT include {}, but it does",
                 var
             );
         }
@@ -1402,7 +1249,7 @@ mint = "/usr/bin/mint"
         assert_eq!(
             env.len(),
             3,
-            "NS-068: sandboxed env must have exactly 3 keys (PATH, HOME, LANG), got: {:?}",
+            "sandboxed env must have exactly 3 keys (PATH, HOME, LANG), got: {:?}",
             env.keys().collect::<Vec<_>>()
         );
     }
@@ -1435,25 +1282,15 @@ mint = "/usr/bin/mint"
     fn provider_command_environment_sandboxing_path_is_not_empty() {
         let env = super::build_sandboxed_env();
         let path = env.get("PATH").unwrap();
-        assert!(
-            !path.is_empty(),
-            "NS-068: PATH in sandboxed env must not be empty"
-        );
+        assert!(!path.is_empty(), "PATH in sandboxed env must not be empty");
     }
 
     #[test]
     fn provider_command_environment_sandboxing_home_is_not_empty() {
         let env = super::build_sandboxed_env();
         let home = env.get("HOME").unwrap();
-        assert!(
-            !home.is_empty(),
-            "NS-068: HOME in sandboxed env must not be empty"
-        );
+        assert!(!home.is_empty(), "HOME in sandboxed env must not be empty");
     }
-
-    // =========================================================================
-    // Integration / cross-rule tests
-    // =========================================================================
 
     #[test]
     fn exec_config_is_constructible() {
@@ -1492,10 +1329,6 @@ mint = "/usr/bin/mint"
         assert_eq!(output.expires_at.month(), 6);
     }
 
-    // =========================================================================
-    // Edge cases discovered during Linus review.
-    // =========================================================================
-
     #[test]
     fn provider_output_contract_expires_at_null_treated_as_absent() {
         // JSON null for expires_at should be treated the same as absent.
@@ -1503,7 +1336,7 @@ mint = "/usr/bin/mint"
         let result = super::parse_provider_output(json, 3600).unwrap();
         assert!(
             !result.expires_at_provided,
-            "NS-034: null expires_at should be treated as absent"
+            "null expires_at should be treated as absent"
         );
     }
 
@@ -1514,7 +1347,7 @@ mint = "/usr/bin/mint"
         let result = super::parse_provider_output(json, 3600);
         assert!(
             result.is_ok(),
-            "NS-009: past expires_at should be accepted (provider clock skew)"
+            "past expires_at should be accepted (provider clock skew)"
         );
         let output = result.unwrap();
         assert!(output.expires_at_provided);
@@ -1523,20 +1356,20 @@ mint = "/usr/bin/mint"
 
     #[test]
     fn template_variable_injection_prevention_role_rejects_non_ascii() {
-        // NS-033: only ASCII alphanumeric + hyphens + underscores + dots
+        // only ASCII alphanumeric + hyphens + underscores + dots
         assert!(
             super::validate_role("rôle").is_err(),
-            "NS-033: non-ASCII characters must be rejected"
+            "non-ASCII characters must be rejected"
         );
         assert!(
             super::validate_role("ロール").is_err(),
-            "NS-033: CJK characters must be rejected"
+            "CJK characters must be rejected"
         );
     }
 
     #[test]
     fn provider_output_token_is_zeroized_on_drop() {
-        // NS-019: Verify the token string is zeroized when ProviderOutput is dropped.
+        // Verify the token string is zeroized when ProviderOutput is dropped.
         // We can't directly observe the zeroization, but we can verify the trait
         // impl exists by checking the type compiles with our Drop impl.
         let json = r#"{"token": "sensitive-credential-value-12345", "expires_at": "2026-06-15T10:30:00Z"}"#;
@@ -1556,7 +1389,7 @@ mint = "/usr/bin/mint"
         let debug = format!("{:?}", output);
         assert!(
             !debug.contains("provider-secret-token-abc123"),
-            "NS-058: Debug output must not expose raw token, got: {}",
+            "Debug output must not expose raw token, got: {}",
             debug
         );
     }
@@ -1572,7 +1405,7 @@ mint = "/usr/bin/mint"
         let debug = format!("{:?}", output);
         assert!(
             debug.contains("RedactedToken"),
-            "NS-058: Debug output should use redaction wrapper, got: {}",
+            "Debug output should use redaction wrapper, got: {}",
             debug
         );
         assert!(debug.contains("expires_at"));
@@ -1682,13 +1515,6 @@ mint = "/usr/bin/mint"
     }
 }
 
-// =========================================================================
-// Execution engine tests — noscope-6a9
-//
-// These tests cover the actual subprocess execution engine that ties
-// together all the policy building blocks above.
-// =========================================================================
-
 #[cfg(test)]
 mod engine_tests {
     use std::collections::HashMap;
@@ -1697,10 +1523,6 @@ mod engine_tests {
     use super::*;
     use crate::exit_code::ProviderExitCode;
     use provenance_macros::verifies;
-
-    // =========================================================================
-    // NS-068: Execution engine uses build_sandboxed_env() for subprocess env
-    // =========================================================================
 
     #[tokio::test]
     async fn engine_spawns_with_sandboxed_env() {
@@ -1718,18 +1540,9 @@ mod engine_tests {
         let result = result.expect("env command should not fail to spawn");
         // stdout should contain PATH, HOME, LANG but NOT random vars like TERM
         let stdout = &result.stdout;
-        assert!(
-            stdout.contains("PATH="),
-            "NS-068: spawned process must have PATH"
-        );
-        assert!(
-            stdout.contains("HOME="),
-            "NS-068: spawned process must have HOME"
-        );
-        assert!(
-            stdout.contains("LANG="),
-            "NS-068: spawned process must have LANG"
-        );
+        assert!(stdout.contains("PATH="), "spawned process must have PATH");
+        assert!(stdout.contains("HOME="), "spawned process must have HOME");
+        assert!(stdout.contains("LANG="), "spawned process must have LANG");
     }
 
     #[tokio::test]
@@ -1751,7 +1564,7 @@ mod engine_tests {
         let result = result.expect("env command should not fail to spawn");
         assert!(
             !result.stdout.contains("NOSCOPE_TEST_LEAK_CHECK"),
-            "NS-068: parent env vars must NOT leak to provider subprocess"
+            "parent env vars must NOT leak to provider subprocess"
         );
         unsafe {
             std::env::remove_var("NOSCOPE_TEST_LEAK_CHECK");
@@ -1775,13 +1588,9 @@ mod engine_tests {
         let result = result.expect("env command should not fail to spawn");
         assert!(
             result.stdout.contains("NOSCOPE_TOKEN=secret-val"),
-            "NS-068: extra env vars must be available to subprocess"
+            "extra env vars must be available to subprocess"
         );
     }
-
-    // =========================================================================
-    // NS-036: Execution engine checks stdout size limit
-    // =========================================================================
 
     #[tokio::test]
     async fn engine_rejects_oversized_stdout() {
@@ -1799,12 +1608,12 @@ mod engine_tests {
         let result = result.expect("command should spawn");
         assert!(
             result.parsed_output.is_err(),
-            "NS-036: stdout exceeding 1 MiB must be rejected"
+            "stdout exceeding 1 MiB must be rejected"
         );
         let err = result.parsed_output.unwrap_err();
         assert!(
             matches!(err, ProviderExecError::StdoutTooLarge { .. }),
-            "NS-036: error must be StdoutTooLarge, got: {:?}",
+            "error must be StdoutTooLarge, got: {:?}",
             err
         );
     }
@@ -1824,14 +1633,10 @@ mod engine_tests {
         let result = result.expect("command should spawn");
         assert!(
             result.parsed_output.is_ok(),
-            "NS-036: valid-sized stdout must be accepted, got: {:?}",
+            "valid-sized stdout must be accepted, got: {:?}",
             result.parsed_output
         );
     }
-
-    // =========================================================================
-    // NS-040: Execution engine captures and redacts stderr
-    // =========================================================================
 
     #[tokio::test]
     async fn engine_captures_stderr_on_failure() {
@@ -1850,7 +1655,7 @@ mod engine_tests {
         let result = result.expect("command should spawn");
         assert!(
             result.stderr.contains("auth failed"),
-            "NS-040: stderr must be captured on failure, got: {:?}",
+            "stderr must be captured on failure, got: {:?}",
             result.stderr
         );
     }
@@ -1870,7 +1675,7 @@ mod engine_tests {
         let result = result.expect("command should spawn");
         assert!(
             result.stderr.len() <= MAX_STDERR_CAPTURE_BYTES,
-            "NS-040: stderr must be truncated to {} bytes, got: {}",
+            "stderr must be truncated to {} bytes, got: {}",
             MAX_STDERR_CAPTURE_BYTES,
             result.stderr.len()
         );
@@ -1895,18 +1700,14 @@ mod engine_tests {
         let result = result.expect("command should spawn");
         assert!(
             !result.stderr.contains(token),
-            "NS-040: known token values must be redacted from stderr, got: {:?}",
+            "known token values must be redacted from stderr, got: {:?}",
             result.stderr
         );
         assert!(
             result.stderr.contains("[redacted]"),
-            "NS-040: redacted token must be replaced with [redacted]"
+            "redacted token must be replaced with [redacted]"
         );
     }
-
-    // =========================================================================
-    // NS-035: Execution engine enforces timeout with SIGTERM then SIGKILL
-    // =========================================================================
 
     #[tokio::test]
     async fn engine_times_out_long_running_command() {
@@ -1924,10 +1725,7 @@ mod engine_tests {
         .await;
 
         let result = result.expect("command should spawn");
-        assert!(
-            result.timed_out,
-            "NS-035: long-running command must time out"
-        );
+        assert!(result.timed_out, "long-running command must time out");
     }
 
     #[tokio::test]
@@ -1948,7 +1746,7 @@ mod engine_tests {
         let result = result.expect("command should spawn");
         assert!(
             matches!(result.parsed_output, Err(ProviderExecError::Timeout { .. })),
-            "NS-035: timeout must produce Timeout error, got: {:?}",
+            "timeout must produce Timeout error, got: {:?}",
             result.parsed_output
         );
     }
@@ -1978,18 +1776,14 @@ mod engine_tests {
         let elapsed = start.elapsed();
 
         let result = result.expect("command should spawn");
-        assert!(result.timed_out, "NS-035: must time out");
+        assert!(result.timed_out, "must time out");
         // Should finish within timeout + grace + some slack, not wait the full 60s
         assert!(
             elapsed < Duration::from_secs(5),
-            "NS-035: must SIGKILL after grace period, took {:?}",
+            "must SIGKILL after grace period, took {:?}",
             elapsed
         );
     }
-
-    // =========================================================================
-    // NS-009: Execution engine parses output through parse_provider_output()
-    // =========================================================================
 
     #[tokio::test]
     async fn engine_parses_valid_provider_json() {
@@ -2004,7 +1798,7 @@ mod engine_tests {
         .await;
 
         let result = result.expect("command should spawn");
-        let output = result.parsed_output.expect("NS-009: valid JSON must parse");
+        let output = result.parsed_output.expect("valid JSON must parse");
         assert_eq!(output.token, "mint-token-123");
         assert!(output.expires_at_provided);
     }
@@ -2026,20 +1820,16 @@ mod engine_tests {
         let result = result.expect("command should spawn");
         assert!(
             result.parsed_output.is_err(),
-            "NS-009: invalid JSON stdout must be rejected"
+            "invalid JSON stdout must be rejected"
         );
         assert!(
             matches!(
                 result.parsed_output,
                 Err(ProviderExecError::OutputContract { .. })
             ),
-            "NS-009: must be OutputContract error"
+            "must be OutputContract error"
         );
     }
-
-    // =========================================================================
-    // NS-010: Execution engine maps exit codes through interpret_provider_exit()
-    // =========================================================================
 
     #[tokio::test]
     async fn engine_maps_exit_code_success() {
@@ -2057,7 +1847,7 @@ mod engine_tests {
         assert_eq!(
             result.exit_result.exit_code,
             ProviderExitCode::Success,
-            "NS-010: exit 0 must map to Success"
+            "exit 0 must map to Success"
         );
     }
 
@@ -2079,7 +1869,7 @@ mod engine_tests {
         assert_eq!(
             result.exit_result.exit_code,
             ProviderExitCode::AuthFailure,
-            "NS-010: exit 2 must map to AuthFailure"
+            "exit 2 must map to AuthFailure"
         );
     }
 
@@ -2101,7 +1891,7 @@ mod engine_tests {
         assert_eq!(
             result.exit_result.exit_code,
             ProviderExitCode::RoleNotFound,
-            "NS-010: exit 3 must map to RoleNotFound"
+            "exit 3 must map to RoleNotFound"
         );
     }
 
@@ -2123,7 +1913,7 @@ mod engine_tests {
         assert_eq!(
             result.exit_result.exit_code,
             ProviderExitCode::Unavailable,
-            "NS-010: exit 4 must map to Unavailable"
+            "exit 4 must map to Unavailable"
         );
     }
 
@@ -2147,10 +1937,6 @@ mod engine_tests {
         let result = result.expect("command should spawn");
         assert_eq!(result.exit_result.exit_code, ProviderExitCode::GeneralError,);
     }
-
-    // =========================================================================
-    // Integration: engine result struct
-    // =========================================================================
 
     #[tokio::test]
     async fn engine_result_has_all_fields() {
@@ -2197,10 +1983,6 @@ mod engine_tests {
 
         assert!(result.is_err(), "Empty argv must return error");
     }
-
-    // =========================================================================
-    // Edge cases discovered during Linus review
-    // =========================================================================
 
     #[tokio::test]
     async fn engine_signal_killed_process_maps_to_general_error() {

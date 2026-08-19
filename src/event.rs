@@ -1,10 +1,8 @@
-// NS-070: Structured event logging
-//
+// Structured event logging
 // Emit structured events to stderr (JSON-per-line with --log-format json) for:
 // - mint/refresh/revoke start/success/fail
 // - child spawn/exit
 // - signal received/forwarded
-//
 // Each event includes: timestamp, type, provider, redacted token ID, duration.
 
 use chrono::{DateTime, Utc};
@@ -16,8 +14,7 @@ use std::sync::Mutex;
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
 
-/// NS-070: All structured event types emitted by noscope.
-///
+/// All structured event types emitted by noscope.
 /// Covers the three credential lifecycle operations (mint/refresh/revoke)
 /// in three phases (start/success/fail), plus child process and signal events.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +36,6 @@ pub enum EventType {
 
 impl EventType {
     /// Return the snake_case string representation of this event type.
-    ///
     /// Used as the `"type"` field value in JSON output.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -66,11 +62,9 @@ impl fmt::Display for EventType {
     }
 }
 
-/// NS-070: A structured event for logging.
-///
+/// A structured event for logging.
 /// Contains the mandatory fields (timestamp, type, provider) and optional
 /// fields (redacted token ID, duration, exit code, signal, error message).
-///
 /// The event never stores raw token values — the `token_id` field holds
 /// the redacted identifier (e.g. `[redacted:tok-abc]` or `abcdefgh...`).
 #[derive(Debug)]
@@ -87,7 +81,6 @@ pub struct Event {
 
 impl Event {
     /// Create a new event with the given type and provider.
-    ///
     /// Timestamp is captured at construction time (Utc::now()).
     /// Optional fields default to None.
     pub fn new(event_type: EventType, provider: &str) -> Self {
@@ -119,7 +112,6 @@ impl Event {
     }
 
     /// Set the redacted token ID.
-    ///
     /// The caller is responsible for passing the redacted form (from
     /// `RedactedToken::to_string()` or a provider-supplied token ID).
     pub fn set_token_id(&mut self, id: &str) {
@@ -147,8 +139,7 @@ impl Event {
     }
 
     /// Serialize this event to a single-line JSON string.
-    ///
-    /// NS-070: JSON-per-line format for `--log-format json`.
+    /// JSON-per-line format for `--log-format json`.
     pub fn to_json(&self) -> String {
         let serializable = SerializableEvent {
             timestamp: self.timestamp.to_rfc3339(),
@@ -166,7 +157,6 @@ impl Event {
 }
 
 /// Internal serialization helper — keeps Serialize out of the public Event type.
-///
 /// Field names match the JSON output contract:
 /// - `type` (via rename) instead of `event_type`
 /// - `duration_ms` for millisecond precision
@@ -183,8 +173,7 @@ struct SerializableEvent<'a> {
     error: Option<&'a str>,
 }
 
-/// NS-070: Log output format selector.
-///
+/// Log output format selector.
 /// `--log-format json` selects JSON-per-line output to stderr.
 /// `--log-format text` selects human-readable output (default).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,7 +185,6 @@ pub enum LogFormat {
 
 impl LogFormat {
     /// Parse a format string from CLI flags.
-    ///
     /// Returns `None` for unrecognized values.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
@@ -207,8 +195,7 @@ impl LogFormat {
     }
 }
 
-/// NS-070: Formats events according to the selected LogFormat.
-///
+/// Formats events according to the selected LogFormat.
 /// Does not perform I/O — returns the formatted string for the caller
 /// to write to stderr.
 #[rule("rule_events_single_line")]
@@ -227,7 +214,6 @@ impl EventEmitter {
     }
 
     /// Format an event as a string according to the configured format.
-    ///
     /// - `Json`: single-line JSON (same as `event.to_json()`)
     /// - `Text`: human-readable `timestamp type provider [token_id] [duration]`
     pub fn format_event(&self, event: &Event) -> String {
@@ -354,19 +340,11 @@ mod tests {
     use serde_json::Value;
     use std::time::Duration;
 
-    // =========================================================================
-    // NS-070: Structured event logging — emit structured events to stderr
-    // (JSON-per-line with --log-format json) for: mint/refresh/revoke
-    // start/success/fail, child spawn/exit, signal received/forwarded;
-    // each event includes timestamp, type, provider, redacted token ID,
-    // duration.
-    // =========================================================================
-
     // ---- Event type coverage: all required event types exist ----
 
     #[test]
     fn structured_event_logging_mint_start_event() {
-        // NS-070: mint start event must be representable
+        // mint start event must be representable
         let event = super::Event::new(super::EventType::MintStart, "aws");
         assert_eq!(event.event_type(), &super::EventType::MintStart);
         assert_eq!(event.provider(), "aws");
@@ -448,7 +426,7 @@ mod tests {
 
     #[test]
     fn structured_event_logging_json_contains_timestamp() {
-        // NS-070: each event includes timestamp
+        // each event includes timestamp
         let event = super::Event::new(super::EventType::MintStart, "aws");
         let json = event.to_json();
         let parsed: Value =
@@ -465,7 +443,7 @@ mod tests {
 
     #[test]
     fn structured_event_logging_json_contains_type() {
-        // NS-070: each event includes type
+        // each event includes type
         let event = super::Event::new(super::EventType::MintSuccess, "aws");
         let json = event.to_json();
         let parsed: Value = serde_json::from_str(&json).unwrap();
@@ -479,7 +457,7 @@ mod tests {
 
     #[test]
     fn structured_event_logging_json_contains_provider() {
-        // NS-070: each event includes provider
+        // each event includes provider
         let event = super::Event::new(super::EventType::MintStart, "vault");
         let json = event.to_json();
         let parsed: Value = serde_json::from_str(&json).unwrap();
@@ -492,7 +470,7 @@ mod tests {
 
     #[test]
     fn structured_event_logging_json_contains_redacted_token_id() {
-        // NS-070: each event includes redacted token ID
+        // each event includes redacted token ID
         let mut event = super::Event::new(super::EventType::MintSuccess, "aws");
         event.set_token_id("tok-abc-123");
         let json = event.to_json();
@@ -520,7 +498,7 @@ mod tests {
 
     #[test]
     fn structured_event_logging_json_contains_duration() {
-        // NS-070: each event includes duration
+        // each event includes duration
         let mut event = super::Event::new(super::EventType::MintSuccess, "aws");
         event.set_duration(Duration::from_millis(1234));
         let json = event.to_json();
@@ -547,7 +525,7 @@ mod tests {
 
     #[test]
     fn structured_event_logging_json_is_single_line() {
-        // NS-070: JSON-per-line format — no embedded newlines
+        // JSON-per-line format — no embedded newlines
         let mut event = super::Event::new(super::EventType::MintSuccess, "aws");
         event.set_token_id("tok-123");
         event.set_duration(Duration::from_secs(5));
@@ -578,7 +556,7 @@ mod tests {
 
     #[test]
     fn structured_event_logging_event_type_names() {
-        // NS-070: verify all event type names are snake_case strings
+        // verify all event type names are snake_case strings
         let cases = vec![
             (super::EventType::MintStart, "mint_start"),
             (super::EventType::MintSuccess, "mint_success"),
@@ -609,7 +587,7 @@ mod tests {
 
     #[test]
     fn structured_event_logging_log_format_json() {
-        // NS-070: --log-format json selects JSON output
+        // --log-format json selects JSON output
         let format = super::LogFormat::parse("json");
         assert!(
             matches!(format, Some(super::LogFormat::Json)),
@@ -695,7 +673,7 @@ mod tests {
 
     #[test]
     fn structured_event_logging_token_id_is_redacted_not_raw() {
-        // NS-070 says "redacted token ID" — if someone passes a raw token
+        // says "redacted token ID" — if someone passes a raw token
         // value as the token_id, it should be stored as-is (the caller is
         // responsible for passing the redacted form). But we verify that
         // the Event API accepts and stores the redacted token ID.
@@ -803,10 +781,6 @@ mod tests {
         let parsed: Value = serde_json::from_str(&json).unwrap();
         assert!(parsed["error"].is_null(), "error must be null when not set");
     }
-
-    // =========================================================================
-    // Edge cases discovered during Linus review.
-    // =========================================================================
 
     #[test]
     fn structured_event_logging_all_fields_set_simultaneously() {

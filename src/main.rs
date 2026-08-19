@@ -1,8 +1,7 @@
-// noscope-9l0: Binary entrypoint.
-//
+// Binary entrypoint.
 // This is a thin wrapper that delegates to the library's CLI module.
 // All parsing, dispatch, and error handling logic lives in noscope::cli
-// (NS-075: CLI parsing in adapter layer).
+//.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -31,7 +30,7 @@ fn main() -> ExitCode {
     let command_name = command_name(&cli.command);
 
     match run(cli) {
-        // NS-054: All noscope exit codes are sysexits.h values (0-78)
+        // All noscope exit codes are sysexits.h values (0-78)
         // which fit in u8. Child exit codes are 0-255 on Unix.
         Ok(code) => ExitCode::from(code as u8),
         Err(err) => {
@@ -54,7 +53,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// NS-074: Dispatch subcommands through the Client facade.
+/// Dispatch subcommands through the Client facade.
 fn run(cli: cli::Cli) -> Result<i32, noscope::Error> {
     match cli.command {
         Command::Run(args) => cmd_run(args, cli.verbose),
@@ -412,7 +411,7 @@ mod mint_profile_wiring_tests {
         let result = scoped_env("XDG_CONFIG_HOME", tmp.path(), || cmd_mint(args, false));
         assert!(
             result.is_ok(),
-            "noscope-3ez.8: cmd_mint --profile must succeed: {:?}",
+            "cmd_mint --profile must succeed: {:?}",
             result.err()
         );
     }
@@ -430,7 +429,7 @@ mod mint_profile_wiring_tests {
         let result = cmd_mint(args, false);
         assert!(
             result.is_err(),
-            "noscope-3ez.8: cmd_mint without profile must still resolve providers"
+            "cmd_mint without profile must still resolve providers"
         );
     }
 }
@@ -746,7 +745,7 @@ mod revoke_wiring_tests {
 
     #[test]
     fn revoke_accepts_mint_envelope_array_from_stdin() {
-        // `noscope mint` emits a JSON array (NS-063); the pipeline
+        // `noscope mint` emits a JSON array; the pipeline
         // `noscope mint ... | noscope revoke --from-stdin` must revoke
         // every envelope in it.
         let stdin = r#"[
@@ -1207,11 +1206,11 @@ mod run_wiring_tests {
 
         assert!(
             !polled.signal_processed,
-            "NS-029: no signal should be processed when none were received"
+            "no signal should be processed when none were received"
         );
         assert_eq!(
             revoke_calls, 0,
-            "NS-029: ClosureRevoker callback must not run before shutdown signal receipt"
+            "ClosureRevoker callback must not run before shutdown signal receipt"
         );
     }
 
@@ -1244,7 +1243,7 @@ mod run_wiring_tests {
         assert!(with_signal.signal_processed);
         assert_eq!(
             revoke_calls, 1,
-            "NS-029: ClosureRevoker callback must trigger after first shutdown signal"
+            "ClosureRevoker callback must trigger after first shutdown signal"
         );
     }
 
@@ -1280,7 +1279,7 @@ mod run_wiring_tests {
         assert!(second.signal_processed);
         assert_eq!(
             revoke_calls, 1,
-            "NS-029: revocation callback must not run again after first shutdown-triggered revoke"
+            "revocation callback must not run again after first shutdown-triggered revoke"
         );
     }
 
@@ -1347,7 +1346,7 @@ mod rollback_budget_wiring_tests {
         assert_eq!(
             attempts.load(Ordering::SeqCst),
             3,
-            "NS-047: failed revokes must retry"
+            "failed revokes must retry"
         );
     }
 
@@ -1381,7 +1380,7 @@ mod rollback_budget_wiring_tests {
         assert_eq!(
             attempts.load(Ordering::SeqCst),
             1,
-            "NS-047: wall clock budget must cap total retry attempts"
+            "wall clock budget must cap total retry attempts"
         );
     }
 
@@ -1420,7 +1419,7 @@ mod rollback_budget_wiring_tests {
                 Duration::from_millis(200),
                 Duration::from_millis(400)
             ],
-            "NS-047: rollback retries must use exponential backoff"
+            "rollback retries must use exponential backoff"
         );
     }
 
@@ -1459,7 +1458,7 @@ mod rollback_budget_wiring_tests {
         assert_eq!(
             lines.len(),
             2,
-            "NS-047: every rollback attempt must emit a rollback log entry"
+            "every rollback attempt must emit a rollback log entry"
         );
         assert!(
             lines.iter().all(|line| {
@@ -1467,7 +1466,7 @@ mod rollback_budget_wiring_tests {
                     && line.contains("provider=aws")
                     && line.contains("credential_id=tok-aws")
             }),
-            "NS-047: logs must use RollbackLogEntry format"
+            "logs must use RollbackLogEntry format"
         );
     }
 
@@ -1500,7 +1499,7 @@ mod rollback_budget_wiring_tests {
         assert_eq!(
             attempts.load(Ordering::SeqCst),
             0,
-            "NS-047: budget=0 must disable rollback retries"
+            "budget=0 must disable rollback retries"
         );
     }
 
@@ -1537,13 +1536,13 @@ mod rollback_budget_wiring_tests {
         assert_eq!(
             attempts.load(Ordering::SeqCst),
             1,
-            "NS-047: a timed-out attempt should consume budget and stop further retries"
+            "a timed-out attempt should consume budget and stop further retries"
         );
         let lines = logs.lock().unwrap().clone();
         assert_eq!(lines.len(), 1);
         assert!(
             lines[0].contains("timed out"),
-            "NS-047: timed-out rollback attempts should be logged as failures"
+            "timed-out rollback attempts should be logged as failures"
         );
     }
 }
@@ -1709,7 +1708,7 @@ mod run_mode_os_signal_e2e_tests {
             assert_eq!(
                 fs::read_to_string(&signal_log).unwrap_or_default(),
                 expected_marker,
-                "NS-026: child must receive forwarded signal {} via cmd_run path",
+                "child must receive forwarded signal {} via cmd_run path",
                 expected_marker
             );
         }
@@ -1767,7 +1766,7 @@ mod run_mode_os_signal_e2e_tests {
         let revoked = fs::read_to_string(&revoke_log).unwrap_or_default();
         assert!(
             revoked.contains("tok-aws"),
-            "NS-003: run-mode shutdown must attempt revocation on signal via cmd_run path"
+            "run-mode shutdown must attempt revocation on signal via cmd_run path"
         );
     }
 
@@ -1822,7 +1821,7 @@ mod run_mode_os_signal_e2e_tests {
         assert_eq!(
             revoked.lines().filter(|line| *line == "tok-aws").count(),
             1,
-            "NS-028: double-signal escalation must not trigger duplicate revocations"
+            "double-signal escalation must not trigger duplicate revocations"
         );
     }
 }

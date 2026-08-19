@@ -23,26 +23,14 @@ pub mod signal_policy;
 pub mod token;
 pub mod token_convert;
 
-// ---------------------------------------------------------------------------
-// Re-exports: stable, ergonomic types from crate root (noscope-cg8.1).
-//
-// Consumers can write `use noscope::{Client, MintRequest, Error, ErrorKind}`
-// instead of importing from individual modules.
-//
-// NoscopeError is a backward-compatible type alias for Error
-// (noscope-bsq.1.5).
-// ---------------------------------------------------------------------------
-
 pub use client::{Client, ClientOptions, MintRequest, ProviderOverrides, RevokeRequest};
 pub use error::{Error, ErrorKind};
 
 /// Backward-compatible type alias for the canonical error type.
-///
-/// noscope-bsq.1.5: The crate previously exported both `NoscopeError`
+/// The crate previously exported both `NoscopeError`
 /// (a simple enum in `client.rs`) and `error::Error`/`ErrorKind` (a richer
 /// typed error). This alias converges on `error::Error` as the single
 /// canonical public error surface.
-///
 /// **Migration guide:**
 /// - Old: `match err { NoscopeError::Usage { message } => ... }`
 ///   New: `match err.kind() { ErrorKind::Usage => { let msg = err.message(); ... } }`
@@ -63,25 +51,6 @@ pub use token_convert::{
 
 #[cfg(test)]
 mod convergence_tests {
-    // =========================================================================
-    // noscope-bsq.1.5: Converge on a single public top-level error type.
-    //
-    // Acceptance criteria:
-    // 1. No split-brain error API for new consumers.
-    // 2. Exit-code behavior remains stable and covered by tests.
-    //
-    // Rules tested:
-    // - Choose one canonical public error surface.
-    // - Make facade and adapter layers use that canonical type consistently.
-    // - Provide migration notes/tests for compatibility.
-    // =========================================================================
-
-    // -------------------------------------------------------------------------
-    // Rule: Choose one canonical public error surface.
-    //
-    // error::Error must be the single canonical error type. NoscopeError
-    // must be a type alias for backward compatibility, not a separate type.
-    // -------------------------------------------------------------------------
 
     #[test]
     fn canonical_error_type_is_error_error() {
@@ -139,10 +108,6 @@ mod convergence_tests {
         accepts_error(err);
     }
 
-    // -------------------------------------------------------------------------
-    // Rule: Make facade layer (Client) use that canonical type consistently.
-    // -------------------------------------------------------------------------
-
     #[test]
     fn client_new_returns_canonical_error() {
         // Client::new must return Result<Client, error::Error>.
@@ -195,12 +160,6 @@ mod convergence_tests {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Rule: Exit-code behavior remains stable.
-    //
-    // All existing exit codes must be preserved through the canonical type.
-    // -------------------------------------------------------------------------
-
     #[test]
     fn exit_code_usage_is_64_through_canonical() {
         let err = crate::Error::usage("bad flag");
@@ -245,14 +204,6 @@ mod convergence_tests {
         ]);
         assert_eq!(multi.exit_code(), 65);
     }
-
-    // -------------------------------------------------------------------------
-    // Rule: Facade error conversions from module errors preserve exit codes.
-    //
-    // After convergence, Client returns error::Error which has From impls
-    // for all module errors. The exit codes must match previous NoscopeError
-    // behavior.
-    // -------------------------------------------------------------------------
 
     #[test]
     fn facade_mint_error_exit_code_preserved() {
@@ -305,13 +256,6 @@ mod convergence_tests {
             "ProfileError must map to config not found (66)"
         );
     }
-
-    // -------------------------------------------------------------------------
-    // Rule: Provide migration notes/tests for compatibility.
-    //
-    // Existing code using NoscopeError must continue to compile.
-    // The type alias ensures backward compatibility.
-    // -------------------------------------------------------------------------
 
     #[test]
     fn migration_noscope_error_pattern_match_still_works() {

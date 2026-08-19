@@ -1,10 +1,9 @@
 // Child supervision.
-//
 // Spawns the child with injected credentials, forwards parent signals
-// (NS-026, NS-028), revokes on shutdown (NS-003), passes the child exit
-// code through (NS-004), and drives the per-credential refresh loop
-// (NS-025, NS-030, NS-031, NS-032, NS-048) with log-only expiry
-// handling (NS-049). Refresh activates for every credential whose
+//, revokes on shutdown, passes the child exit
+// code through, and drives the per-credential refresh loop
+// with log-only expiry
+// handling. Refresh activates for every credential whose
 // provider defines a refresh command (res_refresh_subsystem_ships).
 
 use std::collections::{HashMap, HashSet};
@@ -78,7 +77,7 @@ pub fn run_supervised(
     };
 
     // Env keys whose lease the refresh loop manages. Their expiry moves
-    // with each successful refresh, so the static NS-049 warning below
+    // with each successful refresh, so the static warning below
     // would be wrong for them; refresh failures already reach the
     // operator as RefreshFail events.
     let refresh_managed: HashSet<String> = cred_set
@@ -93,7 +92,7 @@ pub fn run_supervised(
 
     let mut refresh_loop = build_refresh_loop(resolved_by_name, cred_set);
     if let Some(refresh) = refresh_loop.as_mut() {
-        // NS-025: env injection happens once at spawn; a refreshed
+        // env injection happens once at spawn; a refreshed
         // credential never reaches the running child.
         let mut warnings = Vec::new();
         refresh.startup(true, &mut warnings);
@@ -188,7 +187,7 @@ fn build_refresh_loop(
                 .map(str::to_string)
                 .unwrap_or_else(|| format!("tok-{}", spec.provider));
             // The refresh runtime tracks its own copy of the lease. The
-            // child's injected env is immutable after spawn (NS-025).
+            // child's injected env is immutable after spawn.
             let token_copy = ScopedToken::new(
                 SecretString::from(token.expose_secret().to_string()),
                 token.role(),
@@ -241,7 +240,7 @@ fn run_refresh_tick(
             }
 
             let mut env = resolved.env.clone();
-            // NS-039: the refresh command receives the current credential
+            // the refresh command receives the current credential
             // value, the lease identifier, and the granted TTL in seconds.
             env.extend(provider_exec::build_refresh_env(
                 &request.token_value,
@@ -271,7 +270,7 @@ fn run_refresh_tick(
 
     for event in events {
         if let Ok(LeaseRefreshKind::Rotation) = event.outcome {
-            // A rotation invalidates the child's injected value (NS-025).
+            // A rotation invalidates the child's injected value.
             eprintln!(
                 "noscope: refresh rotated credential {}; the running child still \
                  holds the previous value",
@@ -281,7 +280,7 @@ fn run_refresh_tick(
     }
 }
 
-/// NS-049: Warn once per expired credential. Never stops the child and
+/// Warn once per expired credential. Never stops the child and
 /// never re-mints.
 fn warn_expired_credentials(
     cred_set: &CredentialSet,

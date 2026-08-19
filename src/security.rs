@@ -1,5 +1,5 @@
-// NS-012: No tokens in process arguments
-// NS-020: Core dump prevention
+// No tokens in process arguments
+// Core dump prevention
 
 use std::fmt;
 use std::io;
@@ -7,12 +7,11 @@ use std::io;
 use crate::token::ScopedToken;
 
 /// Error type for security validation failures.
-///
-/// NS-005: Error messages must never contain token values.
+/// Error messages must never contain token values.
 #[derive(Debug)]
 pub enum SecurityError {
     /// A token value was found in process arguments.
-    /// The argument index is stored but NOT the token value (NS-005).
+    /// The argument index is stored but NOT the token value.
     TokenInArgs { arg_index: usize },
     /// Failed to disable core dumps.
     CoreDumpDisableFailed(io::Error),
@@ -22,11 +21,11 @@ impl fmt::Display for SecurityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SecurityError::TokenInArgs { arg_index } => {
-                // NS-005: Never include the token value in the error message
+                // Never include the token value in the error message
                 write!(
                     f,
                     "credential value detected in command argument at index {}; \
-                     tokens must only be passed via environment variables or file descriptors (NS-012)",
+                     tokens must only be passed via environment variables or file descriptors",
                     arg_index
                 )
             }
@@ -39,17 +38,14 @@ impl fmt::Display for SecurityError {
 
 impl std::error::Error for SecurityError {}
 
-/// NS-020: Disable core dumps via setrlimit(RLIMIT_CORE, 0).
-///
+/// Disable core dumps via setrlimit(RLIMIT_CORE, 0).
 /// Must be called at startup BEFORE any credentials are loaded.
-///
 /// **This is irreversible for the process lifetime.** Both soft and hard limits
 /// are set to zero, meaning even root cannot re-enable core dumps for this
 /// process without `CAP_SYS_RESOURCE`. This is intentional for a credential
 /// manager — core dumps could contain secrets in memory.
-///
 /// If the platform does not support core dump suppression, returns an error.
-/// The caller should log a warning to stderr per NS-020.
+/// The caller should log a warning to stderr.
 pub fn disable_core_dumps() -> Result<(), SecurityError> {
     let rlim = libc::rlimit {
         rlim_cur: 0,
@@ -65,17 +61,14 @@ pub fn disable_core_dumps() -> Result<(), SecurityError> {
     }
 }
 
-/// NS-012: Validate that no known token values appear in command arguments.
-///
+/// Validate that no known token values appear in command arguments.
 /// Command-line arguments are visible via /proc/*/cmdline and ps output.
 /// Credentials must only be delivered via environment variables or file descriptors.
-///
 /// Takes `&[&ScopedToken]` so callers don't need to handle raw credential strings.
 /// The function calls `expose_secret()` internally for the comparison — the
 /// secrets are never returned or stored outside this function.
-///
 /// Returns an error if any argument contains a known token value.
-/// The error message does NOT include the token value (NS-005).
+/// The error message does NOT include the token value.
 pub fn validate_no_tokens_in_args(
     args: &[String],
     known_tokens: &[&ScopedToken],
@@ -108,12 +101,6 @@ mod tests {
         )
     }
 
-    // =========================================================================
-    // NS-020: Core dump prevention.
-    // setrlimit(RLIMIT_CORE, 0) at startup before credentials loaded.
-    // If platform doesn't support it, log warning to stderr.
-    // =========================================================================
-
     #[test]
     fn disable_core_dumps_succeeds_on_linux() {
         let result = disable_core_dumps();
@@ -135,12 +122,6 @@ mod tests {
             assert_eq!(rlim.rlim_max, 0, "hard limit must be 0");
         }
     }
-
-    // =========================================================================
-    // NS-012: No tokens in process arguments.
-    // Never pass token values as CLI args (/proc/*/cmdline visible).
-    // Credentials must only be delivered via env vars or FDs.
-    // =========================================================================
 
     #[test]
     fn rejects_args_containing_known_token_value() {
@@ -198,7 +179,7 @@ mod tests {
 
     #[test]
     fn error_message_does_not_contain_token_value() {
-        // NS-005 also applies here: the error message itself must not leak the token
+        // also applies here: the error message itself must not leak the token
         let token = make_token("leak-me-not-12345");
         let args = &["cmd".to_string(), "leak-me-not-12345".to_string()];
         let result = validate_no_tokens_in_args(args, &[&token]);

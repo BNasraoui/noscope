@@ -95,7 +95,7 @@ fn run_mode_child_leads_its_own_process_group() {
     );
 }
 
-// NS-035: a provider command leads its own process group so that timeout
+// a provider command leads its own process group so that timeout
 // escalation reaches everything it spawned. (The rule about noscope NOT
 // applying process-group setup in mint mode concerns the agent child,
 // which does not exist in mint mode.)
@@ -138,7 +138,7 @@ fn provider_command_leads_its_own_process_group() {
     let (pid, pgid) = read_pid_pgid(&marker);
     assert_eq!(
         pid, pgid,
-        "NS-035: a provider must lead its own process group so escalation \
+        "a provider must lead its own process group so escalation \
          reaches its descendants"
     );
 }

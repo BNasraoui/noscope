@@ -1,21 +1,17 @@
-// NS-078: Centralized token conversion boundaries
-//
+// Centralized token conversion boundaries
 // Defines explicit conversion boundaries between:
 // - token-in-memory (ScopedToken)
 // - provider output (ProviderOutput)
 // - stdout envelope (MintEnvelope)
-//
 // Conversion pipeline: ProviderOutput → ScopedToken → MintEnvelope
-//
 // Secret-handling guarantees at each boundary:
 // - ProviderOutput → ScopedToken: ProviderOutput consumed (ownership transferred);
 //   raw token cloned into SecretString (clone required because ProviderOutput
 //   implements Drop for zeroization). Both copies are independently zeroized:
-//   ProviderOutput by its Drop impl, SecretString by ZeroizeOnDrop (NS-019).
-// - ScopedToken → MintEnvelope: expose_secret() called explicitly (NS-064);
+//   ProviderOutput by its Drop impl, SecretString by ZeroizeOnDrop.
+// - ScopedToken → MintEnvelope: expose_secret() called explicitly;
 //   the raw value is copied into MintEnvelope's zeroizing String.
-//
-// NS-001: ScopedToken is never Serialize — this boundary is the ONLY way
+// ScopedToken is never Serialize — this boundary is the ONLY way
 // secrets cross type boundaries.
 
 use secrecy::SecretString;
@@ -27,26 +23,23 @@ use provenance_macros::rule;
 
 /// Result of converting a ProviderOutput to a ScopedToken, with metadata
 /// about the conversion (e.g., whether expires_at was provider-supplied).
-///
-/// The caller needs `expires_at_provided` to emit the NS-034 warning when
+/// The caller needs `expires_at_provided` to emit warning when
 /// the provider didn't supply an explicit expiry.
 pub struct ConversionResult {
     /// The converted token.
     pub token: ScopedToken,
-    /// Whether expires_at was explicitly provided by the provider (NS-034).
+    /// Whether expires_at was explicitly provided by the provider.
     /// `false` means it was computed from `now() + requested_ttl`.
     pub expires_at_provided: bool,
 }
 
-/// NS-078: Convert a ProviderOutput into a ScopedToken.
-///
+/// Convert a ProviderOutput into a ScopedToken.
 /// **Secret boundary**: Takes ownership of `output`, consuming the
 /// ProviderOutput. The raw token is cloned into a SecretString (clone is
 /// required because ProviderOutput implements Drop for zeroization, and Rust
 /// does not allow moving fields out of Drop types). Both copies are
 /// independently zeroized on drop: ProviderOutput by its Drop impl,
-/// SecretString by ZeroizeOnDrop (NS-019).
-///
+/// SecretString by ZeroizeOnDrop.
 /// # Arguments
 /// - `output`: The parsed provider command output (consumed).
 /// - `role`: The role this token was minted for (not in provider output).
@@ -59,7 +52,7 @@ pub fn provider_output_to_scoped_token(
     token_id: Option<String>,
     provider: &str,
 ) -> ScopedToken {
-    // NS-019: Clone the raw token into SecretString for zeroization guarantees.
+    // Clone the raw token into SecretString for zeroization guarantees.
     // We must clone because ProviderOutput implements Drop (for zeroization),
     // and Rust doesn't allow moving fields out of a Drop type. This is fine:
     // ProviderOutput's Drop will zeroize its String copy, and SecretString
@@ -69,9 +62,8 @@ pub fn provider_output_to_scoped_token(
     ScopedToken::new(secret, role, output.expires_at, token_id, provider)
 }
 
-/// NS-078: Convert a ProviderOutput into a ScopedToken, preserving the
-/// `expires_at_provided` flag for NS-034 warning emission.
-///
+/// Convert a ProviderOutput into a ScopedToken, preserving the
+/// `expires_at_provided` flag for warning emission.
 /// Same secret boundary guarantees as [`provider_output_to_scoped_token`].
 pub fn provider_output_to_scoped_token_with_metadata(
     output: ProviderOutput,
@@ -87,12 +79,10 @@ pub fn provider_output_to_scoped_token_with_metadata(
     }
 }
 
-/// NS-078: Convert a ScopedToken into a MintEnvelope for stdout output.
-///
+/// Convert a ScopedToken into a MintEnvelope for stdout output.
 /// **Secret boundary**: Calls `expose_secret()` on the ScopedToken to extract
 /// the raw credential value. This is the designated path for outputting raw
-/// credentials (NS-064: mint stdout is the one exception to NS-005 redaction).
-///
+/// credentials.
 /// Takes `&ScopedToken` (borrow) because the caller may still need the token
 /// for child process injection after creating the envelope.
 pub fn scoped_token_to_mint_envelope(token: &ScopedToken) -> MintEnvelope {
@@ -123,19 +113,10 @@ mod tests {
         .unwrap()
     }
 
-    // =========================================================================
-    // NS-078 Acceptance 1: Conversions between internal token types and
-    // mint output are centralized.
-    //
-    // There must be a single, canonical conversion path:
-    //   ProviderOutput → ScopedToken → MintEnvelope
-    // All conversion functions live in the token_convert module.
-    // =========================================================================
-
     #[test]
     #[verifies("rule_cross_single_conversion_path", examples)]
     fn centralized_provider_output_to_scoped_token() {
-        // NS-078: A centralized function must convert ProviderOutput → ScopedToken.
+        // A centralized function must convert ProviderOutput → ScopedToken.
         // Takes ProviderOutput plus role, token_id, and provider name
         // (which the provider output doesn't carry).
         let expiry = Utc::now() + chrono::Duration::hours(1);
@@ -151,7 +132,7 @@ mod tests {
 
     #[test]
     fn centralized_provider_output_to_scoped_token_with_token_id() {
-        // NS-078: When caller supplies a token_id, it must be carried through.
+        // When caller supplies a token_id, it must be carried through.
         let expiry = Utc::now() + chrono::Duration::hours(1);
         let output = make_provider_output("secret-val", expiry);
 
@@ -167,7 +148,7 @@ mod tests {
 
     #[test]
     fn centralized_provider_output_to_scoped_token_without_token_id() {
-        // NS-078: When no token_id is supplied, ScopedToken gets None.
+        // When no token_id is supplied, ScopedToken gets None.
         let expiry = Utc::now() + chrono::Duration::hours(1);
         let output = make_provider_output("secret", expiry);
 
@@ -178,7 +159,7 @@ mod tests {
 
     #[test]
     fn centralized_provider_output_to_scoped_token_computed_expiry() {
-        // NS-078: When provider doesn't supply expires_at (NS-034),
+        // When provider doesn't supply expires_at,
         // the computed expiry from ProviderOutput must be preserved.
         let output =
             crate::provider_exec::parse_provider_output(r#"{"token": "secret"}"#, 3600).unwrap();
@@ -195,7 +176,7 @@ mod tests {
 
     #[test]
     fn centralized_scoped_token_to_mint_envelope() {
-        // NS-078: A centralized function must convert ScopedToken → MintEnvelope.
+        // A centralized function must convert ScopedToken → MintEnvelope.
         // This is the ONLY approved path for creating MintEnvelopes from tokens.
         let expiry = Utc::now() + chrono::Duration::hours(1);
         let token = ScopedToken::new(
@@ -218,7 +199,7 @@ mod tests {
 
     #[test]
     fn centralized_scoped_token_to_mint_envelope_without_token_id() {
-        // NS-078: When ScopedToken has no token_id, envelope uses empty string.
+        // When ScopedToken has no token_id, envelope uses empty string.
         let token = ScopedToken::new(
             SecretString::from("secret".to_string()),
             "admin",
@@ -235,7 +216,7 @@ mod tests {
 
     #[test]
     fn centralized_full_pipeline_provider_output_to_envelope() {
-        // NS-078: The full conversion pipeline should be composable:
+        // The full conversion pipeline should be composable:
         // ProviderOutput → ScopedToken → MintEnvelope
         let expiry = Utc::now() + chrono::Duration::hours(1);
         let output = make_provider_output("pipeline-secret", expiry);
@@ -256,18 +237,9 @@ mod tests {
         assert_eq!(parsed["token_id"].as_str().unwrap(), "tid-pipe");
     }
 
-    // =========================================================================
-    // NS-078 Acceptance 2: Duplicate serialization shape definitions are
-    // reduced/eliminated.
-    //
-    // The JSON field set {token, expires_at, token_id, provider, role}
-    // must be defined ONCE and reused for both single-envelope and
-    // multi-envelope output.
-    // =========================================================================
-
     #[test]
     fn unified_serialization_single_envelope_field_set() {
-        // NS-078: Single envelope JSON must use the canonical field set.
+        // Single envelope JSON must use the canonical field set.
         let token = ScopedToken::new(
             SecretString::from("tok-val".to_string()),
             "admin",
@@ -290,7 +262,7 @@ mod tests {
 
     #[test]
     fn unified_serialization_multi_envelope_uses_same_shape() {
-        // NS-078: Multi-envelope output (format_mint_output) must produce
+        // Multi-envelope output (format_mint_output) must produce
         // the same field set as single-envelope to_json().
         use crate::mint::format_mint_output;
 
@@ -329,22 +301,13 @@ mod tests {
 
         assert_eq!(
             single_fields, multi_fields,
-            "NS-078: single and multi envelope must have identical field sets"
+            "single and multi envelope must have identical field sets"
         );
     }
 
-    // =========================================================================
-    // NS-078 Acceptance 3: Secret-handling guarantees remain explicit at
-    // each boundary.
-    //
-    // - ProviderOutput → ScopedToken: raw String consumed into SecretString
-    // - ScopedToken → MintEnvelope: expose_secret() called explicitly
-    // - Each boundary documents which NS rules apply
-    // =========================================================================
-
     #[test]
     fn secret_boundary_provider_output_consumed() {
-        // NS-078: provider_output_to_scoped_token takes ownership of the
+        // provider_output_to_scoped_token takes ownership of the
         // ProviderOutput (moves it), so the raw token String is consumed.
         // After conversion, only ScopedToken holds the secret.
         let expiry = Utc::now() + chrono::Duration::hours(1);
@@ -358,7 +321,7 @@ mod tests {
 
     #[test]
     fn secret_boundary_scoped_token_not_consumed_by_envelope() {
-        // NS-078: scoped_token_to_mint_envelope takes &ScopedToken (borrow),
+        // scoped_token_to_mint_envelope takes &ScopedToken (borrow),
         // because the caller may still need the token for child process injection.
         // The envelope copies the secret via expose_secret().
         let token = ScopedToken::new(
@@ -376,7 +339,7 @@ mod tests {
 
     #[test]
     fn secret_boundary_envelope_zeroizes_on_drop() {
-        // NS-078: MintEnvelope still zeroizes the token String on drop.
+        // MintEnvelope still zeroizes the token String on drop.
         // (This is verified by the existing MintEnvelope tests, but we
         // confirm it's preserved through the centralized conversion.)
         static_assertions::assert_not_impl_any!(MintEnvelope: Clone);
@@ -384,21 +347,21 @@ mod tests {
 
     #[test]
     fn secret_boundary_scoped_token_not_serializable() {
-        // NS-078: ScopedToken must remain non-serializable (NS-001).
+        // ScopedToken must remain non-serializable.
         // The conversion boundary is the ONLY place secrets cross types.
         static_assertions::assert_not_impl_any!(ScopedToken: serde::Serialize);
     }
 
     #[test]
     fn secret_boundary_provider_output_zeroizes_on_drop() {
-        // NS-078: ProviderOutput zeroizes its token on drop (NS-019).
+        // ProviderOutput zeroizes its token on drop.
         // Consuming it in provider_output_to_scoped_token drops the original.
         static_assertions::assert_not_impl_any!(ProviderOutput: Clone);
     }
 
     #[test]
     fn secret_boundary_provider_output_to_token_does_not_log_secret() {
-        // NS-078: The conversion must not produce debug output containing secrets.
+        // The conversion must not produce debug output containing secrets.
         let expiry = Utc::now() + chrono::Duration::hours(1);
         let output = make_provider_output("do-not-log-this-secret", expiry);
         let token = super::provider_output_to_scoped_token(output, "role", None, "prov");
@@ -413,7 +376,7 @@ mod tests {
 
     #[test]
     fn secret_boundary_envelope_debug_does_not_expose_secret() {
-        // NS-078: MintEnvelope created via centralized conversion must
+        // MintEnvelope created via centralized conversion must
         // still redact in Debug.
         let token = ScopedToken::new(
             SecretString::from("envelope-secret-value".to_string()),
@@ -430,10 +393,6 @@ mod tests {
             debug
         );
     }
-
-    // =========================================================================
-    // Edge cases discovered during Linus review.
-    // =========================================================================
 
     #[test]
     fn pipeline_preserves_special_characters_in_token() {
@@ -470,17 +429,9 @@ mod tests {
         );
     }
 
-    // =========================================================================
-    // NS-078: expires_at_provided flag preservation
-    //
-    // When converting ProviderOutput → ScopedToken, the information about
-    // whether expires_at was provider-supplied or computed must be queryable
-    // so the caller can emit the NS-034 warning.
-    // =========================================================================
-
     #[test]
     fn provider_output_expires_at_provided_flag_accessible() {
-        // NS-078: The conversion result should allow the caller to check
+        // The conversion result should allow the caller to check
         // whether expires_at was provided by the provider or computed.
         let output =
             crate::provider_exec::parse_provider_output(r#"{"token": "secret"}"#, 3600).unwrap();
@@ -504,7 +455,7 @@ mod tests {
 
     #[test]
     fn conversion_result_token_accessible() {
-        // NS-078: The ConversionResult must provide access to the ScopedToken.
+        // The ConversionResult must provide access to the ScopedToken.
         let expiry = Utc::now() + chrono::Duration::hours(1);
         let output = make_provider_output("accessible-secret", expiry);
 
