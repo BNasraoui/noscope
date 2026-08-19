@@ -3,6 +3,7 @@
 // Verified through the real binary: a process that leads a new group has
 // pgid equal to its own pid.
 
+#[cfg(target_os = "linux")]
 use provenance_macros::verifies;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
