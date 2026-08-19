@@ -72,11 +72,11 @@ fn ns_079_success_messages_are_emitted_on_stdout_not_stderr() {
     );
     assert!(
         String::from_utf8_lossy(&validate.stdout).contains("configuration is valid"),
-        "NS-079: validate success message must be on stdout"
+        "validate success message must be on stdout"
     );
     assert!(
         validate.stderr.is_empty(),
-        "NS-079: validate success must not write to stderr"
+        "validate success must not write to stderr"
     );
 
     let revoke = run_noscope(
@@ -90,11 +90,11 @@ fn ns_079_success_messages_are_emitted_on_stdout_not_stderr() {
     );
     assert!(
         String::from_utf8_lossy(&revoke.stdout).contains("revoked token tok-123"),
-        "NS-079: revoke success message must be on stdout"
+        "revoke success message must be on stdout"
     );
     assert!(
         revoke.stderr.is_empty(),
-        "NS-079: revoke success must not write to stderr"
+        "revoke success must not write to stderr"
     );
 }
 
@@ -212,12 +212,12 @@ fn ns_081_output_json_mode_emits_structured_errors_on_stderr() {
     );
     assert!(
         output.stdout.is_empty(),
-        "NS-081: failures must not emit payload to stdout"
+        "failures must not emit payload to stdout"
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let err_json: Value = serde_json::from_str(stderr.trim())
-        .expect("NS-081: --output json failures must write JSON object to stderr");
+        .expect("--output json failures must write JSON object to stderr");
     assert_eq!(err_json["status"], "error");
     assert_eq!(err_json["kind"], "config");
     assert_eq!(err_json["command"], "validate");
@@ -261,12 +261,12 @@ fn ns_081_output_json_mode_reports_provider_failures_for_revoke() {
     assert!(!output.status.success(), "revoke should fail");
     assert!(
         output.stdout.is_empty(),
-        "NS-081: revoke failures must not write to stdout"
+        "revoke failures must not write to stdout"
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let err_json: Value = serde_json::from_str(stderr.trim())
-        .expect("NS-081: revoke failures must render JSON in --output json mode");
+        .expect("revoke failures must render JSON in --output json mode");
     assert_eq!(err_json["status"], "error");
     assert_eq!(err_json["command"], "revoke");
     assert_eq!(err_json["kind"], "provider");

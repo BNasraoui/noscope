@@ -59,8 +59,8 @@ fn run_noscope(xdg: &Path, child: &str) -> std::process::Output {
 }
 
 /// A provider whose lease expires in 2 seconds: the refresh timer (75% of
-/// lifetime, NS-048) fires while the child is alive, and the provider's
-/// refresh command runs with the NS-039 env contract.
+/// lifetime) fires while the child is alive, and the provider's
+/// refresh command runs with env contract.
 #[test]
 #[verifies("rule_refresh_rotate_mode_warning", conformance)]
 fn run_mode_executes_provider_refresh_command_when_due() {
@@ -104,7 +104,7 @@ fn run_mode_executes_provider_refresh_command_when_due() {
         stderr
     );
 
-    // NS-039: refresh received the current value, the lease id, and the TTL.
+    // refresh received the current value, the lease id, and the TTL.
     let recorded = fs::read_to_string(&marker)
         .expect("refresh command must have run while the child was alive");
     assert!(
@@ -123,10 +123,10 @@ fn run_mode_executes_provider_refresh_command_when_due() {
         recorded
     );
 
-    // NS-025: startup warning that env injection is point-in-time.
+    // startup warning that env injection is point-in-time.
     assert!(
         stderr.contains("environment variable injection is point-in-time"),
-        "refresh-enabled run must emit the NS-025 startup warning; stderr: {}",
+        "refresh-enabled run must emit the point-in-time startup warning; stderr: {}",
         stderr
     );
 
@@ -163,7 +163,7 @@ fn run_mode_without_refresh_command_emits_no_refresh_warnings() {
     );
 }
 
-/// NS-049: an expired credential produces a log-only warning; the child
+/// an expired credential produces a log-only warning; the child
 /// keeps running and the run still passes through the child exit code.
 #[test]
 #[verifies("rule_expiry_log_only", conformance)]
@@ -184,7 +184,7 @@ fn run_mode_expiry_warns_without_stopping_child() {
     let output = run_noscope(tmp.path(), "sleep 2; exit 7");
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // NS-004: the child ran to completion and its exit code passed through.
+    // the child ran to completion and its exit code passed through.
     assert_eq!(
         output.status.code(),
         Some(7),

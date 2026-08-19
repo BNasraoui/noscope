@@ -1,5 +1,5 @@
 // The documented pipeline: noscope mint ... | noscope revoke --from-stdin.
-// Mint emits a JSON array of envelopes (NS-063); revoke consumes that
+// Mint emits a JSON array of envelopes; revoke consumes that
 // array and revokes every lease in it by identifier
 // (res_revoke_contract_identifier_only).
 

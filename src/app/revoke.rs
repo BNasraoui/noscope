@@ -1,32 +1,30 @@
 // The single revoke execution path.
-//
 // Revocation addresses a lease by identifier: the provider receives
 // NOSCOPE_TOKEN_ID and never the credential value
 // (res_revoke_contract_identifier_only). Used by `noscope revoke`, by
-// rollback after a failed atomic mint (NS-047), and by shutdown-signal
-// revocation in run mode (NS-003).
+// rollback after a failed atomic mint, and by shutdown-signal
+// revocation in run mode.
 
 use std::collections::HashMap;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
-use crate::command_parse::parse_command;
-use crate::credential_set::{CredentialSet, RollbackBudget, RollbackLogEntry};
-use crate::error::Error;
-use crate::event::{emit_runtime_event, Event, EventType};
-use crate::mint::RevokeInput;
-use crate::provider::ResolvedProvider;
-use crate::provider_exec::{self, ExecConfig};
-use crate::signal_policy::{
+use crate::core::credential_set::{CredentialSet, RollbackBudget, RollbackLogEntry};
+use crate::core::error::Error;
+use crate::core::mint::RevokeInput;
+use crate::core::signal_policy::{
     ActiveCredential, RevocationBudget, RevocationResultKind, SignalHandlingPolicy,
 };
-use crate::token::ScopedToken;
+use crate::core::token::ScopedToken;
+use crate::ports::command_parse::parse_command;
+use crate::ports::event::{emit_runtime_event, Event, EventType};
+use crate::ports::provider::ResolvedProvider;
+use crate::ports::provider_exec::{self, ExecConfig};
 use provenance_macros::rule;
 
 /// Build the RevokeInputs from CLI arguments.
-///
 /// With --from-stdin the payload is `noscope mint` output: a JSON array
-/// of envelopes (NS-063), each of which becomes one revocation. A single
+/// of envelopes, each of which becomes one revocation. A single
 /// bare envelope object is also accepted.
 pub fn revoke_inputs_from_cli(
     from_stdin: bool,
@@ -157,7 +155,7 @@ fn rollback_backoff_for_retry(retry: u32) -> Duration {
     ROLLBACK_BASE_BACKOFF.saturating_mul(factor)
 }
 
-/// NS-047: Revoke one token within the rollback budget, with retries and
+/// Revoke one token within the rollback budget, with retries and
 /// exponential backoff. Injectable revoke/sleep/log for testability.
 #[rule("rule_cross_rollback_budget")]
 pub async fn revoke_token_with_budget<RevokeFn, RevokeFut, SleepFn, SleepFut, LogFn>(
@@ -225,7 +223,7 @@ pub async fn revoke_token_with_budget<RevokeFn, RevokeFut, SleepFn, SleepFut, Lo
     }
 }
 
-/// NS-047: Roll back already-minted tokens after a failed atomic mint.
+/// Roll back already-minted tokens after a failed atomic mint.
 pub async fn revoke_minted_tokens(
     resolved_by_name: &HashMap<String, ResolvedProvider>,
     succeeded_tokens: &[ScopedToken],
@@ -266,7 +264,7 @@ pub async fn revoke_minted_tokens(
     }
 }
 
-/// NS-003: Revoke every credential in the set on a shutdown signal.
+/// Revoke every credential in the set on a shutdown signal.
 pub fn revoke_on_shutdown_signal(
     runtime: &tokio::runtime::Runtime,
     resolved_by_name: &HashMap<String, ResolvedProvider>,
