@@ -94,6 +94,7 @@ pub struct AgentProcess {
 }
 
 impl AgentProcess {
+    #[rule("rule_signals_noscope_env_stripped")]
     pub fn spawn(config: AgentProcessConfig) -> Result<Self, AgentProcessError> {
         let mut env: HashMap<String, String> = std::env::vars()
             .filter(|(k, _)| !k.starts_with("NOSCOPE_"))
@@ -151,6 +152,7 @@ impl AgentProcess {
         })
     }
 
+    #[rule("rule_signals_forward_to_group")]
     pub fn forward_signal(&mut self, signal: libc::c_int) -> Result<(), AgentProcessError> {
         let child = self.child.as_ref().ok_or_else(|| AgentProcessError::Io {
             context: "child already waited",
@@ -384,6 +386,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_signals_noscope_env_stripped", examples)]
     fn strip_noscope_env_vars_before_spawn_ns_021() {
         // SAFETY: test-local env mutation only.
         unsafe {
@@ -543,6 +546,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_signals_forward_to_group", examples)]
     fn forwards_parent_signals_to_child() {
         let mut process = AgentProcess::spawn(shell_config("sleep 60")).unwrap();
         process.forward_signal(libc::SIGTERM).unwrap();

@@ -1,3 +1,4 @@
+use provenance_macros::verifies;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -176,6 +177,7 @@ fn ns_080_output_json_mode_emits_structured_success_payloads() {
 }
 
 #[test]
+#[verifies("rule_errors_json_error_object", conformance)]
 fn ns_081_output_json_mode_emits_structured_errors_on_stderr() {
     let temp = tempfile::tempdir().expect("tempdir");
     let mint = temp.path().join("mint.sh");

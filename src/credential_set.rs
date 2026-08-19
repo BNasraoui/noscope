@@ -434,6 +434,7 @@ pub fn compute_refresh_at(token: &ScopedToken) -> DateTime<Utc> {
 }
 
 /// NS-046: Format a timeout error message for a provider.
+#[rule("rule_orchestration_timeout_error_names_provider")]
 pub fn format_timeout_error(provider: &str, timeout: Duration) -> String {
     format!(
         "provider '{}' timed out after {}s",

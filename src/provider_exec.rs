@@ -176,6 +176,8 @@ impl StderrPolicy {
 /// Extracts `token` (required, string) and `expires_at` (optional, ISO 8601).
 /// If `expires_at` is absent, computes `now() + requested_ttl_secs` and sets
 /// `expires_at_provided = false` so the caller can emit the NS-034 warning.
+#[rule("rule_exec_expiry_fallback")]
+#[rule("rule_exec_output_token_contract")]
 pub fn parse_provider_output(
     json_str: &str,
     requested_ttl_secs: u64,
@@ -258,6 +260,7 @@ pub fn validate_role(role: &str) -> Result<(), ProviderExecError> {
 /// Replaces `{role}` with the role string and `{ttl}` with TTL as integer
 /// seconds. This is pure string replacement on each element of the array —
 /// no shell is involved.
+#[rule("rule_cross_template_substitution")]
 pub fn substitute_template_vars(template: &[String], role: &str, ttl_secs: u64) -> Vec<String> {
     let ttl_str = ttl_secs.to_string();
     template
@@ -271,6 +274,7 @@ pub fn substitute_template_vars(template: &[String], role: &str, ttl_secs: u64) 
 // ---------------------------------------------------------------------------
 
 /// NS-036: Check that provider stdout does not exceed 1 MiB.
+#[rule("rule_exec_stdout_1mib_cap")]
 pub fn check_stdout_size_limit(size: usize) -> Result<(), ProviderExecError> {
     if size > MAX_STDOUT_BYTES {
         return Err(ProviderExecError::StdoutTooLarge {
@@ -301,6 +305,7 @@ pub fn build_revoke_env(token_id: &str) -> HashMap<String, String> {
 /// NS-038: Check if a revoke command exit code indicates success.
 ///
 /// Exit 0 is success, including the case where the token was already revoked.
+#[rule("rule_cross_revoke_idempotent_exit0")]
 pub fn is_revoke_success(exit_code: i32) -> bool {
     exit_code == 0
 }
@@ -327,6 +332,7 @@ pub fn build_refresh_env(token: &str, token_id: &str, ttl_secs: u64) -> HashMap<
 /// NS-040: Capture stderr up to the size limit.
 ///
 /// Truncates to `MAX_STDERR_CAPTURE_BYTES` (4096 bytes).
+#[rule("rule_exec_stderr_truncate")]
 pub fn capture_stderr(stderr: &str) -> &str {
     if stderr.len() <= MAX_STDERR_CAPTURE_BYTES {
         stderr
@@ -343,6 +349,7 @@ pub fn capture_stderr(stderr: &str) -> &str {
 /// NS-040: Redact known token values from stderr.
 ///
 /// Replaces each occurrence of a known token with `[redacted]`.
+#[rule("rule_exec_stderr_redaction")]
 pub fn redact_stderr(stderr: &str, known_tokens: &[&str]) -> String {
     let mut result = stderr.to_string();
     for token in known_tokens {
@@ -457,6 +464,7 @@ pub struct ProviderExecResult {
 /// # Returns
 /// - `Ok(ProviderExecResult)` with all execution results.
 /// - `Err(std::io::Error)` if the command could not be spawned.
+#[rule("rule_exec_exit0_only_mints")]
 pub async fn execute_provider_command(
     argv: &[String],
     extra_env: &HashMap<String, String>,
@@ -632,6 +640,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[verifies("rule_exec_output_token_contract", examples)]
     fn provider_output_contract_parses_valid_json_with_token_and_expires_at() {
         let json = r#"{"token": "my-secret-token-123", "expires_at": "2026-03-30T12:00:00Z"}"#;
         let result = super::parse_provider_output(json, 3600);
@@ -790,6 +799,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_cross_template_substitution", examples)]
     fn template_variable_injection_prevention_argv_substitution() {
         // Template variables are substituted in an argv array, never via shell.
         let template = vec![
@@ -844,6 +854,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[verifies("rule_exec_expiry_fallback", examples)]
     fn missing_expires_at_computed_from_requested_ttl() {
         let json = r#"{"token": "tok-123"}"#;
         let before = chrono::Utc::now();
@@ -950,6 +961,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_exec_stdout_1mib_cap", examples)]
     fn provider_stdout_size_limit_rejects_over_1_mib() {
         let over_1_mib = (1024 * 1024) + 1;
         assert!(
@@ -1028,6 +1040,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_cross_revoke_idempotent_exit0", examples)]
     fn revoke_command_exit_0_for_already_revoked() {
         // exit 0 means success (including already-revoked); the caller
         // should treat exit 0 from revoke as success regardless.
@@ -1117,6 +1130,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_exec_stderr_truncate", examples)]
     fn provider_stderr_handling_truncates_to_limit() {
         let long_stderr = "x".repeat(8192);
         let captured = super::capture_stderr(&long_stderr);
@@ -1284,6 +1298,7 @@ mint = "/usr/bin/mint"
     }
 
     #[test]
+    #[verifies("rule_cross_capability_consistency", examples)]
     fn provider_capability_declaration_revoke_without_revoke_cmd_is_inconsistent() {
         // If supports_revoke = true but no revoke command, that's a validation issue.
         let caps = super::ProviderCapabilities {
@@ -1666,6 +1681,7 @@ mod engine_tests {
 
     use super::*;
     use crate::exit_code::ProviderExitCode;
+    use provenance_macros::verifies;
 
     // =========================================================================
     // NS-068: Execution engine uses build_sandboxed_env() for subprocess env
@@ -1846,6 +1862,7 @@ mod engine_tests {
     }
 
     #[tokio::test]
+    #[verifies("rule_exec_stderr_redaction", examples)]
     async fn engine_redacts_known_tokens_from_stderr() {
         let token = "super-secret-token-value-xyz";
         let mut extra_env = HashMap::new();
@@ -2096,6 +2113,7 @@ mod engine_tests {
     }
 
     #[tokio::test]
+    #[verifies("rule_exec_exit0_only_mints", examples)]
     async fn engine_does_not_parse_output_on_nonzero_exit() {
         // When the provider exits non-zero, we should still report the exit
         // code but the parsed_output should reflect the failure.

@@ -14,6 +14,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::config_path::named_config_toml_path;
+use provenance_macros::rule;
 
 /// NS-072: The current provider contract version.
 ///
@@ -37,6 +38,7 @@ pub fn supported_contract_versions() -> Vec<u32> {
 /// NS-072: Validate that a contract version is supported.
 ///
 /// Rejects versions not in the supported set.
+#[rule("rule_config_contract_version_gate")]
 pub fn validate_contract_version(version: u32) -> Result<(), ProviderConfigError> {
     let supported = supported_contract_versions();
     if supported.contains(&version) {
@@ -156,6 +158,7 @@ pub type ProviderEnv = ProviderCommandInput;
 /// `ProviderEnv` is a type alias for `ProviderCommandInput`. An `impl`
 /// block on a type alias would leak the method onto `ProviderFlags` too,
 /// which is semantically wrong — flags don't come from env vars.
+#[rule("rule_config_env_override_vars")]
 pub fn provider_env_from_process() -> ProviderEnv {
     fn read_var(name: &str) -> Option<String> {
         std::env::var(name).ok().filter(|v| !v.is_empty())
@@ -240,6 +243,7 @@ pub fn provider_config_path_with_home(
 ///
 /// Returns MalformedConfig error for syntax errors or missing required fields.
 /// Returns UnsupportedContractVersion for versions outside the supported set.
+#[rule("rule_config_provider_toml_schema")]
 pub fn parse_provider_toml(content: &str) -> Result<FileProviderConfig, ProviderConfigError> {
     let table: toml::Table =
         content
@@ -343,6 +347,7 @@ fn parse_optional_bool(table: &toml::Table, key: &str) -> Result<bool, ProviderC
 }
 
 /// NS-041: Validate capability declarations against configured commands.
+#[rule("rule_cross_capability_consistency")]
 pub fn validate_declared_capabilities(
     caps: &ProviderCapabilities,
     has_refresh_cmd: bool,
@@ -394,6 +399,7 @@ const INSECURE_MODE_BITS: u32 = 0o020 | 0o007;
 ///
 /// Secret-bearing config files must not be group-writable or world-accessible.
 /// See [`INSECURE_MODE_BITS`] for the exact policy.
+#[rule("rule_cross_config_file_permissions")]
 pub fn check_config_permissions(path: &Path) -> Result<(), ProviderConfigError> {
     let metadata = fs::metadata(path).map_err(|e| ProviderConfigError::MalformedConfig {
         message: format!("cannot stat {}: {}", path.display(), e),
@@ -417,6 +423,7 @@ pub fn check_config_permissions(path: &Path) -> Result<(), ProviderConfigError> 
 /// The highest-precedence layer that has ANY value wins entirely.
 ///
 /// Returns ProviderNotFound with checked locations if no layer provides config.
+#[rule("rule_config_not_found_lists_locations")]
 pub fn resolve_provider_config(
     name: &str,
     flags: &ProviderFlags,
@@ -484,6 +491,7 @@ pub fn resolve_provider_config_at(
 }
 
 /// Select the highest-precedence provider config layer with any values.
+#[rule("rule_config_precedence_no_merge")]
 pub fn select_provider_config_layer(
     flags: &ProviderFlags,
     env: &ProviderEnv,
@@ -538,6 +546,7 @@ pub fn dry_run_output(config: &ResolvedProvider, role: &str, ttl_secs: u64) -> S
 ///
 /// Checks that all configured commands exist and are executable.
 /// Does NOT execute any commands.
+#[rule("rule_validate_checks_without_running")]
 pub fn validate_provider(config: &ResolvedProvider) -> Result<(), ProviderConfigError> {
     let mut problems = Vec::new();
 
@@ -591,6 +600,7 @@ fn check_command_executable(cmd: &str, label: &str, problems: &mut Vec<String>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use provenance_macros::verifies;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
@@ -652,6 +662,7 @@ VAULT_ADDR = "https://vault.example.com"
     }
 
     #[test]
+    #[verifies("rule_config_env_override_vars", examples)]
     fn strict_config_precedence_env_wins_over_file() {
         let tmp = tempfile::tempdir().unwrap();
         write_provider_toml(tmp.path(), "mycloud", valid_provider_toml());
@@ -705,6 +716,7 @@ VAULT_ADDR = "https://vault.example.com"
     }
 
     #[test]
+    #[verifies("rule_config_precedence_no_merge", examples)]
     fn strict_config_precedence_no_merging_across_layers() {
         let flags = flags_with_mint_cmd("/from/flags/mint");
         let env = ProviderEnv {
@@ -789,6 +801,7 @@ VAULT_ADDR = "https://vault.example.com"
     }
 
     #[test]
+    #[verifies("rule_config_provider_toml_schema", examples)]
     fn malformed_config_is_hard_error_missing_required_field() {
         let incomplete_toml = r#"
 [commands]
@@ -831,6 +844,7 @@ mint = ""
     // =========================================================================
 
     #[test]
+    #[verifies("rule_config_not_found_lists_locations", examples)]
     fn provider_not_found_enumerates_checked_locations() {
         let result = resolve_provider_config(
             "nonexistent",
@@ -898,6 +912,7 @@ mint = ""
     // =========================================================================
 
     #[test]
+    #[verifies("rule_cross_config_file_permissions", examples)]
     fn config_file_permission_enforcement_rejects_world_readable() {
         let tmp = tempfile::tempdir().unwrap();
         let file_path = tmp.path().join("provider.toml");
@@ -1217,6 +1232,7 @@ mint = ""
     // =========================================================================
 
     #[test]
+    #[verifies("rule_validate_checks_without_running", examples)]
     fn validate_provider_checks_mint_cmd_exists() {
         let config = ResolvedProvider {
             name: "test".to_string(),
@@ -1512,6 +1528,7 @@ mint = "/usr/bin/mint"
     }
 
     #[test]
+    #[verifies("rule_config_contract_version_gate", examples)]
     fn provider_contract_version_rejects_unsupported_future_version() {
         // NS-072: A version far beyond current must be rejected.
         let toml = r#"

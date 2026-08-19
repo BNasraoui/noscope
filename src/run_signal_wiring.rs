@@ -1,5 +1,6 @@
 use crate::signal_policy::{ParentSignal, SignalHandlingPolicy};
 use crate::{event::emit_runtime_event, Event, EventType};
+use provenance_macros::rule;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SignalActionReport {
@@ -21,6 +22,7 @@ pub struct RunSignalWiring {
 }
 
 impl RunSignalWiring {
+    #[rule("rule_signals_event_honesty")]
     pub fn on_parent_signal<P, R>(
         &mut self,
         signal: ParentSignal,
@@ -107,6 +109,7 @@ fn libc_signal(signal: ParentSignal) -> i32 {
 #[cfg(test)]
 mod tests {
     use crate::signal_policy::ParentSignal;
+    use provenance_macros::verifies;
 
     #[derive(Default)]
     struct FakeProcess {
@@ -211,6 +214,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_signals_event_honesty", examples)]
     fn ns_070_sigkill_forward_failure_does_not_emit_signal_forwarded() {
         struct FailingProcess;
 

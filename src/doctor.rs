@@ -15,6 +15,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::provider;
+use provenance_macros::rule;
 
 // ---------------------------------------------------------------------------
 // NS-083: Structured check types
@@ -46,6 +47,7 @@ pub struct Check {
 
 /// Full report from `noscope doctor`.
 #[derive(Debug)]
+#[rule("rule_doctor_exit_codes")]
 pub struct DoctorReport {
     /// All check results, in the order they were performed.
     pub checks: Vec<Check>,
@@ -112,6 +114,7 @@ pub struct InitResult {
 /// The `xdg_config_home` parameter is the XDG_CONFIG_HOME directory (or
 /// `$HOME/.config` if unset). Provider configs are expected at
 /// `<xdg_config_home>/noscope/providers/<name>.toml`.
+#[rule("rule_doctor_checks")]
 pub fn run_doctor(xdg_config_home: &Path) -> DoctorReport {
     let mut checks = Vec::new();
     let noscope_dir = xdg_config_home.join("noscope");
@@ -307,6 +310,8 @@ fn check_command_health(cmd: &str, check_name: &str, checks: &mut Vec<Check>) {
 ///
 /// All directories are created with mode 0700 (owner-only).
 /// Idempotent: existing directories are left unchanged.
+#[rule("rule_init_creates_0700")]
+#[rule("rule_init_idempotent")]
 pub fn run_init(xdg_config_home: &Path) -> Result<InitResult, std::io::Error> {
     let dirs = [
         xdg_config_home.join("noscope"),
@@ -333,11 +338,13 @@ pub fn run_init(xdg_config_home: &Path) -> Result<InitResult, std::io::Error> {
 
 #[cfg(test)]
 mod tests {
+    use provenance_macros::verifies;
     // =========================================================================
     // NS-080: doctor checks config directory exists and is accessible
     // =========================================================================
 
     #[test]
+    #[verifies("rule_doctor_checks", examples)]
     fn doctor_checks_config_dir_exists() {
         // When the config directory exists, the check should pass.
         let tmp = tempfile::tempdir().unwrap();
@@ -750,6 +757,7 @@ mint = "{}"
     }
 
     #[test]
+    #[verifies("rule_doctor_exit_codes", examples)]
     fn doctor_exit_code_failure_takes_precedence_over_warning() {
         let report = super::DoctorReport {
             checks: vec![
@@ -811,6 +819,7 @@ mint = "{}"
     // =========================================================================
 
     #[test]
+    #[verifies("rule_init_creates_0700", examples)]
     fn init_sets_secure_permissions_on_created_dirs() {
         use std::os::unix::fs::PermissionsExt;
 
@@ -851,6 +860,7 @@ mint = "{}"
     // =========================================================================
 
     #[test]
+    #[verifies("rule_init_idempotent", examples)]
     fn init_is_idempotent() {
         use std::os::unix::fs::PermissionsExt;
 

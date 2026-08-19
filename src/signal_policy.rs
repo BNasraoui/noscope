@@ -223,6 +223,7 @@ impl SignalHandlingPolicy {
     }
 
     /// NS-026: Forward TERM/HUP/INT to child process group; ignore PIPE.
+    #[rule("rule_signals_forward_set")]
     pub fn should_forward_to_child_group(&self, signal: ParentSignal) -> bool {
         matches!(
             signal,
@@ -263,6 +264,7 @@ impl SignalHandlingPolicy {
     }
 
     /// NS-029: Revoke all active credentials in parallel; isolate failures.
+    #[rule("rule_signals_parallel_revocation_isolation")]
     pub async fn revoke_all_on_signal<F, Fut>(
         &self,
         credentials: Vec<ActiveCredential>,
@@ -298,6 +300,7 @@ impl SignalHandlingPolicy {
     }
 }
 
+#[rule("rule_signals_signal_revocation_budget")]
 async fn revoke_with_budget<F, Fut>(
     credential: ActiveCredential,
     budget: RevocationBudget,
@@ -385,6 +388,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_signals_forward_set", examples)]
     fn ns_026_signal_forwarding_policy_forwards_supported_signals_and_ignores_sigpipe() {
         let policy = SignalHandlingPolicy::default();
 
@@ -430,6 +434,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[verifies("rule_signals_parallel_revocation_isolation", examples)]
     async fn ns_029_multi_credential_revocation_on_signal_runs_in_parallel_and_is_failure_isolated()
     {
         let policy = SignalHandlingPolicy::default();
@@ -472,6 +477,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[verifies("rule_signals_signal_revocation_budget", examples)]
     async fn ns_027_revocation_timeout_and_retry_budget_retries_with_backoff_until_success() {
         let policy = SignalHandlingPolicy::default();
         let attempts = Arc::new(AtomicUsize::new(0));

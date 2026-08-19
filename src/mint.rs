@@ -14,6 +14,7 @@ use crate::exit_code::NoscopeExitCode;
 use crate::redaction::RedactedToken;
 use crate::signal_policy::{SignalHandlingPolicy, TtlBounds};
 use crate::token::ScopedToken;
+use provenance_macros::rule;
 
 /// NS-060: Mint output envelope for stdout.
 ///
@@ -58,6 +59,7 @@ impl fmt::Debug for MintEnvelope {
 /// Internal serialization helper — keeps Serialize out of the public type.
 /// Field names match the NS-060 JSON contract exactly.
 #[derive(Serialize)]
+#[rule("rule_token_mint_envelope_five_fields")]
 struct SerializableMintEnvelope<'a> {
     token: &'a str,
     expires_at: String,
@@ -148,6 +150,7 @@ impl RevokeInput {
     ///
     /// Extracts only `token_id` and `provider`. The raw `token` field is
     /// read from JSON but never stored (NS-012).
+    #[rule("rule_token_revoke_stdin_envelope")]
     pub fn from_mint_json(json_str: &str) -> Result<Self, MintError> {
         let parsed: serde_json::Value =
             serde_json::from_str(json_str).map_err(|e| MintError::InvalidInput {
@@ -273,6 +276,7 @@ pub fn format_mint_output(envelopes: &[MintEnvelope]) -> String {
 ///
 /// If `is_tty` is true and `force` is false, returns an error with exit code 64.
 /// Tokens in terminal scrollback are a security risk.
+#[rule("rule_cross_terminal_refusal")]
 pub fn check_stdout_not_terminal(is_tty: bool, force: bool) -> Result<(), MintError> {
     if is_tty && !force {
         return Err(MintError::TerminalDetected);
@@ -318,6 +322,7 @@ impl std::error::Error for MintError {}
 #[cfg(test)]
 mod tests {
     use chrono::{DateTime, Utc};
+    use provenance_macros::verifies;
     use serde_json::Value;
 
     // =========================================================================
@@ -412,6 +417,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_token_mint_envelope_five_fields", examples)]
     fn mint_output_envelope_has_exactly_five_fields() {
         let envelope = super::MintEnvelope::new(
             "tok",
@@ -482,6 +488,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_token_revoke_stdin_envelope", examples)]
     fn revoke_input_from_mint_json_stdin() {
         let mint_json = r#"{"token":"secret","expires_at":"2025-01-01T00:00:00Z","token_id":"tok-99","provider":"gcp","role":"viewer"}"#;
         let input = super::RevokeInput::from_mint_json(mint_json).unwrap();
@@ -771,6 +778,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[verifies("rule_cross_terminal_refusal", examples)]
     fn terminal_detection_rejects_tty_stdout() {
         // NS-065: If stdout is a terminal, mint should be rejected.
         let result = super::check_stdout_not_terminal(true, false);

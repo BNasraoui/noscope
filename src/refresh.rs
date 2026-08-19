@@ -44,6 +44,7 @@ pub struct RefreshOutcome {
 /// - base 1s, 2x multiplier, max 4 retries, +/-25% jitter
 /// - total retry window <= 50% remaining token lifetime
 #[derive(Debug)]
+#[rule("rule_refresh_retry_params")]
 pub struct RetryParams {
     /// Base delay before the first retry.
     pub base_delay: Duration,
@@ -397,6 +398,7 @@ impl RefreshRuntimeLoop {
     }
 
     /// Record a refresh failure and compute next action via RefreshPolicy.
+    #[rule("rule_refresh_never_disabled_for_good")]
     pub fn record_refresh_failure(
         &mut self,
         credential_id: &str,
@@ -706,6 +708,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_refresh_retry_params", examples)]
     fn refresh_retry_parameters_delay_grows_exponentially() {
         // Without jitter: attempt 0 = 1s, attempt 1 = 2s, attempt 2 = 4s, attempt 3 = 8s
         let params = RetryParams::default();
@@ -864,6 +867,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[verifies("rule_refresh_never_disabled_for_good", examples)]
     fn continuous_refresh_after_failure_not_permanently_disabled() {
         // After a failure window (all retries exhausted), the tracker must
         // indicate that refresh should be attempted again at the next normal

@@ -21,6 +21,7 @@ use crate::signal_policy::{
     ActiveCredential, RevocationBudget, RevocationResultKind, SignalHandlingPolicy,
 };
 use crate::token::ScopedToken;
+use provenance_macros::rule;
 
 /// Build the RevokeInputs from CLI arguments.
 ///
@@ -158,6 +159,7 @@ fn rollback_backoff_for_retry(retry: u32) -> Duration {
 
 /// NS-047: Revoke one token within the rollback budget, with retries and
 /// exponential backoff. Injectable revoke/sleep/log for testability.
+#[rule("rule_cross_rollback_budget")]
 pub async fn revoke_token_with_budget<RevokeFn, RevokeFut, SleepFn, SleepFut, LogFn>(
     token: &ScopedToken,
     budget: &RollbackBudget,

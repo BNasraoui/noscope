@@ -14,7 +14,9 @@ use noscope::app::revoke::{
 };
 use noscope::cli::{self, Command};
 use noscope::{Client, ClientOptions, ProviderOverrides};
+use provenance_macros::rule;
 
+#[rule("rule_errors_json_error_object")]
 fn main() -> ExitCode {
     let cli = match cli::parse_from_args(std::env::args_os()) {
         Ok(cli) => cli,
@@ -673,6 +675,7 @@ fn cmd_init(output: cli::OutputFormat) -> Result<i32, noscope::Error> {
     Ok(cli::SUCCESS_EXIT_CODE)
 }
 
+#[rule("rule_cli_completions")]
 fn cmd_completions(args: cli::CompletionsArgs) {
     use clap::CommandFactory;
     clap_complete::generate(
@@ -1298,6 +1301,7 @@ mod run_wiring_tests {
 mod rollback_budget_wiring_tests {
     use chrono::Utc;
     use noscope::app::revoke::revoke_token_with_budget;
+    use provenance_macros::verifies;
     use secrecy::SecretString;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1382,6 +1386,7 @@ mod rollback_budget_wiring_tests {
     }
 
     #[tokio::test]
+    #[verifies("rule_cross_rollback_budget", examples)]
     async fn atomic_rollback_follows_revocation_budget_applies_exponential_backoff() {
         let token = make_token("aws", "tok-aws");
         let budget = noscope::credential_set::RollbackBudget {

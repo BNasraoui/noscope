@@ -2,6 +2,7 @@
 // NS-058: Debug logging redaction invariant
 // NS-059: Redaction format for short and structured tokens
 
+use provenance_macros::rule;
 use sha2::{Digest, Sha256};
 use std::fmt;
 
@@ -14,6 +15,7 @@ use std::fmt;
 ///
 /// NS-058: Redaction applies at ALL log levels. No flag may disable it.
 /// The raw token value is consumed at construction and never stored.
+#[rule("rule_token_redacted_form_no_raw")]
 pub struct RedactedToken {
     /// Pre-computed redacted display string.
     redacted_display: String,
@@ -49,6 +51,7 @@ impl fmt::Debug for RedactedToken {
 }
 
 /// Compute the redacted display string per NS-059 rules.
+#[rule("rule_token_redaction_format")]
 fn compute_redacted_form(value: &str, token_id: Option<&str>) -> String {
     // Empty token edge case
     if value.is_empty() {
@@ -103,6 +106,7 @@ fn hash_based_id(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use provenance_macros::verifies;
 
     // =========================================================================
     // NS-005: Token values must never appear in logs, stderr, stdout, or error
@@ -111,6 +115,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[verifies("rule_token_redacted_form_no_raw", examples)]
     fn display_never_shows_full_token_value() {
         let token = RedactedToken::new("super-secret-token-value-1234567890", None);
         let display = format!("{}", token);
@@ -196,6 +201,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[verifies("rule_token_redaction_format", examples)]
     fn long_token_shows_first_8_chars_with_ellipsis() {
         // 26 chars, well above 16
         let token = RedactedToken::new("abcdefghijklmnopqrstuvwxyz", None);

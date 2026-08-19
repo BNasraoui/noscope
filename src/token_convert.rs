@@ -23,6 +23,7 @@ use secrecy::SecretString;
 use crate::mint::MintEnvelope;
 use crate::provider_exec::ProviderOutput;
 use crate::token::ScopedToken;
+use provenance_macros::rule;
 
 /// Result of converting a ProviderOutput to a ScopedToken, with metadata
 /// about the conversion (e.g., whether expires_at was provider-supplied).
@@ -51,6 +52,7 @@ pub struct ConversionResult {
 /// - `role`: The role this token was minted for (not in provider output).
 /// - `token_id`: Optional provider-supplied or generated token identifier.
 /// - `provider`: The provider name (not in provider output).
+#[rule("rule_cross_single_conversion_path")]
 pub fn provider_output_to_scoped_token(
     output: ProviderOutput,
     role: &str,
@@ -100,6 +102,7 @@ pub fn scoped_token_to_mint_envelope(token: &ScopedToken) -> MintEnvelope {
 #[cfg(test)]
 mod tests {
     use chrono::{DateTime, Utc};
+    use provenance_macros::verifies;
     use secrecy::SecretString;
     use serde_json::Value;
 
@@ -130,6 +133,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[verifies("rule_cross_single_conversion_path", examples)]
     fn centralized_provider_output_to_scoped_token() {
         // NS-078: A centralized function must convert ProviderOutput → ScopedToken.
         // Takes ProviderOutput plus role, token_id, and provider name

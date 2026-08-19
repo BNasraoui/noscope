@@ -1,3 +1,4 @@
+use provenance_macros::rule;
 use std::io;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6,6 +7,7 @@ pub enum ProcessGroupMode {
     Mint,
 }
 
+#[rule("rule_signals_process_group_setup")]
 pub fn configure_child_for_mode(mode: ProcessGroupMode) -> io::Result<()> {
     match mode {
         ProcessGroupMode::Run => configure_child_for_run_mode(),

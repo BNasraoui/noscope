@@ -243,6 +243,7 @@ pub struct CompletionsArgs {
 
 #[cfg(test)]
 mod tests {
+    use provenance_macros::verifies;
     // =========================================================================
     // NS-054: Exit codes become real.
     //
@@ -661,6 +662,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_cli_completions", examples)]
     fn completions_subcommand_accepts_all_shells() {
         for shell in &["bash", "zsh", "fish"] {
             let cli = crate::cli::parse_from_args(["noscope", "completions", "--shell", shell]);

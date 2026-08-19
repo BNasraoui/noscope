@@ -3,6 +3,7 @@
 // NS-055: Signal-terminated provider handling
 // NS-056: Multi-provider error reporting
 
+use provenance_macros::rule;
 use std::fmt;
 
 /// NS-010: Provider exit code protocol.
@@ -181,6 +182,7 @@ impl fmt::Display for ProviderExitResult {
 ///   signal number = raw - 128.
 /// - Other unknown codes (including negatives): mapped to `GeneralError`,
 ///   no signal.
+#[rule("rule_exec_exit_interpretation")]
 pub fn interpret_provider_exit(raw: i32) -> ProviderExitResult {
     if let Some(known) = ProviderExitCode::from_raw(raw) {
         return ProviderExitResult {
@@ -206,6 +208,7 @@ pub fn interpret_provider_exit(raw: i32) -> ProviderExitResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use provenance_macros::verifies;
 
     // =========================================================================
     // NS-010: Provider error exit codes.
@@ -480,6 +483,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_exec_exit_interpretation", examples)]
     fn known_provider_exit_codes_interpreted_directly() {
         let result = interpret_provider_exit(0);
         assert_eq!(result.exit_code, ProviderExitCode::Success);

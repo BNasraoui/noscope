@@ -8,6 +8,7 @@
 // Each event includes: timestamp, type, provider, redacted token ID, duration.
 
 use chrono::{DateTime, Utc};
+use provenance_macros::rule;
 use serde::Serialize;
 use std::fmt;
 #[cfg(test)]
@@ -187,6 +188,7 @@ struct SerializableEvent<'a> {
 /// `--log-format json` selects JSON-per-line output to stderr.
 /// `--log-format text` selects human-readable output (default).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[rule("rule_events_log_format_strict")]
 pub enum LogFormat {
     Json,
     Text,
@@ -209,6 +211,7 @@ impl LogFormat {
 ///
 /// Does not perform I/O — returns the formatted string for the caller
 /// to write to stderr.
+#[rule("rule_events_single_line")]
 pub struct EventEmitter {
     format: LogFormat,
 }
@@ -336,6 +339,7 @@ pub fn clear_test_event_collector() {
 #[cfg(test)]
 mod tests {
     use chrono::{DateTime, Utc};
+    use provenance_macros::verifies;
     use serde_json::Value;
     use std::time::Duration;
 
@@ -613,6 +617,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_events_log_format_strict", examples)]
     fn structured_event_logging_log_format_unknown_returns_none() {
         let format = super::LogFormat::parse("xml");
         assert!(format.is_none(), "Unknown format must return None");
@@ -661,6 +666,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_events_single_line", examples)]
     fn structured_event_logging_emitter_json_single_line() {
         let emitter = super::EventEmitter::new(super::LogFormat::Json);
         let mut event = super::Event::new(super::EventType::RevokeSuccess, "vault");
