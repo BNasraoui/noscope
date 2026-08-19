@@ -379,6 +379,7 @@ pub fn load_provider_file(path: &Path) -> Result<Option<FileProviderConfig>, Pro
 /// Bitmask of permission bits that are insecure for secret-bearing config files.
 /// - `0o020`: group-write — another user in the same group could modify secrets.
 /// - `0o007`: world (other) read/write/execute — anyone on the system could access.
+///
 /// Allowed: owner-only (0600, 0700, 0400) or owner+group-read (0640, 0750, 0440).
 /// Rejected: group-writable (0660, 0620) or world-accessible (0644, 0666, 0604).
 const INSECURE_MODE_BITS: u32 = 0o020 | 0o007;

@@ -40,6 +40,7 @@ impl std::error::Error for ConfigPathError {}
 /// - `.` or `..` (current/parent directory)
 /// - Any character outside the allowed set (path separators, NUL,
 ///   whitespace, control characters, colons, tildes, etc.)
+///
 /// This is a strict allowlist — only characters known to be safe as
 /// filesystem path components on all supported platforms are permitted.
 #[rule("rule_config_name_allowlist")]

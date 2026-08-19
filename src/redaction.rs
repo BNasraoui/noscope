@@ -11,6 +11,7 @@ use std::fmt;
 /// - JWT tokens (start with "eyJ"): always `[redacted:<token_id_or_hash>]`
 /// - Tokens <= 16 chars: `[redacted:<token_id_or_hash>]`
 /// - Tokens > 16 chars: first 8 chars + "..."
+///
 /// Redaction applies at ALL log levels. No flag may disable it.
 /// The raw token value is consumed at construction and never stored.
 #[rule("rule_token_redacted_form_no_raw")]

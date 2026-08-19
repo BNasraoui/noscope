@@ -129,6 +129,7 @@ impl RefreshPolicy {
     /// Evaluate a refresh failure and return the recommended outcome.
     /// - `attempt`: zero-based attempt index within the current retry window.
     /// - `remaining_lifetime`: time until the current token expires.
+    ///
     /// Never returns `KillChild`. Always returns `log_warning: true`.
     /// Respects max_retries and 50%-of-remaining-lifetime cap.
     #[rule("rule_refresh_never_kills_child")]

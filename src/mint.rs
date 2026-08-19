@@ -239,6 +239,7 @@ pub fn validate_mint_args(
 /// Format mint output as a JSON array or empty string.
 /// - Non-empty slice: serialized as a compact single-line JSON array.
 /// - Empty slice: returns empty string (represents total failure — no stdout).
+///
 /// This enforces atomicity: the caller collects ALL envelopes before calling
 /// this function, so partial output is structurally impossible.
 pub fn format_mint_output(envelopes: &[MintEnvelope]) -> String {

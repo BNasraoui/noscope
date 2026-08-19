@@ -66,6 +66,7 @@ impl fmt::Display for ErrorKind {
 /// - [`Error::provider_name`] returns the provider name (if applicable).
 /// - [`Error::errors`] returns inner errors for multi-error cases.
 /// - [`Error::exit_code`] maps to a noscope exit code.
+///
 /// Multi-error cases (e.g. multiple provider failures) are represented
 /// via [`Error::multi`] without flattening into brittle strings.
 pub struct Error {

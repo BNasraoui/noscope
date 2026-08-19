@@ -278,6 +278,7 @@ fn check_command_health(cmd: &str, check_name: &str, checks: &mut Vec<Check>) {
 /// - `<xdg_config_home>/noscope/`
 /// - `<xdg_config_home>/noscope/providers/`
 /// - `<xdg_config_home>/noscope/profiles/`
+///
 /// All directories are created with mode 0700 (owner-only).
 /// Idempotent: existing directories are left unchanged.
 #[rule("rule_init_creates_0700")]

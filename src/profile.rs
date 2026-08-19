@@ -275,6 +275,7 @@ pub fn parse_profile_toml(content: &str) -> Result<Profile, ProfileError> {
 /// Checks:
 /// - env_key uniqueness across all credentials
 /// - Provider existence (via the `provider_exists` callback)
+///
 /// All errors are collected and returned together (no fail-fast).
 /// Returns an empty Vec on success.
 pub fn validate_profile(profile: &Profile, provider_exists: &dyn Fn(&str) -> bool) -> Vec<String> {
