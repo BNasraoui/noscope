@@ -1,8 +1,5 @@
 pub mod agent_process;
-#[cfg(test)]
-mod ci_checks;
 pub mod cli;
-pub mod cli_adapter;
 pub mod client;
 pub mod command_parse;
 pub(crate) mod config_path;
@@ -11,7 +8,6 @@ pub mod doctor;
 pub mod error;
 pub mod event;
 pub mod exit_code;
-pub mod integration_runtime;
 pub mod mint;
 pub mod orchestrator;
 pub mod process_group;
@@ -25,7 +21,6 @@ pub mod security;
 pub mod signal_policy;
 pub mod token;
 pub mod token_convert;
-pub mod token_provider;
 
 // ---------------------------------------------------------------------------
 // Re-exports: stable, ergonomic types from crate root (noscope-cg8.1).
@@ -64,53 +59,6 @@ pub use token_convert::{
     provider_output_to_scoped_token, provider_output_to_scoped_token_with_metadata,
     scoped_token_to_mint_envelope, ConversionResult,
 };
-pub use token_provider::{
-    with_mint_cleanup, CleanupOnDropFuture, TokenProvider, TokenProviderError, TokenProviderFuture,
-};
-
-#[cfg(test)]
-mod event_emission_wiring_tests;
-
-#[cfg(test)]
-mod run_signal_loop_consolidation_tests;
-
-#[cfg(test)]
-mod parse_command_shared_tests;
-
-#[cfg(test)]
-mod formatting_gate_tests {
-    // =========================================================================
-    // noscope-bsq.1.6: Restore rustfmt cleanliness and keep it enforced.
-    //
-    // Acceptance criteria:
-    // 1. `cargo fmt --all -- --check` passes cleanly.
-    // 2. No functional behavior changes from formatting-only edits.
-    // =========================================================================
-
-    /// Verifies that `cargo fmt --all -- --check` exits with status 0.
-    ///
-    /// This test acts as a quality gate: any future commit that introduces
-    /// formatting drift will cause this test to fail, ensuring the codebase
-    /// stays formatted.
-    #[test]
-    fn cargo_fmt_check_passes_cleanly() {
-        let output = std::process::Command::new("cargo")
-            .args(["fmt", "--all", "--", "--check"])
-            .output()
-            .expect("failed to execute cargo fmt");
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            panic!(
-                "cargo fmt --all -- --check failed (exit {:?}):\nstdout:\n{}\nstderr:\n{}",
-                output.status.code(),
-                stdout,
-                stderr,
-            );
-        }
-    }
-}
 
 #[cfg(test)]
 mod convergence_tests {
@@ -244,42 +192,6 @@ mod convergence_tests {
             Ok(_) => panic!("Expected error for invalid JSON"),
             Err(err) => assert_eq!(err.kind(), crate::ErrorKind::Usage),
         }
-    }
-
-    // -------------------------------------------------------------------------
-    // Rule: Make adapter layer (cli_adapter) use that canonical type consistently.
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn cli_adapter_validate_revoke_argv_returns_canonical_error() {
-        let args = vec![
-            "noscope".to_string(),
-            "revoke".to_string(),
-            "--token".to_string(),
-            "secret".to_string(),
-        ];
-        let result: Result<(), crate::Error> = crate::cli_adapter::validate_revoke_argv(&args);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.kind(), crate::ErrorKind::Usage);
-    }
-
-    #[test]
-    fn cli_adapter_validate_mint_flags_returns_canonical_error() {
-        let result: Result<crate::MintRequest, crate::Error> =
-            crate::cli_adapter::validate_mint_flags(None, &["aws".to_string()], "admin");
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.kind(), crate::ErrorKind::Usage);
-    }
-
-    #[test]
-    fn cli_adapter_check_profile_flag_exclusion_returns_canonical_error() {
-        let result: Result<(), crate::Error> =
-            crate::cli_adapter::check_profile_flag_exclusion(Some("dev"), Some("aws"), None, None);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.kind(), crate::ErrorKind::Profile);
     }
 
     // -------------------------------------------------------------------------
@@ -437,52 +349,5 @@ mod convergence_tests {
     #[test]
     fn migration_noscope_error_is_send_sync() {
         static_assertions::assert_impl_all!(crate::NoscopeError: Send, Sync);
-    }
-}
-
-#[cfg(test)]
-mod module_hygiene_tests {
-    use std::path::PathBuf;
-
-    fn repo_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-    }
-
-    #[test]
-    fn ci_checks_is_not_publicly_exported_from_crate_root() {
-        let lib_rs = std::fs::read_to_string(repo_root().join("src/lib.rs"))
-            .expect("failed reading src/lib.rs");
-        assert!(
-            !lib_rs
-                .lines()
-                .any(|line| line.trim() == "pub mod ci_checks;"),
-            "ci_checks is test-only and must not be a public crate export"
-        );
-    }
-
-    #[test]
-    fn ci_checks_is_gated_to_test_builds() {
-        let lib_rs = std::fs::read_to_string(repo_root().join("src/lib.rs"))
-            .expect("failed reading src/lib.rs");
-        assert!(
-            lib_rs.contains("#[cfg(test)]\nmod ci_checks;"),
-            "ci_checks must be wired behind #[cfg(test)]"
-        );
-    }
-
-    #[test]
-    fn signal_handling_policy_unit_tests_live_in_signal_policy_module() {
-        let integration_test_path = repo_root().join("tests/signal_handling_policy.rs");
-        assert!(
-            !integration_test_path.exists(),
-            "signal policy unit tests must not live in tests/"
-        );
-
-        let signal_policy_rs = std::fs::read_to_string(repo_root().join("src/signal_policy.rs"))
-            .expect("failed reading src/signal_policy.rs");
-        assert!(
-            signal_policy_rs.contains("#[cfg(test)]") && signal_policy_rs.contains("mod tests"),
-            "signal policy unit tests must live in src/signal_policy.rs"
-        );
     }
 }

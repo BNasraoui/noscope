@@ -512,35 +512,6 @@ mod tests {
         }
     }
 
-    // NS-012: validate_revoke_argv lives in cli_adapter (noscope-cg8.2).
-    // See cli_adapter::tests for argv-level validation tests.
-    #[test]
-    fn facade_revoke_args_validation_moved_to_cli_adapter() {
-        // noscope-cg8.2: argv validation moved to cli_adapter module.
-        // Client no longer exposes validate_revoke_args(&[String]).
-        // Verify cli_adapter::validate_revoke_argv works.
-        let args = vec![
-            "noscope".to_string(),
-            "revoke".to_string(),
-            "--token".to_string(),
-            "secret-value".to_string(),
-        ];
-        let result = crate::cli_adapter::validate_revoke_argv(&args);
-        assert!(
-            result.is_err(),
-            "NS-012: --token flag must be rejected via cli_adapter"
-        );
-
-        let safe_args = vec![
-            "noscope".to_string(),
-            "revoke".to_string(),
-            "--token-id".to_string(),
-            "tok-123".to_string(),
-        ];
-        let result = crate::cli_adapter::validate_revoke_argv(&safe_args);
-        assert!(result.is_ok(), "--token-id is safe and must be allowed");
-    }
-
     // NS-065: Terminal detection for mint stdout.
     #[test]
     fn facade_check_stdout_terminal_rejects_tty() {
