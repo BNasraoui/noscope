@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::command_parse::parse_command;
 use crate::credential_set::{
-    CredentialSet, CredentialSetError, CredentialSpec, MintConfig, MintResult,
+    CredentialSet, CredentialSetError, CredentialSpec, MintConfig, MintFailure, MintResult,
 };
 use crate::orchestrator;
 use crate::provider::ResolvedProvider;
@@ -36,6 +36,16 @@ impl Default for MintOptions {
             max_concurrent: 8,
         }
     }
+}
+
+/// Format the operator-facing message for a failed atomic mint.
+pub fn format_mint_failed_providers(failures: &[MintFailure]) -> String {
+    let details = failures
+        .iter()
+        .map(|failure| format!("provider '{}': {}", failure.provider, failure.error))
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!("credential minting failed: {}", details)
 }
 
 /// Mint one credential by invoking the provider's mint command.

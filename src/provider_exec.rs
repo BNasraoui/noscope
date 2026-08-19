@@ -285,11 +285,12 @@ pub fn check_stdout_size_limit(size: usize) -> Result<(), ProviderExecError> {
 
 /// NS-038: Build environment variables for a revoke command.
 ///
-/// Sets NOSCOPE_TOKEN and NOSCOPE_TOKEN_ID. Does NOT set NOSCOPE_TTL
+/// Sets NOSCOPE_TOKEN_ID only. Revocation addresses a lease by
+/// identifier; the credential value is never passed to a revoke command
+/// (res_revoke_contract_identifier_only). Does NOT set NOSCOPE_TTL
 /// (that's only for refresh per NS-039).
-pub fn build_revoke_env(token: &str, token_id: &str) -> HashMap<String, String> {
+pub fn build_revoke_env(token_id: &str) -> HashMap<String, String> {
     let mut env = HashMap::new();
-    env.insert("NOSCOPE_TOKEN".to_string(), token.to_string());
     env.insert("NOSCOPE_TOKEN_ID".to_string(), token_id.to_string());
     env
 }
@@ -987,23 +988,14 @@ mod tests {
     }
 
     // =========================================================================
-    // NS-038: Revoke command receives token via env var — NOSCOPE_TOKEN,
-    // NOSCOPE_TOKEN_ID; exit 0 for already-revoked.
+    // NS-038: Revoke command receives the lease identifier via env var —
+    // NOSCOPE_TOKEN_ID only (res_revoke_contract_identifier_only);
+    // exit 0 for already-revoked.
     // =========================================================================
 
     #[test]
-    fn revoke_command_env_vars_include_noscope_token() {
-        let env = super::build_revoke_env("secret-token-value", "tok-id-123");
-        assert_eq!(
-            env.get("NOSCOPE_TOKEN").map(|s| s.as_str()),
-            Some("secret-token-value"),
-            "NS-038: revoke env must include NOSCOPE_TOKEN"
-        );
-    }
-
-    #[test]
     fn revoke_command_env_vars_include_noscope_token_id() {
-        let env = super::build_revoke_env("secret-token", "tok-abc");
+        let env = super::build_revoke_env("tok-abc");
         assert_eq!(
             env.get("NOSCOPE_TOKEN_ID").map(|s| s.as_str()),
             Some("tok-abc"),
@@ -1012,16 +1004,17 @@ mod tests {
     }
 
     #[test]
-    fn revoke_command_env_has_exactly_two_credential_vars() {
-        let env = super::build_revoke_env("tok", "id");
-        // Should have NOSCOPE_TOKEN and NOSCOPE_TOKEN_ID (credential vars only)
-        assert!(env.contains_key("NOSCOPE_TOKEN"));
-        assert!(env.contains_key("NOSCOPE_TOKEN_ID"));
-        // Should NOT contain NOSCOPE_TTL (that's for refresh)
+    fn revoke_command_env_never_carries_the_credential_value() {
+        let env = super::build_revoke_env("tok-abc");
+        assert!(
+            !env.contains_key("NOSCOPE_TOKEN"),
+            "revoke must never receive the credential value"
+        );
         assert!(
             !env.contains_key("NOSCOPE_TTL"),
             "NS-038: revoke must NOT include NOSCOPE_TTL"
         );
+        assert_eq!(env.len(), 1, "identifier is the whole revoke contract");
     }
 
     #[test]
@@ -1376,15 +1369,15 @@ mint = "/usr/bin/mint"
 
     #[test]
     fn provider_command_environment_sandboxing_with_credential_vars_for_revoke() {
-        // When revoking, the sandboxed env gets NOSCOPE_TOKEN and NOSCOPE_TOKEN_ID added.
+        // When revoking, the sandboxed env gets NOSCOPE_TOKEN_ID added.
         let mut env = super::build_sandboxed_env();
-        let cred_vars = super::build_revoke_env("secret", "id");
+        let cred_vars = super::build_revoke_env("id");
         for (k, v) in &cred_vars {
             env.insert(k.clone(), v.clone());
         }
-        // Should now have PATH, HOME, LANG + NOSCOPE_TOKEN + NOSCOPE_TOKEN_ID = 5
-        assert_eq!(env.len(), 5);
-        assert_eq!(env.get("NOSCOPE_TOKEN").map(|s| s.as_str()), Some("secret"));
+        // Should now have PATH, HOME, LANG + NOSCOPE_TOKEN_ID = 4
+        assert_eq!(env.len(), 4);
+        assert_eq!(env.get("NOSCOPE_TOKEN_ID").map(|s| s.as_str()), Some("id"));
     }
 
     #[test]
