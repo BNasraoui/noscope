@@ -8,6 +8,7 @@ use std::fmt;
 use zeroize::Zeroize;
 
 use crate::redaction::RedactedToken;
+use provenance_macros::rule;
 
 /// A scoped credential with mandatory expiry and zeroizing secret storage.
 ///
@@ -16,6 +17,7 @@ use crate::redaction::RedactedToken;
 /// - NS-019: Value stored in SecretString (Zeroize + ZeroizeOnDrop)
 /// - NS-019: Does NOT implement Clone (prevents implicit copies without zeroization)
 /// - NS-016: expires_at is mandatory and non-optional
+#[rule("rule_token_mandatory_expiry")]
 pub struct ScopedToken {
     /// The credential value, stored in a zeroizing secret type.
     value: SecretString,
@@ -168,6 +170,7 @@ impl fmt::Debug for ScopedToken {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use provenance_macros::verifies;
 
     /// Helper: create a ScopedToken from a &str for test convenience.
     /// In production, callers should construct SecretString directly.
@@ -234,6 +237,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_token_mandatory_expiry", examples)]
     fn scoped_token_requires_expires_at() {
         let expiry = Utc::now() + chrono::Duration::minutes(30);
         let token = ScopedToken::new(

@@ -1,8 +1,10 @@
 #!/bin/sh
 set -eu
 
-if [ -z "${NOSCOPE_TOKEN:-}" ]; then
-  printf 'missing NOSCOPE_TOKEN\n' >&2
+# Identifier-only revoke contract (res_revoke_contract_identifier_only):
+# the provider receives NOSCOPE_TOKEN_ID and never the credential value.
+if [ -n "${NOSCOPE_TOKEN:-}" ]; then
+  printf 'unexpected NOSCOPE_TOKEN in revoke env\n' >&2
   exit 2
 fi
 

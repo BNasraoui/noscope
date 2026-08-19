@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "scopes": [
+    {
+      "id": "default",
+      "path_prefix": "."
+    }
+  ],
+  "disposition_actor_ids": [
+    "ben_nasraoui",
+    "claude_fable_agent"
+  ]
+}

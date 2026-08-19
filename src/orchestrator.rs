@@ -16,6 +16,7 @@ use crate::credential_set::{
 use crate::event::{emit_runtime_event, Event, EventType};
 use crate::mint::{format_mint_output, MintEnvelope};
 use crate::token_convert::scoped_token_to_mint_envelope;
+use provenance_macros::rule;
 
 /// NS-050 + NS-046 + NS-006: Execute provider mint operations in parallel
 /// with bounded concurrency and per-provider timeouts.
@@ -32,6 +33,8 @@ use crate::token_convert::scoped_token_to_mint_envelope;
 /// The `mint_fn` closure takes a `&CredentialSpec` and returns a future
 /// that resolves to a `MintResult`. This allows the caller to inject
 /// arbitrary provider execution logic (subprocess, mock, etc.).
+#[rule("rule_orchestration_bounded_concurrency")]
+#[rule("rule_orchestration_per_provider_timeout")]
 pub async fn mint_all<F, Fut>(
     specs: &[CredentialSpec],
     config: &MintConfig,
@@ -142,6 +145,7 @@ pub fn format_orchestrator_output(cred_set: &CredentialSet) -> String {
 
 #[cfg(test)]
 mod tests {
+    use provenance_macros::verifies;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
@@ -175,6 +179,7 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
+    #[verifies("rule_orchestration_bounded_concurrency", examples)]
     async fn bounded_parallelism_enforces_max_concurrent() {
         // With max_concurrent=2 and 4 providers, at most 2 should run
         // simultaneously. We track peak concurrency with an atomic counter.
@@ -276,6 +281,7 @@ mod tests {
     // =========================================================================
 
     #[tokio::test]
+    #[verifies("rule_orchestration_per_provider_timeout", examples)]
     async fn per_provider_timeout_slow_provider_fails() {
         // A provider that takes longer than the timeout must be treated as failure.
         let config = MintConfig::new(Duration::from_millis(50), 8).unwrap();
@@ -329,6 +335,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[verifies("rule_orchestration_timeout_error_names_provider", examples)]
     async fn per_provider_timeout_error_identifies_provider() {
         // The timeout failure must identify which provider timed out.
         let config = MintConfig::new(Duration::from_millis(50), 8).unwrap();

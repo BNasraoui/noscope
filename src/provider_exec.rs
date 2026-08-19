@@ -18,6 +18,7 @@ use chrono::{DateTime, Utc};
 use zeroize::Zeroize;
 
 use crate::exit_code::{interpret_provider_exit, ProviderExitResult};
+use provenance_macros::rule;
 
 /// NS-036: Maximum provider stdout size in bytes (1 MiB).
 pub const MAX_STDOUT_BYTES: usize = 1024 * 1024;
@@ -175,6 +176,8 @@ impl StderrPolicy {
 /// Extracts `token` (required, string) and `expires_at` (optional, ISO 8601).
 /// If `expires_at` is absent, computes `now() + requested_ttl_secs` and sets
 /// `expires_at_provided = false` so the caller can emit the NS-034 warning.
+#[rule("rule_exec_expiry_fallback")]
+#[rule("rule_exec_output_token_contract")]
 pub fn parse_provider_output(
     json_str: &str,
     requested_ttl_secs: u64,
@@ -228,6 +231,7 @@ pub fn parse_provider_output(
 ///
 /// Allowed: alphanumeric, hyphens, underscores, dots.
 /// Rejected: empty string, spaces, shell metacharacters, slashes, etc.
+#[rule("rule_role_charset")]
 pub fn validate_role(role: &str) -> Result<(), ProviderExecError> {
     if role.is_empty() {
         return Err(ProviderExecError::InvalidRole {
@@ -256,6 +260,7 @@ pub fn validate_role(role: &str) -> Result<(), ProviderExecError> {
 /// Replaces `{role}` with the role string and `{ttl}` with TTL as integer
 /// seconds. This is pure string replacement on each element of the array —
 /// no shell is involved.
+#[rule("rule_cross_template_substitution")]
 pub fn substitute_template_vars(template: &[String], role: &str, ttl_secs: u64) -> Vec<String> {
     let ttl_str = ttl_secs.to_string();
     template
@@ -269,6 +274,7 @@ pub fn substitute_template_vars(template: &[String], role: &str, ttl_secs: u64) 
 // ---------------------------------------------------------------------------
 
 /// NS-036: Check that provider stdout does not exceed 1 MiB.
+#[rule("rule_exec_stdout_1mib_cap")]
 pub fn check_stdout_size_limit(size: usize) -> Result<(), ProviderExecError> {
     if size > MAX_STDOUT_BYTES {
         return Err(ProviderExecError::StdoutTooLarge {
@@ -285,11 +291,13 @@ pub fn check_stdout_size_limit(size: usize) -> Result<(), ProviderExecError> {
 
 /// NS-038: Build environment variables for a revoke command.
 ///
-/// Sets NOSCOPE_TOKEN and NOSCOPE_TOKEN_ID. Does NOT set NOSCOPE_TTL
+/// Sets NOSCOPE_TOKEN_ID only. Revocation addresses a lease by
+/// identifier; the credential value is never passed to a revoke command
+/// (res_revoke_contract_identifier_only). Does NOT set NOSCOPE_TTL
 /// (that's only for refresh per NS-039).
-pub fn build_revoke_env(token: &str, token_id: &str) -> HashMap<String, String> {
+#[rule("rule_revoke_identifier_only")]
+pub fn build_revoke_env(token_id: &str) -> HashMap<String, String> {
     let mut env = HashMap::new();
-    env.insert("NOSCOPE_TOKEN".to_string(), token.to_string());
     env.insert("NOSCOPE_TOKEN_ID".to_string(), token_id.to_string());
     env
 }
@@ -297,6 +305,7 @@ pub fn build_revoke_env(token: &str, token_id: &str) -> HashMap<String, String> 
 /// NS-038: Check if a revoke command exit code indicates success.
 ///
 /// Exit 0 is success, including the case where the token was already revoked.
+#[rule("rule_cross_revoke_idempotent_exit0")]
 pub fn is_revoke_success(exit_code: i32) -> bool {
     exit_code == 0
 }
@@ -323,6 +332,7 @@ pub fn build_refresh_env(token: &str, token_id: &str, ttl_secs: u64) -> HashMap<
 /// NS-040: Capture stderr up to the size limit.
 ///
 /// Truncates to `MAX_STDERR_CAPTURE_BYTES` (4096 bytes).
+#[rule("rule_exec_stderr_truncate")]
 pub fn capture_stderr(stderr: &str) -> &str {
     if stderr.len() <= MAX_STDERR_CAPTURE_BYTES {
         stderr
@@ -339,6 +349,7 @@ pub fn capture_stderr(stderr: &str) -> &str {
 /// NS-040: Redact known token values from stderr.
 ///
 /// Replaces each occurrence of a known token with `[redacted]`.
+#[rule("rule_exec_stderr_redaction")]
 pub fn redact_stderr(stderr: &str, known_tokens: &[&str]) -> String {
     let mut result = stderr.to_string();
     for token in known_tokens {
@@ -453,6 +464,7 @@ pub struct ProviderExecResult {
 /// # Returns
 /// - `Ok(ProviderExecResult)` with all execution results.
 /// - `Err(std::io::Error)` if the command could not be spawned.
+#[rule("rule_exec_exit0_only_mints")]
 pub async fn execute_provider_command(
     argv: &[String],
     extra_env: &HashMap<String, String>,
@@ -483,6 +495,21 @@ pub async fn execute_provider_command(
     let mut cmd = tokio::process::Command::new(&argv[0]);
     if argv.len() > 1 {
         cmd.args(&argv[1..]);
+    }
+    // If the caller's future is dropped (e.g. the orchestrator's NS-046
+    // per-provider timeout fires), the provider must not keep running and
+    // mint a credential nobody ever sees.
+    cmd.kill_on_drop(true);
+    // NS-035: the provider leads its own process group so that timeout
+    // escalation reaches every process the provider spawned, not only the
+    // direct child. Without this a `sh -c '... ; sleep'` provider leaves
+    // an orphan holding the output pipes after SIGKILL.
+    // SAFETY: setpgid in pre_exec affects only the forked child.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setpgid(0, 0);
+            Ok(())
+        });
     }
     cmd.env_clear();
     for (k, v) in &env {
@@ -601,13 +628,17 @@ pub async fn execute_provider_command(
     })
 }
 
-/// Send a Unix signal to a child process.
+/// Send a Unix signal to a provider's whole process group.
+///
+/// The provider was made a process-group leader at spawn, so a negative
+/// pid targets the group per POSIX and the signal reaches every process
+/// the provider started (NS-035).
 ///
 /// Best-effort: if the process has already exited, the signal is silently ignored.
 fn send_signal(child: &tokio::process::Child, signal: libc::c_int) {
     if let Some(pid) = child.id() {
         unsafe {
-            libc::kill(pid as libc::pid_t, signal);
+            libc::kill(-(pid as libc::pid_t), signal);
         }
     }
 }
@@ -615,6 +646,7 @@ fn send_signal(child: &tokio::process::Child, signal: libc::c_int) {
 #[cfg(test)]
 mod tests {
     use chrono::Datelike;
+    use provenance_macros::verifies;
     use std::time::Duration;
 
     // =========================================================================
@@ -623,6 +655,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[verifies("rule_exec_output_token_contract", examples)]
     fn provider_output_contract_parses_valid_json_with_token_and_expires_at() {
         let json = r#"{"token": "my-secret-token-123", "expires_at": "2026-03-30T12:00:00Z"}"#;
         let result = super::parse_provider_output(json, 3600);
@@ -732,6 +765,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_role_charset", examples)]
     fn template_variable_injection_prevention_role_rejects_shell_metacharacters() {
         assert!(
             super::validate_role("admin; rm -rf /").is_err(),
@@ -780,6 +814,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_cross_template_substitution", examples)]
     fn template_variable_injection_prevention_argv_substitution() {
         // Template variables are substituted in an argv array, never via shell.
         let template = vec![
@@ -834,6 +869,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[verifies("rule_exec_expiry_fallback", examples)]
     fn missing_expires_at_computed_from_requested_ttl() {
         let json = r#"{"token": "tok-123"}"#;
         let before = chrono::Utc::now();
@@ -940,6 +976,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_exec_stdout_1mib_cap", examples)]
     fn provider_stdout_size_limit_rejects_over_1_mib() {
         let over_1_mib = (1024 * 1024) + 1;
         assert!(
@@ -987,23 +1024,14 @@ mod tests {
     }
 
     // =========================================================================
-    // NS-038: Revoke command receives token via env var — NOSCOPE_TOKEN,
-    // NOSCOPE_TOKEN_ID; exit 0 for already-revoked.
+    // NS-038: Revoke command receives the lease identifier via env var —
+    // NOSCOPE_TOKEN_ID only (res_revoke_contract_identifier_only);
+    // exit 0 for already-revoked.
     // =========================================================================
 
     #[test]
-    fn revoke_command_env_vars_include_noscope_token() {
-        let env = super::build_revoke_env("secret-token-value", "tok-id-123");
-        assert_eq!(
-            env.get("NOSCOPE_TOKEN").map(|s| s.as_str()),
-            Some("secret-token-value"),
-            "NS-038: revoke env must include NOSCOPE_TOKEN"
-        );
-    }
-
-    #[test]
     fn revoke_command_env_vars_include_noscope_token_id() {
-        let env = super::build_revoke_env("secret-token", "tok-abc");
+        let env = super::build_revoke_env("tok-abc");
         assert_eq!(
             env.get("NOSCOPE_TOKEN_ID").map(|s| s.as_str()),
             Some("tok-abc"),
@@ -1012,19 +1040,22 @@ mod tests {
     }
 
     #[test]
-    fn revoke_command_env_has_exactly_two_credential_vars() {
-        let env = super::build_revoke_env("tok", "id");
-        // Should have NOSCOPE_TOKEN and NOSCOPE_TOKEN_ID (credential vars only)
-        assert!(env.contains_key("NOSCOPE_TOKEN"));
-        assert!(env.contains_key("NOSCOPE_TOKEN_ID"));
-        // Should NOT contain NOSCOPE_TTL (that's for refresh)
+    #[verifies("rule_revoke_identifier_only", examples)]
+    fn revoke_command_env_never_carries_the_credential_value() {
+        let env = super::build_revoke_env("tok-abc");
+        assert!(
+            !env.contains_key("NOSCOPE_TOKEN"),
+            "revoke must never receive the credential value"
+        );
         assert!(
             !env.contains_key("NOSCOPE_TTL"),
             "NS-038: revoke must NOT include NOSCOPE_TTL"
         );
+        assert_eq!(env.len(), 1, "identifier is the whole revoke contract");
     }
 
     #[test]
+    #[verifies("rule_cross_revoke_idempotent_exit0", examples)]
     fn revoke_command_exit_0_for_already_revoked() {
         // exit 0 means success (including already-revoked); the caller
         // should treat exit 0 from revoke as success regardless.
@@ -1114,6 +1145,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_exec_stderr_truncate", examples)]
     fn provider_stderr_handling_truncates_to_limit() {
         let long_stderr = "x".repeat(8192);
         let captured = super::capture_stderr(&long_stderr);
@@ -1281,6 +1313,7 @@ mint = "/usr/bin/mint"
     }
 
     #[test]
+    #[verifies("rule_cross_capability_consistency", examples)]
     fn provider_capability_declaration_revoke_without_revoke_cmd_is_inconsistent() {
         // If supports_revoke = true but no revoke command, that's a validation issue.
         let caps = super::ProviderCapabilities {
@@ -1376,15 +1409,15 @@ mint = "/usr/bin/mint"
 
     #[test]
     fn provider_command_environment_sandboxing_with_credential_vars_for_revoke() {
-        // When revoking, the sandboxed env gets NOSCOPE_TOKEN and NOSCOPE_TOKEN_ID added.
+        // When revoking, the sandboxed env gets NOSCOPE_TOKEN_ID added.
         let mut env = super::build_sandboxed_env();
-        let cred_vars = super::build_revoke_env("secret", "id");
+        let cred_vars = super::build_revoke_env("id");
         for (k, v) in &cred_vars {
             env.insert(k.clone(), v.clone());
         }
-        // Should now have PATH, HOME, LANG + NOSCOPE_TOKEN + NOSCOPE_TOKEN_ID = 5
-        assert_eq!(env.len(), 5);
-        assert_eq!(env.get("NOSCOPE_TOKEN").map(|s| s.as_str()), Some("secret"));
+        // Should now have PATH, HOME, LANG + NOSCOPE_TOKEN_ID = 4
+        assert_eq!(env.len(), 4);
+        assert_eq!(env.get("NOSCOPE_TOKEN_ID").map(|s| s.as_str()), Some("id"));
     }
 
     #[test]
@@ -1663,6 +1696,7 @@ mod engine_tests {
 
     use super::*;
     use crate::exit_code::ProviderExitCode;
+    use provenance_macros::verifies;
 
     // =========================================================================
     // NS-068: Execution engine uses build_sandboxed_env() for subprocess env
@@ -1843,6 +1877,7 @@ mod engine_tests {
     }
 
     #[tokio::test]
+    #[verifies("rule_exec_stderr_redaction", examples)]
     async fn engine_redacts_known_tokens_from_stderr() {
         let token = "super-secret-token-value-xyz";
         let mut extra_env = HashMap::new();
@@ -2093,6 +2128,7 @@ mod engine_tests {
     }
 
     #[tokio::test]
+    #[verifies("rule_exec_exit0_only_mints", examples)]
     async fn engine_does_not_parse_output_on_nonzero_exit() {
         // When the provider exits non-zero, we should still report the exit
         // code but the parsed_output should reflect the failure.

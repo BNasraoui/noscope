@@ -1,3 +1,4 @@
+use provenance_macros::verifies;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -33,6 +34,13 @@ fn write_provider_config(home_root: &Path, provider: &str, mint_cmd: &str, revok
 fn run_noscope(args: &[&str], home_root: &Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_noscope"))
         .env("HOME", home_root)
+        // These tests exercise the $HOME/.config fallback; an ambient
+        // XDG_CONFIG_HOME from the test runner's environment must not
+        // take precedence over it.
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("NOSCOPE_MINT_CMD")
+        .env_remove("NOSCOPE_REFRESH_CMD")
+        .env_remove("NOSCOPE_REVOKE_CMD")
         .args(args)
         .output()
         .expect("run noscope")
@@ -169,6 +177,7 @@ fn ns_080_output_json_mode_emits_structured_success_payloads() {
 }
 
 #[test]
+#[verifies("rule_errors_json_error_object", conformance)]
 fn ns_081_output_json_mode_emits_structured_errors_on_stderr() {
     let temp = tempfile::tempdir().expect("tempdir");
     let mint = temp.path().join("mint.sh");

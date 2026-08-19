@@ -1,3 +1,4 @@
+use provenance_macros::rule;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -45,6 +46,7 @@ impl std::error::Error for ConfigPathError {}
 ///
 /// This is a strict allowlist — only characters known to be safe as
 /// filesystem path components on all supported platforms are permitted.
+#[rule("rule_config_name_allowlist")]
 pub(crate) fn validate_config_name(name: &str) -> Result<(), ConfigPathError> {
     if name.is_empty() {
         return Err(ConfigPathError {
@@ -105,6 +107,7 @@ pub(crate) fn named_config_toml_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use provenance_macros::verifies;
     use std::path::Path;
 
     // =========================================================================
@@ -155,6 +158,7 @@ mod tests {
     // -------------------------------------------------------------------------
 
     #[test]
+    #[verifies("rule_config_name_allowlist", examples)]
     fn rejects_dot_dot() {
         let result = validate_config_name("..");
         assert!(result.is_err(), "'..' must be rejected");

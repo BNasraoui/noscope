@@ -4,22 +4,19 @@
 // All parsing, dispatch, and error handling logic lives in noscope::cli
 // (NS-075: CLI parsing in adapter layer).
 
-use std::future::Future;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
 
+use noscope::app::mint::format_mint_failed_providers;
+use noscope::app::resolve::CredentialSource;
+use noscope::app::revoke::{
+    execute_revoke, format_revoke_result, revoke_inputs_from_cli, revoke_minted_tokens,
+};
 use noscope::cli::{self, Command};
-use noscope::command_parse::parse_command;
-use noscope::credential_set::{CredentialSpec, MintConfig, MintResult};
-use noscope::run_signal_wiring::{
-    dispatch_pending_parent_signals, RunSignalWiring, SignalProcess, SignalRevoker,
-};
-use noscope::signal_policy::{
-    ActiveCredential, RevocationBudget, RevocationResultKind, SignalHandlingPolicy,
-};
 use noscope::{Client, ClientOptions, ProviderOverrides};
+use provenance_macros::rule;
 
+#[rule("rule_errors_json_error_object")]
 fn main() -> ExitCode {
     let cli = match cli::parse_from_args(std::env::args_os()) {
         Ok(cli) => cli,
@@ -65,6 +62,8 @@ fn run(cli: cli::Cli) -> Result<i32, noscope::Error> {
         Command::Revoke(args) => cmd_revoke(args, cli.verbose, cli.output),
         Command::Validate(args) => cmd_validate(args, cli.output),
         Command::DryRun(args) => cmd_dry_run(args, cli.output),
+        Command::Doctor(_args) => cmd_doctor(cli.output),
+        Command::Init(_args) => cmd_init(cli.output),
         Command::Completions(args) => {
             cmd_completions(args);
             Ok(cli::SUCCESS_EXIT_CODE)
@@ -79,6 +78,8 @@ fn command_name(command: &Command) -> &'static str {
         Command::Revoke(_) => "revoke",
         Command::Validate(_) => "validate",
         Command::DryRun(_) => "dry-run",
+        Command::Doctor(_) => "doctor",
+        Command::Init(_) => "init",
         Command::Completions(_) => "completions",
     }
 }
@@ -92,11 +93,21 @@ fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, noscope::Error> {
     let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
     let client = Client::new(ClientOptions {
         verbose,
-        xdg_config_home,
+        xdg_config_home: xdg_config_home.clone(),
         ..ClientOptions::default()
     })?;
 
-    let (specs, resolved_by_name) = resolve_run_specs_and_providers(&client, &args)?;
+    let source = CredentialSource::from_cli(
+        args.profile.clone(),
+        args.provider.clone(),
+        args.role.clone(),
+        args.ttl,
+    )?;
+    let (specs, resolved_by_name) = noscope::app::resolve::resolve_specs_and_providers(
+        &client,
+        &source,
+        xdg_config_home.as_deref(),
+    )?;
     let resolved_by_name = std::sync::Arc::new(resolved_by_name);
     if args.child_args.is_empty() {
         return Err(noscope::Error::usage("missing child command"));
@@ -107,75 +118,11 @@ fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, noscope::Error> {
         .build()
         .map_err(|e| noscope::Error::internal(&format!("failed creating async runtime: {}", e)))?;
 
-    let config = MintConfig::new(Duration::from_secs(30), 8)?;
-    let resolved_for_mint = std::sync::Arc::clone(&resolved_by_name);
-    let mint_result = runtime.block_on(async {
-        noscope::orchestrator::mint_all(&specs, &config, move |spec| {
-            let provider = resolved_for_mint
-                .get(&spec.provider)
-                .expect("resolved provider must exist for every credential spec");
-            let provider_name = provider.name.clone();
-            let mint_cmd = provider.mint_cmd.clone();
-            let provider_env = provider.env.clone();
-            let spec_provider = spec.provider.clone();
-            let spec_role = spec.role.clone();
-            let spec_ttl = spec.ttl_secs;
-            let spec_env_key = spec.env_key.clone();
-            async move {
-                let spec_for_result =
-                    CredentialSpec::new(&spec_provider, &spec_role, spec_ttl, &spec_env_key);
-                let argv = parse_command(&mint_cmd);
-                if argv.is_empty() {
-                    return MintResult::Failure {
-                        spec: spec_for_result,
-                        error: "empty mint command".to_string(),
-                    };
-                }
-
-                let mut env = provider_env;
-                env.insert("NOSCOPE_PROVIDER".to_string(), provider_name.clone());
-                env.insert("NOSCOPE_ROLE".to_string(), spec_role.clone());
-                let rendered_argv =
-                    noscope::provider_exec::substitute_template_vars(&argv, &spec_role, spec_ttl);
-
-                match noscope::provider_exec::execute_provider_command(
-                    &rendered_argv,
-                    &env,
-                    &noscope::provider_exec::ExecConfig {
-                        timeout: Duration::from_secs(30),
-                        kill_grace_period: Duration::from_secs(5),
-                    },
-                    spec_ttl,
-                )
-                .await
-                {
-                    Ok(exec_result) => match exec_result.parsed_output {
-                        Ok(output) => {
-                            let token = noscope::token_convert::provider_output_to_scoped_token(
-                                output,
-                                &spec_role,
-                                Some(format!("tok-{}", provider_name)),
-                                &provider_name,
-                            );
-                            MintResult::Success {
-                                spec: spec_for_result,
-                                token,
-                            }
-                        }
-                        Err(err) => MintResult::Failure {
-                            spec: spec_for_result,
-                            error: err.to_string(),
-                        },
-                    },
-                    Err(err) => MintResult::Failure {
-                        spec: spec_for_result,
-                        error: format!("spawn failed: {}", err),
-                    },
-                }
-            }
-        })
-        .await
-    });
+    let mint_result = runtime.block_on(noscope::app::mint::mint_all(
+        &specs,
+        &resolved_by_name,
+        &noscope::app::mint::MintOptions::default(),
+    ));
 
     let cred_set = match mint_result {
         Ok(cred_set) => cred_set,
@@ -183,7 +130,7 @@ fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, noscope::Error> {
             failed_providers,
             succeeded_tokens,
         }) => {
-            runtime.block_on(revoke_run_credentials(
+            runtime.block_on(revoke_minted_tokens(
                 resolved_by_name.as_ref(),
                 &succeeded_tokens,
                 noscope::credential_set::RollbackBudget::default(),
@@ -195,214 +142,21 @@ fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, noscope::Error> {
         Err(other) => return Err(other.into()),
     };
 
-    let env = cred_set
-        .env_map()
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
     let child_command = args.child_args[0].clone();
     let child_argv = args.child_args[1..].to_vec();
-    let child_exit = run_child_with_os_signals(&child_command, &child_argv, env, || {
-        revoke_on_shutdown_signal(&runtime, resolved_by_name.as_ref(), &cred_set);
-        Ok(())
-    })?;
+    let child_exit = noscope::app::run::run_supervised(
+        &child_command,
+        &child_argv,
+        &runtime,
+        &resolved_by_name,
+        &cred_set,
+    )?;
 
     Ok(child_exit)
 }
 
-fn format_mint_failed_providers(failures: &[noscope::credential_set::MintFailure]) -> String {
-    let details = failures
-        .iter()
-        .map(|failure| format!("provider '{}': {}", failure.provider, failure.error))
-        .collect::<Vec<_>>()
-        .join("; ");
-    format!("credential minting failed: {}", details)
-}
-
-fn rollback_backoff_for_retry(retry: u32) -> Duration {
-    const ROLLBACK_BASE_BACKOFF: Duration = Duration::from_millis(100);
-    let factor = 2u32.saturating_pow(retry);
-    ROLLBACK_BASE_BACKOFF.saturating_mul(factor)
-}
-
-async fn revoke_token_with_budget<RevokeFn, RevokeFut, SleepFn, SleepFut, LogFn>(
-    token: &noscope::token::ScopedToken,
-    budget: &noscope::credential_set::RollbackBudget,
-    mut revoke_once: RevokeFn,
-    mut sleep_fn: SleepFn,
-    mut log_line: LogFn,
-) where
-    RevokeFn: FnMut() -> RevokeFut,
-    RevokeFut: Future<Output = Result<(), String>>,
-    SleepFn: FnMut(Duration) -> SleepFut,
-    SleepFut: Future<Output = ()>,
-    LogFn: FnMut(String),
-{
-    if budget.revoke_timeout.is_zero() {
-        return;
-    }
-
-    let started = Instant::now();
-    let provider = token.provider();
-    let credential_id = token.token_id().unwrap_or("unknown");
-    let expires_at = token.expires_at();
-
-    for attempt in 0..=budget.max_retries {
-        let elapsed = started.elapsed();
-        if elapsed >= budget.revoke_timeout {
-            return;
-        }
-
-        let remaining = budget.revoke_timeout.saturating_sub(elapsed);
-
-        match tokio::time::timeout(remaining, revoke_once()).await {
-            Err(_) => {
-                let entry = noscope::credential_set::RollbackLogEntry::revocation_failed(
-                    credential_id,
-                    provider,
-                    expires_at,
-                    "rollback revocation attempt timed out",
-                );
-                log_line(format!("{} attempt={}", entry.format_log(), attempt + 1));
-                return;
-            }
-            Ok(Ok(())) => {
-                let entry = noscope::credential_set::RollbackLogEntry::new(
-                    credential_id,
-                    provider,
-                    expires_at,
-                );
-                log_line(format!("{} attempt={}", entry.format_log(), attempt + 1));
-                return;
-            }
-            Ok(Err(err)) => {
-                let entry = noscope::credential_set::RollbackLogEntry::revocation_failed(
-                    credential_id,
-                    provider,
-                    expires_at,
-                    &err,
-                );
-                log_line(format!("{} attempt={}", entry.format_log(), attempt + 1));
-            }
-        }
-
-        if attempt == budget.max_retries {
-            return;
-        }
-
-        let backoff = rollback_backoff_for_retry(attempt);
-        if started.elapsed().saturating_add(backoff) >= budget.revoke_timeout {
-            return;
-        }
-        sleep_fn(backoff).await;
-    }
-}
-
-async fn revoke_run_credentials(
-    resolved_by_name: &std::collections::HashMap<String, noscope::provider::ResolvedProvider>,
-    succeeded_tokens: &[noscope::token::ScopedToken],
-    budget: noscope::credential_set::RollbackBudget,
-) {
-    for token in succeeded_tokens {
-        let provider = token.provider().to_string();
-        let credential_id = token.token_id().unwrap_or("unknown").to_string();
-
-        let Some(resolved) = resolved_by_name.get(provider.as_str()) else {
-            let entry = noscope::credential_set::RollbackLogEntry::revocation_failed(
-                &credential_id,
-                &provider,
-                token.expires_at(),
-                "provider missing during rollback",
-            );
-            eprintln!("{} attempt=1", entry.format_log());
-            continue;
-        };
-
-        revoke_token_with_budget(
-            token,
-            &budget,
-            || {
-                let input = noscope::mint::RevokeInput::from_token_id_and_provider(
-                    &credential_id,
-                    &provider,
-                );
-                async move {
-                    execute_revoke(resolved, &input)
-                        .await
-                        .map_err(|err| err.to_string())
-                }
-            },
-            |delay| async move {
-                tokio::time::sleep(delay).await;
-            },
-            |line| eprintln!("{}", line),
-        )
-        .await;
-    }
-}
-
-fn run_child_with_os_signals<F>(
-    command: &str,
-    args: &[String],
-    env: std::collections::HashMap<String, String>,
-    mut revoke_all: F,
-) -> Result<i32, noscope::Error>
-where
-    F: FnMut() -> Result<(), noscope::Error>,
-{
-    let mut process = match noscope::agent_process::AgentProcess::spawn(
-        noscope::agent_process::AgentProcessConfig {
-            command: command.to_string(),
-            args: args.to_vec(),
-            mode: noscope::agent_process::AgentMode::Run,
-            injected_env: env,
-            force_env: true,
-            timeout: None,
-        },
-    ) {
-        Ok(process) => process,
-        Err(e) => {
-            let _ = revoke_all();
-            return Err(noscope::Error::internal(&format!("{}", e)));
-        }
-    };
-
-    let mut signals =
-        signal_hook::iterator::Signals::new([libc::SIGTERM, libc::SIGINT, libc::SIGHUP]).map_err(
-            |e| noscope::Error::internal(&format!("failed to register signal handlers: {}", e)),
-        )?;
-
-    let mut wiring = RunSignalWiring::default();
-    let mut process_adapter = AgentProcessSignalAdapter {
-        inner: &mut process,
-    };
-
-    loop {
-        let mut revoker = ClosureRevoker {
-            revoke_all: &mut revoke_all,
-        };
-        dispatch_pending_parent_signals(
-            signals.pending(),
-            &mut wiring,
-            &mut process_adapter,
-            &mut revoker,
-        )
-        .map_err(|e| noscope::Error::internal(&format!("failed during signal handling: {}", e)))?;
-
-        if let Some(exit_code) = process_adapter
-            .inner
-            .try_wait_exit_code()
-            .map_err(|e| noscope::Error::internal(&format!("{}", e)))?
-        {
-            if !wiring.revoke_attempted() {
-                revoke_all()?;
-            }
-            return Ok(exit_code);
-        }
-
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
+#[cfg(test)]
+use noscope::run_signal_wiring::{RunSignalWiring, SignalProcess};
 
 #[cfg(test)]
 struct RunModeSignalPollOutcome {
@@ -435,7 +189,7 @@ where
     P: SignalProcess,
     F: FnMut() -> Result<(), noscope::Error>,
 {
-    let mut revoker = ClosureRevoker { revoke_all };
+    let mut revoker = noscope::app::run::ClosureRevoker { revoke_all };
     wiring
         .on_parent_signal(signal, process, &mut revoker)
         .map_err(|e| noscope::Error::internal(&format!("failed during signal handling: {}", e)))?;
@@ -445,200 +199,6 @@ where
     })
 }
 
-struct AgentProcessSignalAdapter<'a> {
-    inner: &'a mut noscope::agent_process::AgentProcess,
-}
-
-impl SignalProcess for AgentProcessSignalAdapter<'_> {
-    fn forward_signal(&mut self, sig: i32) -> Result<(), std::io::Error> {
-        self.inner
-            .forward_signal(sig)
-            .map_err(|e| std::io::Error::other(format!("{}", e)))
-    }
-}
-
-struct ClosureRevoker<'a, F>
-where
-    F: FnMut() -> Result<(), noscope::Error>,
-{
-    revoke_all: &'a mut F,
-}
-
-impl<F> SignalRevoker for ClosureRevoker<'_, F>
-where
-    F: FnMut() -> Result<(), noscope::Error>,
-{
-    fn revoke_all(&mut self) -> Result<(), std::io::Error> {
-        (self.revoke_all)().map_err(|e| std::io::Error::other(e.to_string()))
-    }
-}
-
-fn resolve_run_specs_and_providers(
-    client: &Client,
-    args: &cli::RunArgs,
-) -> Result<
-    (
-        Vec<noscope::credential_set::CredentialSpec>,
-        std::collections::HashMap<String, noscope::provider::ResolvedProvider>,
-    ),
-    noscope::Error,
-> {
-    if let Some(profile_name) = &args.profile {
-        return resolve_profile_run_specs_and_providers(client, profile_name);
-    }
-
-    // Clap guarantees provider/role/ttl are present when --profile is absent.
-    let role = args.role.clone().expect("clap: required_unless_present");
-    let ttl = args.ttl.expect("clap: required_unless_present");
-
-    let req = noscope::MintRequest {
-        providers: args.provider.clone(),
-        role,
-        ttl_secs: ttl,
-    };
-    client.validate_mint(&req)?;
-
-    let mut resolved_by_name = std::collections::HashMap::new();
-    let mut specs = Vec::with_capacity(req.providers.len());
-    for provider_name in &req.providers {
-        let resolved = client.resolve_provider(provider_name, &ProviderOverrides::default())?;
-        specs.push(CredentialSpec::new(
-            provider_name,
-            &req.role,
-            req.ttl_secs,
-            &format!("{}_TOKEN", provider_name.to_uppercase()),
-        ));
-        resolved_by_name.insert(provider_name.clone(), resolved);
-    }
-    Ok((specs, resolved_by_name))
-}
-
-fn resolve_profile_run_specs_and_providers(
-    client: &Client,
-    profile_name: &str,
-) -> Result<
-    (
-        Vec<noscope::credential_set::CredentialSpec>,
-        std::collections::HashMap<String, noscope::provider::ResolvedProvider>,
-    ),
-    noscope::Error,
-> {
-    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
-    let path = noscope::profile::profile_config_path(profile_name, xdg.as_deref())?;
-    let profile = noscope::profile::load_profile(&path)?;
-
-    let mut specs = Vec::with_capacity(profile.credentials.len());
-    let mut resolved_by_name = std::collections::HashMap::new();
-    for (idx, cred) in profile.credentials.iter().enumerate() {
-        let resolved = client.resolve_provider(&cred.provider, &ProviderOverrides::default())?;
-        let env_key = cred
-            .env_key
-            .clone()
-            .unwrap_or_else(|| format!("{}_TOKEN_{}", cred.provider.to_uppercase(), idx));
-        specs.push(CredentialSpec::new(
-            &cred.provider,
-            &cred.role,
-            cred.ttl,
-            &env_key,
-        ));
-        resolved_by_name
-            .entry(cred.provider.clone())
-            .or_insert(resolved);
-    }
-    Ok((specs, resolved_by_name))
-}
-
-fn resolve_profile_mint_specs_and_providers(
-    client: &Client,
-    profile_name: &str,
-) -> Result<
-    (
-        Vec<noscope::credential_set::CredentialSpec>,
-        std::collections::HashMap<String, noscope::provider::ResolvedProvider>,
-    ),
-    noscope::Error,
-> {
-    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
-    let path = noscope::profile::profile_config_path(profile_name, xdg.as_deref())?;
-    let profile = noscope::profile::load_profile(&path)?;
-
-    let mut specs = Vec::with_capacity(profile.credentials.len());
-    let mut resolved_by_name = std::collections::HashMap::new();
-    for (idx, cred) in profile.credentials.iter().enumerate() {
-        let resolved = client.resolve_provider(&cred.provider, &ProviderOverrides::default())?;
-        let env_key = cred
-            .env_key
-            .clone()
-            .unwrap_or_else(|| format!("{}_TOKEN_{}", cred.provider.to_uppercase(), idx));
-        specs.push(CredentialSpec::new(
-            &cred.provider,
-            &cred.role,
-            cred.ttl,
-            &env_key,
-        ));
-        resolved_by_name
-            .entry(cred.provider.clone())
-            .or_insert(resolved);
-    }
-    Ok((specs, resolved_by_name))
-}
-
-fn revoke_on_shutdown_signal(
-    runtime: &tokio::runtime::Runtime,
-    resolved_by_name: &std::collections::HashMap<String, noscope::provider::ResolvedProvider>,
-    cred_set: &noscope::credential_set::CredentialSet,
-) {
-    let credentials: Vec<ActiveCredential> = cred_set
-        .tokens()
-        .map(|token| {
-            let provider = token.provider();
-            let credential_id = token
-                .token_id()
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("tok-{}", provider));
-            ActiveCredential::new(&credential_id, provider)
-        })
-        .collect();
-
-    let resolved_by_name = resolved_by_name.clone();
-
-    runtime.block_on(async {
-        let policy = SignalHandlingPolicy::default();
-        let results = policy
-            .revoke_all_on_signal(credentials, RevocationBudget::default(), move |cred| {
-                let resolved_by_name = resolved_by_name.clone();
-                async move {
-                    let Some(resolved) = resolved_by_name.get(&cred.provider) else {
-                        return RevocationResultKind::Failed(format!(
-                            "provider '{}' missing during signal revocation",
-                            cred.provider
-                        ));
-                    };
-
-                    let input = noscope::mint::RevokeInput::from_token_id_and_provider(
-                        &cred.credential_id,
-                        &cred.provider,
-                    );
-
-                    match execute_revoke(resolved, &input).await {
-                        Ok(()) => RevocationResultKind::Revoked,
-                        Err(err) => RevocationResultKind::Failed(err.to_string()),
-                    }
-                }
-            })
-            .await;
-
-        for result in results {
-            if let RevocationResultKind::Failed(err) = result.kind {
-                eprintln!(
-                    "noscope: revoke failed for provider {}: {}",
-                    result.provider, err
-                );
-            }
-        }
-    });
-}
-
 fn cmd_mint(args: cli::MintArgs, verbose: bool) -> Result<i32, noscope::Error> {
     use std::io::IsTerminal;
 
@@ -646,114 +206,31 @@ fn cmd_mint(args: cli::MintArgs, verbose: bool) -> Result<i32, noscope::Error> {
     let client = Client::new(ClientOptions {
         verbose,
         force_terminal: args.force_terminal,
-        xdg_config_home,
+        xdg_config_home: xdg_config_home.clone(),
         ..ClientOptions::default()
     })?;
 
     client.check_stdout_not_terminal(std::io::stdout().is_terminal())?;
 
-    let (specs, resolved_by_name) = if let Some(profile_name) = &args.profile {
-        resolve_profile_mint_specs_and_providers(&client, profile_name)?
-    } else {
-        // Clap guarantees provider/role/ttl are present when --profile is absent.
-        let role = args.role.expect("clap: required_unless_present");
-        let ttl = args.ttl.expect("clap: required_unless_present");
-
-        let req = noscope::MintRequest {
-            providers: args.provider,
-            role,
-            ttl_secs: ttl,
-        };
-        client.validate_mint(&req)?;
-
-        let mut resolved_by_name = std::collections::HashMap::new();
-        let mut specs = Vec::with_capacity(req.providers.len());
-        for provider_name in &req.providers {
-            let resolved = client.resolve_provider(provider_name, &ProviderOverrides::default())?;
-            specs.push(CredentialSpec::new(
-                provider_name,
-                &req.role,
-                req.ttl_secs,
-                &format!("{}_TOKEN", provider_name.to_uppercase()),
-            ));
-            resolved_by_name.insert(provider_name.clone(), resolved);
-        }
-        (specs, resolved_by_name)
-    };
+    let source =
+        CredentialSource::from_cli(args.profile.clone(), args.provider, args.role, args.ttl)?;
+    let (specs, resolved_by_name) = noscope::app::resolve::resolve_specs_and_providers(
+        &client,
+        &source,
+        xdg_config_home.as_deref(),
+    )?;
+    let resolved_by_name = std::sync::Arc::new(resolved_by_name);
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| noscope::Error::internal(&format!("failed creating async runtime: {}", e)))?;
 
-    let cred_set = runtime.block_on(async {
-        let config = MintConfig::new(Duration::from_secs(30), 8)?;
-        noscope::orchestrator::mint_all(&specs, &config, move |spec| {
-            let provider = resolved_by_name
-                .get(&spec.provider)
-                .expect("resolved provider must exist for every credential spec");
-            let provider_name = provider.name.clone();
-            let mint_cmd = provider.mint_cmd.clone();
-            let provider_env = provider.env.clone();
-            let spec_provider = spec.provider.clone();
-            let spec_role = spec.role.clone();
-            let spec_ttl = spec.ttl_secs;
-            let spec_env_key = spec.env_key.clone();
-            async move {
-                let spec_for_result =
-                    CredentialSpec::new(&spec_provider, &spec_role, spec_ttl, &spec_env_key);
-                let argv = parse_command(&mint_cmd);
-                if argv.is_empty() {
-                    return MintResult::Failure {
-                        spec: spec_for_result,
-                        error: "empty mint command".to_string(),
-                    };
-                }
-
-                let mut env = provider_env;
-                env.insert("NOSCOPE_PROVIDER".to_string(), provider_name.clone());
-                env.insert("NOSCOPE_ROLE".to_string(), spec_role.clone());
-                let rendered_argv =
-                    noscope::provider_exec::substitute_template_vars(&argv, &spec_role, spec_ttl);
-
-                match noscope::provider_exec::execute_provider_command(
-                    &rendered_argv,
-                    &env,
-                    &noscope::provider_exec::ExecConfig {
-                        timeout: Duration::from_secs(30),
-                        kill_grace_period: Duration::from_secs(5),
-                    },
-                    spec_ttl,
-                )
-                .await
-                {
-                    Ok(exec_result) => match exec_result.parsed_output {
-                        Ok(output) => {
-                            let token = noscope::token_convert::provider_output_to_scoped_token(
-                                output,
-                                &spec_role,
-                                Some(format!("tok-{}", provider_name)),
-                                &provider_name,
-                            );
-                            MintResult::Success {
-                                spec: spec_for_result,
-                                token,
-                            }
-                        }
-                        Err(err) => MintResult::Failure {
-                            spec: spec_for_result,
-                            error: err.to_string(),
-                        },
-                    },
-                    Err(err) => MintResult::Failure {
-                        spec: spec_for_result,
-                        error: format!("spawn failed: {}", err),
-                    },
-                }
-            }
-        })
-        .await
-    })?;
+    let cred_set = runtime.block_on(noscope::app::mint::mint_all(
+        &specs,
+        &resolved_by_name,
+        &noscope::app::mint::MintOptions::default(),
+    ))?;
 
     println!(
         "{}",
@@ -767,7 +244,10 @@ fn cmd_revoke(
     _verbose: bool,
     output: cli::OutputFormat,
 ) -> Result<i32, noscope::Error> {
-    let client = Client::new(ClientOptions::default())?;
+    let client = Client::new(ClientOptions {
+        xdg_config_home: std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+        ..ClientOptions::default()
+    })?;
 
     let stdin_payload = if args.from_stdin {
         let mut raw = String::new();
@@ -778,146 +258,64 @@ fn cmd_revoke(
         String::new()
     };
 
-    let input = build_revoke_input(&args, &stdin_payload)?;
-    let resolved = client.resolve_provider(input.provider(), &ProviderOverrides::default())?;
+    let inputs = revoke_inputs_from_cli(
+        args.from_stdin,
+        &stdin_payload,
+        args.token_id.as_deref(),
+        args.provider.as_deref(),
+    )?;
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| noscope::Error::internal(&format!("failed creating async runtime: {}", e)))?;
-    runtime.block_on(execute_revoke(&resolved, &input))?;
 
-    match output {
-        cli::OutputFormat::Text => {
-            println!(
-                "{}",
-                format_revoke_result(input.provider(), input.token_id())
-            );
+    let mut failures = Vec::new();
+    for input in &inputs {
+        let result = client
+            .resolve_provider(input.provider(), &ProviderOverrides::default())
+            .and_then(|resolved| runtime.block_on(execute_revoke(&resolved, input)));
+        match result {
+            Ok(()) => match output {
+                cli::OutputFormat::Text => {
+                    println!(
+                        "{}",
+                        format_revoke_result(input.provider(), input.token_id())
+                    );
+                }
+                cli::OutputFormat::Json => {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "status": "ok",
+                            "command": "revoke",
+                            "provider": input.provider(),
+                            "token_id": input.token_id(),
+                            "message": format_revoke_result(input.provider(), input.token_id()),
+                        })
+                    );
+                }
+            },
+            Err(err) => failures.push(err),
         }
-        cli::OutputFormat::Json => {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "status": "ok",
-                    "command": "revoke",
-                    "provider": input.provider(),
-                    "token_id": input.token_id(),
-                    "message": format_revoke_result(input.provider(), input.token_id()),
-                })
-            );
-        }
+    }
+
+    if let Some(first) = failures.pop() {
+        return Err(if failures.is_empty() {
+            first
+        } else {
+            failures.push(first);
+            noscope::Error::multi(failures)
+        });
     }
     Ok(cli::SUCCESS_EXIT_CODE)
 }
 
-fn build_revoke_input(
-    args: &cli::RevokeArgs,
-    stdin_payload: &str,
-) -> Result<noscope::mint::RevokeInput, noscope::Error> {
-    if args.from_stdin {
-        return noscope::mint::RevokeInput::from_mint_json(stdin_payload)
-            .map_err(noscope::Error::from);
-    }
-
-    let token_id = args.token_id.as_deref().ok_or_else(|| {
-        noscope::Error::usage("--token-id is required unless --from-stdin is set")
-    })?;
-    let provider = args.provider.as_deref().ok_or_else(|| {
-        noscope::Error::usage("--provider is required unless --from-stdin is set")
-    })?;
-
-    Ok(noscope::mint::RevokeInput::from_token_id_and_provider(
-        token_id, provider,
-    ))
-}
-
-async fn execute_revoke(
-    resolved: &noscope::provider::ResolvedProvider,
-    input: &noscope::mint::RevokeInput,
-) -> Result<(), noscope::Error> {
-    let emit_revoke_fail = |message: &str, started: Instant| {
-        let mut event = noscope::Event::new(noscope::EventType::RevokeFail, &resolved.name);
-        event.set_token_id(input.token_id());
-        event.set_error(message);
-        event.set_duration(started.elapsed());
-        noscope::event::emit_runtime_event(event);
-    };
-
-    let started = Instant::now();
-    let mut revoke_start = noscope::Event::new(noscope::EventType::RevokeStart, &resolved.name);
-    revoke_start.set_token_id(input.token_id());
-    noscope::event::emit_runtime_event(revoke_start);
-
-    let revoke_cmd = match resolved.revoke_cmd.as_deref() {
-        Some(cmd) => cmd,
-        None => {
-            let message = "provider does not define a revoke command";
-            emit_revoke_fail(message, started);
-            return Err(noscope::Error::provider(&resolved.name, message));
-        }
-    };
-    let argv = parse_command(revoke_cmd);
-    if argv.is_empty() {
-        let message = "empty revoke command";
-        emit_revoke_fail(message, started);
-        return Err(noscope::Error::provider(&resolved.name, message));
-    }
-
-    let mut env = resolved.env.clone();
-    env.extend(noscope::provider_exec::build_revoke_env(
-        "",
-        input.token_id(),
-    ));
-
-    let exec_result = noscope::provider_exec::execute_provider_command(
-        &argv,
-        &env,
-        &noscope::provider_exec::ExecConfig {
-            timeout: Duration::from_secs(30),
-            kill_grace_period: Duration::from_secs(5),
-        },
-        0,
-    )
-    .await
-    .map_err(|e| {
-        let message = format!("spawn failed: {}", e);
-        emit_revoke_fail(&message, started);
-        noscope::Error::provider(&resolved.name, &message)
-    })?;
-
-    if noscope::provider_exec::is_revoke_success(exec_result.exit_result.exit_code.as_raw()) {
-        let mut event = noscope::Event::new(noscope::EventType::RevokeSuccess, &resolved.name);
-        event.set_token_id(input.token_id());
-        event.set_duration(started.elapsed());
-        noscope::event::emit_runtime_event(event);
-        Ok(())
-    } else {
-        let stderr = if exec_result.stderr.is_empty() {
-            exec_result.exit_result.stderr_message()
-        } else {
-            exec_result.stderr
-        };
-        let mut event = noscope::Event::new(noscope::EventType::RevokeFail, &resolved.name);
-        event.set_token_id(input.token_id());
-        event.set_error(&stderr);
-        event.set_duration(started.elapsed());
-        noscope::event::emit_runtime_event(event);
-        Err(noscope::Error::provider(
-            &resolved.name,
-            &format!("revoke failed for token {}: {}", input.token_id(), stderr),
-        ))
-    }
-}
-
-fn format_revoke_result(provider: &str, token_id: &str) -> String {
-    format!(
-        "noscope: revoked token {} for provider {}",
-        token_id, provider
-    )
-}
-
 fn cmd_validate(args: cli::ValidateArgs, output: cli::OutputFormat) -> Result<i32, noscope::Error> {
-    let client = Client::new(ClientOptions::default())?;
+    let client = Client::new(ClientOptions {
+        xdg_config_home: std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+        ..ClientOptions::default()
+    })?;
     let resolved = client.resolve_provider(&args.provider, &ProviderOverrides::default())?;
     noscope::provider::validate_provider(&resolved)?;
 
@@ -1128,7 +526,10 @@ mod validate_wiring_tests {
 }
 
 fn cmd_dry_run(args: cli::DryRunArgs, output: cli::OutputFormat) -> Result<i32, noscope::Error> {
-    let client = Client::new(ClientOptions::default())?;
+    let client = Client::new(ClientOptions {
+        xdg_config_home: std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+        ..ClientOptions::default()
+    })?;
     let resolved = client.resolve_provider(&args.provider, &ProviderOverrides::default())?;
     match output {
         cli::OutputFormat::Text => {
@@ -1166,6 +567,115 @@ fn config_source_label(source: noscope::provider::ConfigSource) -> &'static str 
     }
 }
 
+fn cmd_doctor(output: cli::OutputFormat) -> Result<i32, noscope::Error> {
+    let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()))
+                .join(".config")
+        });
+
+    let report = noscope::doctor::run_doctor(&xdg_config_home);
+
+    match output {
+        cli::OutputFormat::Text => {
+            for check in &report.checks {
+                let symbol = match check.status {
+                    noscope::doctor::CheckStatus::Pass => "✓",
+                    noscope::doctor::CheckStatus::Warn => "!",
+                    noscope::doctor::CheckStatus::Fail => "✗",
+                };
+                eprintln!("{} {}: {}", symbol, check.name, check.message);
+            }
+            let total = report.checks.len();
+            let passed = report.pass_count();
+            let warned = report.warn_count();
+            let failed = report.fail_count();
+            eprintln!(
+                "\n{} checks: {} passed, {} warnings, {} failed",
+                total, passed, warned, failed
+            );
+        }
+        cli::OutputFormat::Json => {
+            let checks: Vec<serde_json::Value> = report
+                .checks
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "name": c.name,
+                        "status": match c.status {
+                            noscope::doctor::CheckStatus::Pass => "pass",
+                            noscope::doctor::CheckStatus::Warn => "warn",
+                            noscope::doctor::CheckStatus::Fail => "fail",
+                        },
+                        "message": c.message,
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::json!({
+                    "command": "doctor",
+                    "checks": checks,
+                    "summary": {
+                        "total": report.checks.len(),
+                        "passed": report.pass_count(),
+                        "warnings": report.warn_count(),
+                        "failures": report.fail_count(),
+                    },
+                    "exit_code": report.exit_code(),
+                })
+            );
+        }
+    }
+
+    Ok(report.exit_code())
+}
+
+fn cmd_init(output: cli::OutputFormat) -> Result<i32, noscope::Error> {
+    let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()))
+                .join(".config")
+        });
+
+    let result = noscope::doctor::run_init(&xdg_config_home).map_err(|e| {
+        noscope::Error::config(&format!("failed to initialize config directories: {}", e))
+    })?;
+
+    match output {
+        cli::OutputFormat::Text => {
+            if result.created_dirs.is_empty() {
+                println!("noscope: config directories already exist, nothing to do");
+            } else {
+                for dir in &result.created_dirs {
+                    println!("noscope: created {}", dir.display());
+                }
+                println!("noscope: initialization complete");
+            }
+        }
+        cli::OutputFormat::Json => {
+            let created: Vec<String> = result
+                .created_dirs
+                .iter()
+                .map(|d| d.display().to_string())
+                .collect();
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "ok",
+                    "command": "init",
+                    "created_dirs": created,
+                })
+            );
+        }
+    }
+
+    Ok(cli::SUCCESS_EXIT_CODE)
+}
+
+#[rule("rule_cli_completions")]
 fn cmd_completions(args: cli::CompletionsArgs) {
     use clap::CommandFactory;
     clap_complete::generate(
@@ -1218,29 +728,38 @@ mod revoke_wiring_tests {
 
     #[test]
     fn revoke_builds_revoke_input_from_flags() {
-        let args = cli::RevokeArgs {
-            token_id: Some("tok-123".to_string()),
-            provider: Some("aws".to_string()),
-            from_stdin: false,
-        };
-
-        let input = build_revoke_input(&args, "").unwrap();
-        assert_eq!(input.token_id(), "tok-123");
-        assert_eq!(input.provider(), "aws");
+        let inputs = revoke_inputs_from_cli(false, "", Some("tok-123"), Some("aws")).unwrap();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].token_id(), "tok-123");
+        assert_eq!(inputs[0].provider(), "aws");
     }
 
     #[test]
     fn revoke_builds_revoke_input_from_stdin_json() {
-        let args = cli::RevokeArgs {
-            token_id: None,
-            provider: None,
-            from_stdin: true,
-        };
         let stdin = r#"{"token":"secret","token_id":"tok-9","provider":"vault","role":"ops"}"#;
 
-        let input = build_revoke_input(&args, stdin).unwrap();
-        assert_eq!(input.token_id(), "tok-9");
-        assert_eq!(input.provider(), "vault");
+        let inputs = revoke_inputs_from_cli(true, stdin, None, None).unwrap();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].token_id(), "tok-9");
+        assert_eq!(inputs[0].provider(), "vault");
+    }
+
+    #[test]
+    fn revoke_accepts_mint_envelope_array_from_stdin() {
+        // `noscope mint` emits a JSON array (NS-063); the pipeline
+        // `noscope mint ... | noscope revoke --from-stdin` must revoke
+        // every envelope in it.
+        let stdin = r#"[
+            {"token":"s1","token_id":"tok-a","provider":"aws","role":"ops"},
+            {"token":"s2","token_id":"tok-g","provider":"gcp","role":"ops"}
+        ]"#;
+
+        let inputs = revoke_inputs_from_cli(true, stdin, None, None).unwrap();
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0].token_id(), "tok-a");
+        assert_eq!(inputs[0].provider(), "aws");
+        assert_eq!(inputs[1].token_id(), "tok-g");
+        assert_eq!(inputs[1].provider(), "gcp");
     }
 
     #[test]
@@ -1780,8 +1299,9 @@ mod run_wiring_tests {
 
 #[cfg(test)]
 mod rollback_budget_wiring_tests {
-    use super::*;
     use chrono::Utc;
+    use noscope::app::revoke::revoke_token_with_budget;
+    use provenance_macros::verifies;
     use secrecy::SecretString;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1866,6 +1386,7 @@ mod rollback_budget_wiring_tests {
     }
 
     #[tokio::test]
+    #[verifies("rule_cross_rollback_budget", examples)]
     async fn atomic_rollback_follows_revocation_budget_applies_exponential_backoff() {
         let token = make_token("aws", "tok-aws");
         let budget = noscope::credential_set::RollbackBudget {
@@ -2302,143 +1823,6 @@ mod run_mode_os_signal_e2e_tests {
             revoked.lines().filter(|line| *line == "tok-aws").count(),
             1,
             "NS-028: double-signal escalation must not trigger duplicate revocations"
-        );
-    }
-}
-
-#[cfg(test)]
-mod signal_loop_parity_tests {
-    use super::*;
-    use noscope::signal_policy::ParentSignal;
-
-    #[derive(Default)]
-    struct FakeSignalProcess {
-        forwarded: Vec<i32>,
-    }
-
-    impl SignalProcess for FakeSignalProcess {
-        fn forward_signal(&mut self, sig: i32) -> Result<(), std::io::Error> {
-            self.forwarded.push(sig);
-            Ok(())
-        }
-    }
-
-    struct MainLoopReport {
-        forwarded_sigterm: bool,
-        forwarded_sigint: bool,
-        forwarded_sighup: bool,
-        double_signal_escalated: bool,
-    }
-
-    fn run_main_loop_sequence(parent_signals: &[ParentSignal]) -> MainLoopReport {
-        let mut process = FakeSignalProcess::default();
-        let mut wiring = RunSignalWiring::default();
-
-        for signal in parent_signals {
-            run_mode_dispatch_parent_signal_for_test(
-                &mut wiring,
-                *signal,
-                &mut process,
-                &mut || Ok(()),
-            )
-            .expect("main loop signal dispatch should succeed");
-        }
-
-        MainLoopReport {
-            forwarded_sigterm: process.forwarded.contains(&libc::SIGTERM),
-            forwarded_sigint: process.forwarded.contains(&libc::SIGINT),
-            forwarded_sighup: process.forwarded.contains(&libc::SIGHUP),
-            double_signal_escalated: process.forwarded.contains(&libc::SIGKILL),
-        }
-    }
-
-    #[test]
-    fn parity_sigterm_sequence_matches_forwarding_and_escalation_outcomes() {
-        let _guard = global_signal_test_lock().lock().unwrap();
-        let main_report = run_main_loop_sequence(&[ParentSignal::Sigterm]);
-        let integration_report =
-            noscope::integration_runtime::forward_sigterm_then_escalate_with_os_signals(
-                "/bin/sh",
-                &["-c".to_string(), "sleep 1".to_string()],
-                &[libc::SIGTERM],
-            )
-            .expect("integration loop signal dispatch should succeed");
-
-        assert_eq!(
-            integration_report.forwarded_sigterm,
-            main_report.forwarded_sigterm
-        );
-        assert_eq!(
-            integration_report.forwarded_sigint,
-            main_report.forwarded_sigint
-        );
-        assert_eq!(
-            integration_report.forwarded_sighup,
-            main_report.forwarded_sighup
-        );
-        assert_eq!(
-            integration_report.double_signal_escalated,
-            main_report.double_signal_escalated
-        );
-    }
-
-    #[test]
-    fn parity_sigint_then_sigterm_sequence_matches_forwarding_and_escalation_outcomes() {
-        let _guard = global_signal_test_lock().lock().unwrap();
-        let main_report = run_main_loop_sequence(&[ParentSignal::Sigint, ParentSignal::Sigterm]);
-        let integration_report =
-            noscope::integration_runtime::forward_sigterm_then_escalate_with_os_signals(
-                "/bin/sh",
-                &["-c".to_string(), "sleep 1".to_string()],
-                &[libc::SIGINT, libc::SIGTERM],
-            )
-            .expect("integration loop signal dispatch should succeed");
-
-        assert_eq!(
-            integration_report.forwarded_sigterm,
-            main_report.forwarded_sigterm
-        );
-        assert_eq!(
-            integration_report.forwarded_sigint,
-            main_report.forwarded_sigint
-        );
-        assert_eq!(
-            integration_report.forwarded_sighup,
-            main_report.forwarded_sighup
-        );
-        assert_eq!(
-            integration_report.double_signal_escalated,
-            main_report.double_signal_escalated
-        );
-    }
-
-    #[test]
-    fn parity_sighup_sequence_matches_forwarding_and_escalation_outcomes() {
-        let _guard = global_signal_test_lock().lock().unwrap();
-        let main_report = run_main_loop_sequence(&[ParentSignal::Sighup]);
-        let integration_report =
-            noscope::integration_runtime::forward_sigterm_then_escalate_with_os_signals(
-                "/bin/sh",
-                &["-c".to_string(), "sleep 1".to_string()],
-                &[libc::SIGHUP],
-            )
-            .expect("integration loop signal dispatch should succeed");
-
-        assert_eq!(
-            integration_report.forwarded_sigterm,
-            main_report.forwarded_sigterm
-        );
-        assert_eq!(
-            integration_report.forwarded_sigint,
-            main_report.forwarded_sigint
-        );
-        assert_eq!(
-            integration_report.forwarded_sighup,
-            main_report.forwarded_sighup
-        );
-        assert_eq!(
-            integration_report.double_signal_escalated,
-            main_report.double_signal_escalated
         );
     }
 }

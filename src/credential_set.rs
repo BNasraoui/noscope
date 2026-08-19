@@ -13,6 +13,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 
 use crate::token::ScopedToken;
+use provenance_macros::rule;
 
 /// A specification for a single credential to mint.
 ///
@@ -241,6 +242,7 @@ impl ExpiryPolicy {
     /// NS-049: Determine the action for a single expired credential.
     ///
     /// Always returns LogWarning — never terminates child or re-mints.
+    #[rule("rule_expiry_log_only")]
     pub fn on_credential_expired(&self, provider: &str, token_id: &str) -> ExpiryAction {
         ExpiryAction::LogWarning {
             message: format!(
@@ -311,6 +313,11 @@ impl CredentialSet {
     /// JSON output (NS-063).
     pub fn tokens(&self) -> impl Iterator<Item = &ScopedToken> {
         self.entries.iter().map(|(_, token)| token)
+    }
+
+    /// Iterate over (spec, token) pairs.
+    pub fn entries(&self) -> impl Iterator<Item = (&CredentialSpec, &ScopedToken)> {
+        self.entries.iter().map(|(spec, token)| (spec, token))
     }
 
     /// NS-048: Compute independent refresh schedules for all credentials.
@@ -416,6 +423,7 @@ pub fn validate_credential_specs(specs: &[CredentialSpec]) -> Result<(), Credent
 /// The refresh time is based on the credential's own expires_at,
 /// not any shared timer. Refreshes at 75% of the token's lifetime
 /// (i.e., when 75% of the time between now and expiry has elapsed).
+#[rule("rule_refresh_schedule_75pct")]
 pub fn compute_refresh_at(token: &ScopedToken) -> DateTime<Utc> {
     let now = Utc::now();
     let expires = token.expires_at();
@@ -426,6 +434,7 @@ pub fn compute_refresh_at(token: &ScopedToken) -> DateTime<Utc> {
 }
 
 /// NS-046: Format a timeout error message for a provider.
+#[rule("rule_orchestration_timeout_error_names_provider")]
 pub fn format_timeout_error(provider: &str, timeout: Duration) -> String {
     format!(
         "provider '{}' timed out after {}s",
@@ -438,6 +447,7 @@ pub fn format_timeout_error(provider: &str, timeout: Duration) -> String {
 mod tests {
     use super::*;
     use chrono::Utc;
+    use provenance_macros::verifies;
     use secrecy::SecretString;
 
     /// Helper: create a ScopedToken for test convenience.
@@ -848,6 +858,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[verifies("rule_refresh_schedule_75pct", examples)]
     fn independent_refresh_scheduling_different_ttls_different_schedules() {
         let now = Utc::now();
         let token_1h = make_token("secret-1", "aws", now + chrono::Duration::hours(1));
@@ -948,6 +959,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_expiry_log_only", examples)]
     fn single_credential_expiry_warning_contains_provider_and_token_id() {
         let policy = ExpiryPolicy;
         let action = policy.on_credential_expired("aws", "tok-aws-123");

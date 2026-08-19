@@ -1,0 +1,8 @@
+# Canonical graph state merges record by record, not line by line.
+# Each clone must configure the driver once:
+#
+#   git config merge.provenance-jsonl.name "Provenance canonical JSONL merge"
+#   git config merge.provenance-jsonl.driver "provenance merge-jsonl %O %A %B --output %A --path %P"
+#
+# Without the config git falls back to its usual line merge for these files.
+.provenance/state/**/*.jsonl merge=provenance-jsonl

@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use crate::config_path::named_config_toml_path;
 use crate::exit_code::NoscopeExitCode;
 use crate::provider::check_config_permissions;
+use provenance_macros::rule;
 
 /// Known fields in a [[credentials]] entry.
 /// NS-051: provider (required), role (required), ttl (required), env_key (optional).
@@ -131,6 +132,7 @@ pub fn profile_config_path_with_home(
 ///
 /// Validates schema: required fields, unknown credential fields = error,
 /// empty credentials = error. Unknown top-level fields are ignored.
+#[rule("rule_profile_schema")]
 pub fn parse_profile_toml(content: &str) -> Result<Profile, ProfileError> {
     let table: toml::Table =
         content
@@ -350,6 +352,7 @@ pub fn check_profile_flag_exclusion(
 /// Unlike provider config (which returns Ok(None) for missing files),
 /// an explicitly requested profile must exist. Returns an error if
 /// the file is missing or has insecure permissions.
+#[rule("rule_profile_named_must_exist")]
 pub fn load_profile(path: &Path) -> Result<Profile, ProfileError> {
     if !path.exists() {
         return Err(ProfileError::NotFound {
@@ -376,6 +379,7 @@ pub fn load_profile(path: &Path) -> Result<Profile, ProfileError> {
 
 #[cfg(test)]
 mod tests {
+    use provenance_macros::verifies;
     use std::path::{Path, PathBuf};
 
     // =========================================================================
@@ -471,6 +475,7 @@ ttl = 1800
     // =========================================================================
 
     #[test]
+    #[verifies("rule_profile_schema", examples)]
     fn profile_schema_requires_provider() {
         let toml = r#"
 [[credentials]]
@@ -950,6 +955,7 @@ ttl = 1800
     // =========================================================================
 
     #[test]
+    #[verifies("rule_profile_named_must_exist", examples)]
     fn profile_load_missing_file_is_error() {
         // Unlike provider config (Ok(None) for missing), a profile that
         // was explicitly requested must exist.

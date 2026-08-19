@@ -3,6 +3,7 @@
 // NS-055: Signal-terminated provider handling
 // NS-056: Multi-provider error reporting
 
+use provenance_macros::rule;
 use std::fmt;
 
 /// NS-010: Provider exit code protocol.
@@ -181,6 +182,7 @@ impl fmt::Display for ProviderExitResult {
 ///   signal number = raw - 128.
 /// - Other unknown codes (including negatives): mapped to `GeneralError`,
 ///   no signal.
+#[rule("rule_exec_exit_interpretation")]
 pub fn interpret_provider_exit(raw: i32) -> ProviderExitResult {
     if let Some(known) = ProviderExitCode::from_raw(raw) {
         return ProviderExitResult {
@@ -203,113 +205,10 @@ pub fn interpret_provider_exit(raw: i32) -> ProviderExitResult {
     }
 }
 
-/// NS-056: Collects results from multiple provider invocations.
-///
-/// All failures are recorded so that the first failure does not shadow
-/// subsequent ones. When any failure exists, the noscope exit code is 65
-/// (mint failure).
-#[derive(Debug)]
-pub struct MultiProviderReport {
-    failures: Vec<ProviderFailure>,
-    successes: Vec<String>,
-}
-
-/// A single provider failure record.
-#[derive(Debug, Clone)]
-pub struct ProviderFailure {
-    /// The provider that failed.
-    pub provider: String,
-    /// The provider's exit code.
-    pub exit_code: ProviderExitCode,
-    /// Stderr or diagnostic message from the provider.
-    pub message: String,
-}
-
-impl Default for MultiProviderReport {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MultiProviderReport {
-    /// Create an empty report.
-    pub fn new() -> Self {
-        Self {
-            failures: Vec::new(),
-            successes: Vec::new(),
-        }
-    }
-
-    /// Record a provider failure.
-    pub fn record_failure(&mut self, provider: &str, exit_code: ProviderExitCode, message: &str) {
-        self.failures.push(ProviderFailure {
-            provider: provider.to_string(),
-            exit_code,
-            message: message.to_string(),
-        });
-    }
-
-    /// Record a provider success.
-    pub fn record_success(&mut self, provider: &str) {
-        self.successes.push(provider.to_string());
-    }
-
-    /// Number of failed providers.
-    pub fn failure_count(&self) -> usize {
-        self.failures.len()
-    }
-
-    /// Number of successful providers.
-    pub fn success_count(&self) -> usize {
-        self.successes.len()
-    }
-
-    /// Iterate over recorded failures.
-    pub fn failures(&self) -> &[ProviderFailure] {
-        &self.failures
-    }
-
-    /// Iterate over successful provider names.
-    pub fn successes(&self) -> &[String] {
-        &self.successes
-    }
-
-    /// Format all failures for stderr output.
-    ///
-    /// NS-056: First failure must not shadow subsequent — all are reported.
-    /// Returns an empty string when there are no failures.
-    pub fn format_stderr(&self) -> String {
-        let mut out = String::new();
-        for (i, f) in self.failures.iter().enumerate() {
-            if i > 0 {
-                out.push('\n');
-            }
-            out.push_str(&format!(
-                "error: provider '{}' failed (exit {}): {}",
-                f.provider,
-                f.exit_code.as_raw(),
-                f.message
-            ));
-        }
-        out
-    }
-
-    /// Determine the noscope exit code for this multi-provider run.
-    ///
-    /// NS-056: If any failures exist, exit 65 (mint failure).
-    /// If all succeeded, exit 0 (Success — no child involved).
-    pub fn noscope_exit_code(&self) -> NoscopeExitCode {
-        if self.failures.is_empty() {
-            NoscopeExitCode::Success
-        } else {
-            NoscopeExitCode::MintFailure
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use provenance_macros::verifies;
 
     // =========================================================================
     // NS-010: Provider error exit codes.
@@ -584,6 +483,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_exec_exit_interpretation", examples)]
     fn known_provider_exit_codes_interpreted_directly() {
         let result = interpret_provider_exit(0);
         assert_eq!(result.exit_code, ProviderExitCode::Success);
@@ -644,167 +544,5 @@ mod tests {
 
         let c = interpret_provider_exit(2);
         assert_ne!(a, c);
-    }
-
-    // =========================================================================
-    // NS-056: Multi-provider error reporting.
-    // Report all failures to stderr, exit 65 (mint failure),
-    // first failure must not shadow subsequent.
-    // =========================================================================
-
-    #[test]
-    fn multi_provider_report_collects_all_failures() {
-        let mut report = MultiProviderReport::new();
-        report.record_failure("aws", ProviderExitCode::AuthFailure, "auth expired");
-        report.record_failure("gcp", ProviderExitCode::Unavailable, "timeout");
-        assert_eq!(report.failure_count(), 2);
-    }
-
-    #[test]
-    fn multi_provider_report_empty_has_zero_failures() {
-        let report = MultiProviderReport::new();
-        assert_eq!(report.failure_count(), 0);
-    }
-
-    #[test]
-    fn multi_provider_report_first_failure_not_shadowed() {
-        let mut report = MultiProviderReport::new();
-        report.record_failure("aws", ProviderExitCode::AuthFailure, "first error");
-        report.record_failure("gcp", ProviderExitCode::Unavailable, "second error");
-
-        let stderr = report.format_stderr();
-        assert!(
-            stderr.contains("aws"),
-            "First failure must appear in report: {}",
-            stderr
-        );
-        assert!(
-            stderr.contains("gcp"),
-            "Second failure must appear in report: {}",
-            stderr
-        );
-        assert!(
-            stderr.contains("first error"),
-            "First error message must appear: {}",
-            stderr
-        );
-        assert!(
-            stderr.contains("second error"),
-            "Second error message must appear: {}",
-            stderr
-        );
-    }
-
-    #[test]
-    fn multi_provider_report_exit_code_is_65_mint_failure() {
-        let mut report = MultiProviderReport::new();
-        report.record_failure("aws", ProviderExitCode::AuthFailure, "expired");
-        let exit = report.noscope_exit_code();
-        assert_eq!(exit.as_raw(), 65);
-    }
-
-    #[test]
-    fn multi_provider_report_with_no_failures_returns_success_not_child_exit() {
-        let report = MultiProviderReport::new();
-        let exit = report.noscope_exit_code();
-        assert_eq!(exit, NoscopeExitCode::Success);
-        assert_eq!(exit.as_raw(), 0);
-    }
-
-    #[test]
-    fn multi_provider_report_tracks_successes_too() {
-        let mut report = MultiProviderReport::new();
-        report.record_success("aws");
-        report.record_failure("gcp", ProviderExitCode::AuthFailure, "expired");
-        assert_eq!(report.failure_count(), 1);
-        assert_eq!(report.success_count(), 1);
-    }
-
-    #[test]
-    fn multi_provider_report_stderr_contains_all_providers_in_order() {
-        let mut report = MultiProviderReport::new();
-        report.record_failure("alpha", ProviderExitCode::GeneralError, "err1");
-        report.record_failure("bravo", ProviderExitCode::AuthFailure, "err2");
-        report.record_failure("charlie", ProviderExitCode::Unavailable, "err3");
-
-        let stderr = report.format_stderr();
-        let alpha_pos = stderr.find("alpha").expect("alpha missing");
-        let bravo_pos = stderr.find("bravo").expect("bravo missing");
-        let charlie_pos = stderr.find("charlie").expect("charlie missing");
-
-        // Order must be preserved (first failure first)
-        assert!(alpha_pos < bravo_pos, "alpha should appear before bravo");
-        assert!(
-            bravo_pos < charlie_pos,
-            "bravo should appear before charlie"
-        );
-    }
-
-    #[test]
-    fn multi_provider_report_stderr_includes_exit_code_per_provider() {
-        let mut report = MultiProviderReport::new();
-        report.record_failure("aws", ProviderExitCode::AuthFailure, "bad creds");
-
-        let stderr = report.format_stderr();
-        // Should mention the provider's exit code (2 for auth failure)
-        assert!(
-            stderr.contains("2"),
-            "Should include provider exit code: {}",
-            stderr
-        );
-    }
-
-    #[test]
-    fn multi_provider_report_format_stderr_empty_when_no_failures() {
-        let report = MultiProviderReport::new();
-        let stderr = report.format_stderr();
-        assert!(
-            stderr.is_empty(),
-            "No failures should produce empty stderr: {:?}",
-            stderr
-        );
-    }
-
-    #[test]
-    fn multi_provider_report_failures_are_accessible() {
-        let mut report = MultiProviderReport::new();
-        report.record_failure("aws", ProviderExitCode::AuthFailure, "expired");
-        report.record_failure("gcp", ProviderExitCode::Unavailable, "timeout");
-
-        let failures = report.failures();
-        assert_eq!(failures.len(), 2);
-        assert_eq!(failures[0].provider, "aws");
-        assert_eq!(failures[0].exit_code, ProviderExitCode::AuthFailure);
-        assert_eq!(failures[1].provider, "gcp");
-        assert_eq!(failures[1].exit_code, ProviderExitCode::Unavailable);
-    }
-
-    #[test]
-    fn multi_provider_report_successes_are_accessible() {
-        let mut report = MultiProviderReport::new();
-        report.record_success("aws");
-        report.record_success("gcp");
-
-        let successes = report.successes();
-        assert_eq!(successes.len(), 2);
-        assert_eq!(successes[0], "aws");
-        assert_eq!(successes[1], "gcp");
-    }
-
-    #[test]
-    fn multi_provider_report_can_filter_retryable_failures() {
-        // Demonstrate that exposed failures allow programmatic retry logic
-        let mut report = MultiProviderReport::new();
-        report.record_failure("aws", ProviderExitCode::Unavailable, "timeout");
-        report.record_failure("gcp", ProviderExitCode::AuthFailure, "bad creds");
-
-        let retryable: Vec<&str> = report
-            .failures()
-            .iter()
-            .filter(|f| f.exit_code == ProviderExitCode::Unavailable)
-            .map(|f| f.provider.as_str())
-            .collect();
-
-        assert_eq!(retryable, vec!["aws"]);
     }
 }

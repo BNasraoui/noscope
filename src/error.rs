@@ -6,6 +6,7 @@
 use std::fmt;
 
 use crate::exit_code::NoscopeExitCode;
+use provenance_macros::rule;
 
 // ---------------------------------------------------------------------------
 // ErrorKind — machine-readable error category
@@ -16,6 +17,7 @@ use crate::exit_code::NoscopeExitCode;
 /// Each variant maps to a stable string tag via [`ErrorKind::as_str`] and
 /// a noscope exit code via the parent [`Error::exit_code`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[rule("rule_errors_six_kinds")]
 pub enum ErrorKind {
     /// Command-line usage error (bad flags, missing args). Exit 64.
     Usage,
@@ -291,6 +293,7 @@ impl From<crate::config_path::ConfigPathError> for Error {
 
 #[cfg(test)]
 mod tests {
+    use provenance_macros::verifies;
     // =========================================================================
     // NS-077: Typed machine-readable public error taxonomy.
     //
@@ -351,6 +354,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_errors_six_kinds", examples)]
     fn typed_error_taxonomy_kind_is_machine_readable() {
         // ErrorKind can be matched exhaustively by machine consumers.
         let err = super::Error::usage("test");

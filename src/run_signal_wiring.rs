@@ -1,5 +1,6 @@
 use crate::signal_policy::{ParentSignal, SignalHandlingPolicy};
 use crate::{event::emit_runtime_event, Event, EventType};
+use provenance_macros::rule;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SignalActionReport {
@@ -21,6 +22,7 @@ pub struct RunSignalWiring {
 }
 
 impl RunSignalWiring {
+    #[rule("rule_signals_event_honesty")]
     pub fn on_parent_signal<P, R>(
         &mut self,
         signal: ParentSignal,
@@ -107,6 +109,7 @@ fn libc_signal(signal: ParentSignal) -> i32 {
 #[cfg(test)]
 mod tests {
     use crate::signal_policy::ParentSignal;
+    use provenance_macros::verifies;
 
     #[derive(Default)]
     struct FakeProcess {
@@ -184,6 +187,7 @@ mod tests {
 
     #[test]
     fn ns_070_double_signal_sigkill_path_emits_signal_forwarded() {
+        let _guard = crate::event::test_event_collector_guard();
         let captured = crate::event::install_test_event_collector(crate::LogFormat::Json);
 
         let mut process = FakeProcess::default();
@@ -211,6 +215,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_signals_event_honesty", examples)]
     fn ns_070_sigkill_forward_failure_does_not_emit_signal_forwarded() {
         struct FailingProcess;
 
@@ -220,6 +225,7 @@ mod tests {
             }
         }
 
+        let _guard = crate::event::test_event_collector_guard();
         let captured = crate::event::install_test_event_collector(crate::LogFormat::Json);
 
         let mut process = FailingProcess;

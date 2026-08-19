@@ -18,6 +18,9 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "process", "signal", "time", "sync", "io-util"] }
 shlex = "1"
 signal-hook = "0.3"
+# Prerelease: git dependency until provenance publishes to crates.io.
+# Pinned to the commit the graph tooling was built from.
+provenance-macros = { git = "https://github.com/BNasraoui/Provenance.git", rev = "0dd66a41b756c44f79758ecee252782af5c7d152" }
 
 [[bin]]
 name = "noscope"

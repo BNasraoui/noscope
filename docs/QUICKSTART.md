@@ -25,7 +25,7 @@ contract_version = 1
 supports_revoke = true
 
 [commands]
-mint = "/usr/local/bin/aws-mint --role {{role}} --ttl {{ttl}}"
+mint = "/usr/local/bin/aws-mint --role {role} --ttl {ttl}"
 revoke = "/usr/local/bin/aws-revoke"
 
 [commands.env]

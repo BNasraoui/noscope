@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use std::os::unix::process::CommandExt;
 
 use crate::event::{emit_runtime_event, Event, EventType};
+use provenance_macros::rule;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentMode {
@@ -93,6 +94,7 @@ pub struct AgentProcess {
 }
 
 impl AgentProcess {
+    #[rule("rule_signals_noscope_env_stripped")]
     pub fn spawn(config: AgentProcessConfig) -> Result<Self, AgentProcessError> {
         let mut env: HashMap<String, String> = std::env::vars()
             .filter(|(k, _)| !k.starts_with("NOSCOPE_"))
@@ -150,6 +152,7 @@ impl AgentProcess {
         })
     }
 
+    #[rule("rule_signals_forward_to_group")]
     pub fn forward_signal(&mut self, signal: libc::c_int) -> Result<(), AgentProcessError> {
         let child = self.child.as_ref().ok_or_else(|| AgentProcessError::Io {
             context: "child already waited",
@@ -286,6 +289,7 @@ impl AgentProcess {
     }
 }
 
+#[rule("rule_exit_passthrough")]
 fn exit_status_code(status: ExitStatus) -> i32 {
     if let Some(code) = status.code() {
         return code;
@@ -340,6 +344,7 @@ fn wait_child_with_optional_timeout(
 
 #[cfg(test)]
 mod tests {
+    use provenance_macros::verifies;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -359,6 +364,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_exit_passthrough", examples)]
     fn exit_code_passthrough_ns_002() {
         let mut process = AgentProcess::spawn(shell_config("exit 42")).unwrap();
         let exit = process.wait_with_revoke(|| Ok(())).unwrap();
@@ -380,6 +386,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_signals_noscope_env_stripped", examples)]
     fn strip_noscope_env_vars_before_spawn_ns_021() {
         // SAFETY: test-local env mutation only.
         unsafe {
@@ -539,6 +546,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_signals_forward_to_group", examples)]
     fn forwards_parent_signals_to_child() {
         let mut process = AgentProcess::spawn(shell_config("sleep 60")).unwrap();
         process.forward_signal(libc::SIGTERM).unwrap();
