@@ -18,6 +18,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "process", "signal", "time", "sync", "io-util"] }
 shlex = "1"
 signal-hook = "0.3"
+# Prerelease: path dependency until provenance publishes to crates.io.
+provenance-macros = { path = "../provenance/crates/provenance-macros" }
 
 [[bin]]
 name = "noscope"

@@ -1,6 +1,7 @@
 // res_refresh_subsystem_ships: the refresh subsystem is wired to the
 // live `noscope run` path. These tests drive the real binary.
 
+use provenance_macros::verifies;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -53,6 +54,7 @@ fn run_noscope(xdg: &Path, child: &str) -> std::process::Output {
 /// lifetime, NS-048) fires while the child is alive, and the provider's
 /// refresh command runs with the NS-039 env contract.
 #[test]
+#[verifies("rule_refresh_rotate_mode_warning", conformance)]
 fn run_mode_executes_provider_refresh_command_when_due() {
     let tmp = tempfile::tempdir().unwrap();
     let marker = tmp.path().join("refresh-env");
@@ -154,6 +156,7 @@ fn run_mode_without_refresh_command_emits_no_refresh_warnings() {
 /// NS-049: an expired credential produces a log-only warning; the child
 /// keeps running and the run still passes through the child exit code.
 #[test]
+#[verifies("rule_expiry_log_only", conformance)]
 fn run_mode_expiry_warns_without_stopping_child() {
     let tmp = tempfile::tempdir().unwrap();
 

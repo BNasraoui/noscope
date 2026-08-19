@@ -3,6 +3,7 @@
 // array and revokes every lease in it by identifier
 // (res_revoke_contract_identifier_only).
 
+use provenance_macros::verifies;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -35,6 +36,7 @@ fn noscope(xdg: &Path) -> Command {
 }
 
 #[test]
+#[verifies("rule_revoke_identifier_only", conformance)]
 fn mint_output_pipes_into_revoke_from_stdin() {
     let tmp = tempfile::tempdir().unwrap();
     let revoked_marker = tmp.path().join("revoked");

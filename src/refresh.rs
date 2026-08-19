@@ -11,6 +11,7 @@ use std::future::Future;
 use std::time::Instant;
 
 use crate::event::{emit_runtime_event, Event, EventType};
+use provenance_macros::rule;
 
 /// NS-008: What to do after a refresh failure.
 ///
@@ -137,6 +138,7 @@ impl RefreshPolicy {
     ///
     /// NS-008: Never returns `KillChild`. Always returns `log_warning: true`.
     /// NS-030: Respects max_retries and 50%-of-remaining-lifetime cap.
+    #[rule("rule_refresh_never_kills_child")]
     pub fn on_refresh_failure(&self, attempt: u32, remaining_lifetime: Duration) -> RefreshOutcome {
         // NS-030: No retries if there's no remaining lifetime.
         if remaining_lifetime.is_zero() {
@@ -180,6 +182,7 @@ impl RefreshPolicy {
 /// Environment variable injection is point-in-time: the child process
 /// receives the env vars at spawn time and cannot see updates. This
 /// warning must be emitted at startup when rotate mode is enabled.
+#[rule("rule_refresh_rotate_mode_warning")]
 pub fn rotate_mode_startup_warning() -> &'static str {
     "warning: environment variable injection is point-in-time; \
      the child process will not see refreshed credentials unless \
@@ -192,6 +195,7 @@ pub fn rotate_mode_startup_warning() -> &'static str {
 /// Each credential in multi-credential mode gets its own `RefreshTracker`.
 /// One tracker's failures never affect another's state.
 #[derive(Debug)]
+#[rule("rule_refresh_per_credential_isolation")]
 pub struct RefreshTracker {
     credential_id: String,
     consecutive_failures: u32,
@@ -316,6 +320,7 @@ impl RefreshRuntimeLoop {
     ///
     /// Uses `child_alive` as the AgentProcess lifecycle guard: once the child
     /// exits, no further refresh commands are executed.
+    #[rule("rule_refresh_due_only_child_alive")]
     pub async fn run_once<F, Fut>(
         &mut self,
         now: DateTime<Utc>,
@@ -560,6 +565,7 @@ fn pseudo_random_fraction() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use provenance_macros::verifies;
     use std::time::Duration;
 
     // =========================================================================
@@ -569,6 +575,7 @@ mod tests {
     // =========================================================================
 
     #[test]
+    #[verifies("rule_refresh_never_kills_child", examples)]
     fn refresh_failure_preserves_child_action_is_not_kill() {
         // When a refresh attempt fails, the policy must recommend continuing
         // (not killing the child process). The token still has remaining TTL.
@@ -1003,6 +1010,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_refresh_per_credential_isolation", examples)]
     fn refresh_runtime_ns_031_per_credential_independent_timers() {
         let token_a = make_runtime_token(
             "a-v1",
@@ -1071,6 +1079,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_refresh_rotate_mode_warning", examples)]
     fn refresh_runtime_ns_025_startup_warning_for_rotate_mode() {
         let token = make_runtime_token(
             "aws-v1",
@@ -1139,6 +1148,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[verifies("rule_refresh_due_only_child_alive", examples)]
     async fn refresh_runtime_provider_execution_runs_only_due_credentials_with_child_context() {
         let now = chrono::Utc::now();
         let token = make_runtime_token("aws-v1", "aws", now + chrono::Duration::seconds(1));

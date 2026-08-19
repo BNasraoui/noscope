@@ -8,6 +8,7 @@
 // NS-066: Minimum TTL enforcement
 // NS-067: Maximum TTL enforcement
 
+use provenance_macros::rule;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
@@ -183,6 +184,7 @@ impl SignalHandlingPolicy {
     }
 
     /// NS-011 + NS-066 + NS-067: Never allow mint without bounded TTL.
+    #[rule("rule_ttl_bounds")]
     pub fn validate_ttl(ttl_secs: Option<u64>, bounds: &TtlBounds) -> Result<u64, TtlError> {
         let ttl = ttl_secs.ok_or(TtlError::Missing)?;
 
@@ -347,6 +349,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use provenance_macros::verifies;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -523,6 +526,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_ttl_bounds", examples)]
     fn ns_066_minimum_ttl_enforcement_rejects_ttl_below_60_seconds() {
         let bounds = TtlBounds::default();
         let err = SignalHandlingPolicy::validate_ttl(Some(59), &bounds).unwrap_err();

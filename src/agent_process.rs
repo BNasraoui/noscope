@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use std::os::unix::process::CommandExt;
 
 use crate::event::{emit_runtime_event, Event, EventType};
+use provenance_macros::rule;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentMode {
@@ -286,6 +287,7 @@ impl AgentProcess {
     }
 }
 
+#[rule("rule_exit_passthrough")]
 fn exit_status_code(status: ExitStatus) -> i32 {
     if let Some(code) = status.code() {
         return code;
@@ -340,6 +342,7 @@ fn wait_child_with_optional_timeout(
 
 #[cfg(test)]
 mod tests {
+    use provenance_macros::verifies;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -359,6 +362,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_exit_passthrough", examples)]
     fn exit_code_passthrough_ns_002() {
         let mut process = AgentProcess::spawn(shell_config("exit 42")).unwrap();
         let exit = process.wait_with_revoke(|| Ok(())).unwrap();

@@ -129,6 +129,7 @@ pub fn resolve_specs_and_providers(
 
 #[cfg(test)]
 mod tests {
+    use provenance_macros::verifies;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
@@ -282,6 +283,7 @@ mod tests {
 
     // NS-033: profile credentials pass the same role validation as flags.
     #[test]
+    #[verifies("rule_role_charset", examples)]
     fn profile_rejects_role_with_shell_metacharacters() {
         let tmp = tempfile::tempdir().unwrap();
         write_aws_provider(tmp.path());
@@ -299,6 +301,7 @@ mod tests {
 
     // NS-011/NS-062: profile credentials pass the same TTL bounds as flags.
     #[test]
+    #[verifies("rule_ttl_bounds", examples)]
     fn profile_rejects_out_of_bounds_ttl() {
         let tmp = tempfile::tempdir().unwrap();
         write_aws_provider(tmp.path());

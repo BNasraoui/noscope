@@ -18,6 +18,7 @@ use chrono::{DateTime, Utc};
 use zeroize::Zeroize;
 
 use crate::exit_code::{interpret_provider_exit, ProviderExitResult};
+use provenance_macros::rule;
 
 /// NS-036: Maximum provider stdout size in bytes (1 MiB).
 pub const MAX_STDOUT_BYTES: usize = 1024 * 1024;
@@ -228,6 +229,7 @@ pub fn parse_provider_output(
 ///
 /// Allowed: alphanumeric, hyphens, underscores, dots.
 /// Rejected: empty string, spaces, shell metacharacters, slashes, etc.
+#[rule("rule_role_charset")]
 pub fn validate_role(role: &str) -> Result<(), ProviderExecError> {
     if role.is_empty() {
         return Err(ProviderExecError::InvalidRole {
@@ -289,6 +291,7 @@ pub fn check_stdout_size_limit(size: usize) -> Result<(), ProviderExecError> {
 /// identifier; the credential value is never passed to a revoke command
 /// (res_revoke_contract_identifier_only). Does NOT set NOSCOPE_TTL
 /// (that's only for refresh per NS-039).
+#[rule("rule_revoke_identifier_only")]
 pub fn build_revoke_env(token_id: &str) -> HashMap<String, String> {
     let mut env = HashMap::new();
     env.insert("NOSCOPE_TOKEN_ID".to_string(), token_id.to_string());
@@ -620,6 +623,7 @@ fn send_signal(child: &tokio::process::Child, signal: libc::c_int) {
 #[cfg(test)]
 mod tests {
     use chrono::Datelike;
+    use provenance_macros::verifies;
     use std::time::Duration;
 
     // =========================================================================
@@ -737,6 +741,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_role_charset", examples)]
     fn template_variable_injection_prevention_role_rejects_shell_metacharacters() {
         assert!(
             super::validate_role("admin; rm -rf /").is_err(),
@@ -1008,6 +1013,7 @@ mod tests {
     }
 
     #[test]
+    #[verifies("rule_revoke_identifier_only", examples)]
     fn revoke_command_env_never_carries_the_credential_value() {
         let env = super::build_revoke_env("tok-abc");
         assert!(
