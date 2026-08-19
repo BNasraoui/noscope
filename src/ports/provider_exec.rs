@@ -17,7 +17,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use zeroize::Zeroize;
 
-use crate::exit_code::{interpret_provider_exit, ProviderExitResult};
+use crate::core::exit_code::{interpret_provider_exit, ProviderExitResult};
 use provenance_macros::rule;
 
 /// Maximum provider stdout size in bytes (1 MiB).
@@ -43,7 +43,7 @@ pub struct ProviderOutput {
 
 impl fmt::Debug for ProviderOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let redacted = crate::redaction::RedactedToken::new(&self.token, None);
+        let redacted = crate::core::redaction::RedactedToken::new(&self.token, None);
         f.debug_struct("ProviderOutput")
             .field("token", &redacted)
             .field("expires_at", &self.expires_at)
@@ -138,9 +138,9 @@ impl Default for ExecConfig {
 }
 
 /// Provider capability declaration.
-/// Owned by crate::provider so capability parsing/validation shares the same
+/// Owned by crate::ports::provider so capability parsing/validation shares the same
 /// parsing flow as provider config.
-pub type ProviderCapabilities = crate::provider::ProviderCapabilities;
+pub type ProviderCapabilities = crate::ports::provider::ProviderCapabilities;
 
 /// Policy for handling provider stderr.
 pub struct StderrPolicy {
@@ -331,7 +331,7 @@ pub fn redact_stderr(stderr: &str, known_tokens: &[&str]) -> String {
 pub fn parse_capabilities_from_toml(
     content: &str,
 ) -> Result<ProviderCapabilities, ProviderExecError> {
-    let parsed = crate::provider::parse_provider_toml(content).map_err(|e| {
+    let parsed = crate::ports::provider::parse_provider_toml(content).map_err(|e| {
         ProviderExecError::ConfigParse {
             message: e.to_string(),
         }
@@ -348,11 +348,10 @@ pub fn validate_capabilities(
     has_refresh_cmd: bool,
     has_revoke_cmd: bool,
 ) -> Result<(), ProviderExecError> {
-    crate::provider::validate_declared_capabilities(caps, has_refresh_cmd, has_revoke_cmd).map_err(
-        |e| ProviderExecError::CapabilityMismatch {
+    crate::ports::provider::validate_declared_capabilities(caps, has_refresh_cmd, has_revoke_cmd)
+        .map_err(|e| ProviderExecError::CapabilityMismatch {
             message: e.to_string(),
-        },
-    )
+        })
 }
 
 /// Build a minimal sandboxed environment for provider commands.
@@ -1521,7 +1520,7 @@ mod engine_tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::exit_code::ProviderExitCode;
+    use crate::core::exit_code::ProviderExitCode;
     use provenance_macros::verifies;
 
     #[tokio::test]

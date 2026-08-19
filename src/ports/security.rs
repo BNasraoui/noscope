@@ -4,7 +4,7 @@
 use std::fmt;
 use std::io;
 
-use crate::token::ScopedToken;
+use crate::core::token::ScopedToken;
 
 /// Error type for security validation failures.
 /// Error messages must never contain token values.

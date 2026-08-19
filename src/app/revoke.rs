@@ -9,17 +9,17 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::time::{Duration, Instant};
 
-use crate::command_parse::parse_command;
-use crate::credential_set::{CredentialSet, RollbackBudget, RollbackLogEntry};
-use crate::error::Error;
-use crate::event::{emit_runtime_event, Event, EventType};
-use crate::mint::RevokeInput;
-use crate::provider::ResolvedProvider;
-use crate::provider_exec::{self, ExecConfig};
-use crate::signal_policy::{
+use crate::core::credential_set::{CredentialSet, RollbackBudget, RollbackLogEntry};
+use crate::core::error::Error;
+use crate::core::mint::RevokeInput;
+use crate::core::signal_policy::{
     ActiveCredential, RevocationBudget, RevocationResultKind, SignalHandlingPolicy,
 };
-use crate::token::ScopedToken;
+use crate::core::token::ScopedToken;
+use crate::ports::command_parse::parse_command;
+use crate::ports::event::{emit_runtime_event, Event, EventType};
+use crate::ports::provider::ResolvedProvider;
+use crate::ports::provider_exec::{self, ExecConfig};
 use provenance_macros::rule;
 
 /// Build the RevokeInputs from CLI arguments.

@@ -9,11 +9,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::client::{Client, MintRequest, ProviderOverrides};
-use crate::credential_set::{validate_credential_specs, CredentialSpec};
-use crate::error::Error;
-use crate::profile;
-use crate::provider::ResolvedProvider;
+use crate::app::client::{Client, MintRequest, ProviderOverrides};
+use crate::core::credential_set::{validate_credential_specs, CredentialSpec};
+use crate::core::error::Error;
+use crate::ports::profile;
+use crate::ports::provider::ResolvedProvider;
 
 /// Where the credential specs come from.
 pub enum CredentialSource {
@@ -133,8 +133,8 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::client::ClientOptions;
-    use crate::provider::ProviderEnv;
+    use crate::app::client::ClientOptions;
+    use crate::ports::provider::ProviderEnv;
 
     fn write_executable(path: &Path, script: &str) {
         fs::write(path, script).unwrap();

@@ -9,13 +9,13 @@ use std::time::Instant;
 
 use tokio::sync::Semaphore;
 
-use crate::credential_set::{
+use crate::core::credential_set::{
     format_timeout_error, resolve_mint_results, CredentialSet, CredentialSetError, CredentialSpec,
     MintConfig, MintResult,
 };
-use crate::event::{emit_runtime_event, Event, EventType};
-use crate::mint::{format_mint_output, MintEnvelope};
-use crate::token_convert::scoped_token_to_mint_envelope;
+use crate::core::mint::{format_mint_output, MintEnvelope};
+use crate::core::token_convert::scoped_token_to_mint_envelope;
+use crate::ports::event::{emit_runtime_event, Event, EventType};
 use provenance_macros::rule;
 
 /// Execute provider mint operations in parallel
@@ -147,9 +147,9 @@ mod tests {
     use chrono::Utc;
     use secrecy::SecretString;
 
-    use crate::credential_set::{CredentialSetError, CredentialSpec, MintConfig, MintResult};
-    use crate::mint::format_mint_output;
-    use crate::token::ScopedToken;
+    use crate::core::credential_set::{CredentialSetError, CredentialSpec, MintConfig, MintResult};
+    use crate::core::mint::format_mint_output;
+    use crate::core::token::ScopedToken;
 
     /// Helper: create a ScopedToken for test convenience.
     fn make_token(value: &str, provider: &str, expires_at: chrono::DateTime<Utc>) -> ScopedToken {
@@ -661,7 +661,7 @@ mod tests {
     async fn format_orchestrator_output_empty_set() {
         // An empty CredentialSet should produce empty output (consistent
         // with format_mint_output on empty slice).
-        let cred_set = crate::credential_set::resolve_mint_results(Vec::new()).unwrap();
+        let cred_set = crate::core::credential_set::resolve_mint_results(Vec::new()).unwrap();
         let output = super::format_orchestrator_output(&cred_set);
         assert!(
             output.is_empty(),

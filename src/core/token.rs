@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fmt;
 use zeroize::Zeroize;
 
-use crate::redaction::RedactedToken;
+use crate::core::redaction::RedactedToken;
 use provenance_macros::rule;
 
 /// A scoped credential with mandatory expiry and zeroizing secret storage.

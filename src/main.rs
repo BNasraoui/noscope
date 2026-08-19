@@ -86,8 +86,9 @@ fn command_name(command: &Command) -> &'static str {
 fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, noscope::Error> {
     let log_format = noscope::LogFormat::parse(&args.log_format)
         .ok_or_else(|| noscope::Error::usage("--log-format must be 'json' or 'text'"))?;
-    let _runtime_emitter_guard =
-        noscope::event::install_runtime_emitter(noscope::event::EventEmitter::new(log_format));
+    let _runtime_emitter_guard = noscope::ports::event::install_runtime_emitter(
+        noscope::ports::event::EventEmitter::new(log_format),
+    );
 
     let xdg_config_home = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
     let client = Client::new(ClientOptions {
@@ -125,14 +126,14 @@ fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, noscope::Error> {
 
     let cred_set = match mint_result {
         Ok(cred_set) => cred_set,
-        Err(noscope::credential_set::CredentialSetError::MintFailed {
+        Err(noscope::core::credential_set::CredentialSetError::MintFailed {
             failed_providers,
             succeeded_tokens,
         }) => {
             runtime.block_on(revoke_minted_tokens(
                 resolved_by_name.as_ref(),
                 &succeeded_tokens,
-                noscope::credential_set::RollbackBudget::default(),
+                noscope::core::credential_set::RollbackBudget::default(),
             ));
             return Err(noscope::Error::config(&format_mint_failed_providers(
                 &failed_providers,
@@ -155,7 +156,7 @@ fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, noscope::Error> {
 }
 
 #[cfg(test)]
-use noscope::run_signal_wiring::{RunSignalWiring, SignalProcess};
+use noscope::ports::run_signal_wiring::{RunSignalWiring, SignalProcess};
 
 #[cfg(test)]
 struct RunModeSignalPollOutcome {
@@ -180,7 +181,7 @@ where
 #[cfg(test)]
 fn run_mode_dispatch_parent_signal_for_test<P, F>(
     wiring: &mut RunSignalWiring,
-    signal: noscope::signal_policy::ParentSignal,
+    signal: noscope::core::signal_policy::ParentSignal,
     process: &mut P,
     revoke_all: &mut F,
 ) -> Result<RunModeSignalPollOutcome, noscope::Error>
@@ -233,7 +234,7 @@ fn cmd_mint(args: cli::MintArgs, verbose: bool) -> Result<i32, noscope::Error> {
 
     println!(
         "{}",
-        noscope::orchestrator::format_orchestrator_output(&cred_set)
+        noscope::app::orchestrator::format_orchestrator_output(&cred_set)
     );
     Ok(cli::SUCCESS_EXIT_CODE)
 }
@@ -316,7 +317,7 @@ fn cmd_validate(args: cli::ValidateArgs, output: cli::OutputFormat) -> Result<i3
         ..ClientOptions::default()
     })?;
     let resolved = client.resolve_provider(&args.provider, &ProviderOverrides::default())?;
-    noscope::provider::validate_provider(&resolved)?;
+    noscope::ports::provider::validate_provider(&resolved)?;
 
     let message = format!(
         "noscope: provider '{}' configuration is valid",
@@ -558,11 +559,11 @@ fn cmd_dry_run(args: cli::DryRunArgs, output: cli::OutputFormat) -> Result<i32, 
     Ok(cli::SUCCESS_EXIT_CODE)
 }
 
-fn config_source_label(source: noscope::provider::ConfigSource) -> &'static str {
+fn config_source_label(source: noscope::ports::provider::ConfigSource) -> &'static str {
     match source {
-        noscope::provider::ConfigSource::Flags => "flags",
-        noscope::provider::ConfigSource::EnvVars => "environment variables",
-        noscope::provider::ConfigSource::File => "config file",
+        noscope::ports::provider::ConfigSource::Flags => "flags",
+        noscope::ports::provider::ConfigSource::EnvVars => "environment variables",
+        noscope::ports::provider::ConfigSource::File => "config file",
     }
 }
 
@@ -574,15 +575,15 @@ fn cmd_doctor(output: cli::OutputFormat) -> Result<i32, noscope::Error> {
                 .join(".config")
         });
 
-    let report = noscope::doctor::run_doctor(&xdg_config_home);
+    let report = noscope::app::doctor::run_doctor(&xdg_config_home);
 
     match output {
         cli::OutputFormat::Text => {
             for check in &report.checks {
                 let symbol = match check.status {
-                    noscope::doctor::CheckStatus::Pass => "✓",
-                    noscope::doctor::CheckStatus::Warn => "!",
-                    noscope::doctor::CheckStatus::Fail => "✗",
+                    noscope::app::doctor::CheckStatus::Pass => "✓",
+                    noscope::app::doctor::CheckStatus::Warn => "!",
+                    noscope::app::doctor::CheckStatus::Fail => "✗",
                 };
                 eprintln!("{} {}: {}", symbol, check.name, check.message);
             }
@@ -603,9 +604,9 @@ fn cmd_doctor(output: cli::OutputFormat) -> Result<i32, noscope::Error> {
                     serde_json::json!({
                         "name": c.name,
                         "status": match c.status {
-                            noscope::doctor::CheckStatus::Pass => "pass",
-                            noscope::doctor::CheckStatus::Warn => "warn",
-                            noscope::doctor::CheckStatus::Fail => "fail",
+                            noscope::app::doctor::CheckStatus::Pass => "pass",
+                            noscope::app::doctor::CheckStatus::Warn => "warn",
+                            noscope::app::doctor::CheckStatus::Fail => "fail",
                         },
                         "message": c.message,
                     })
@@ -639,7 +640,7 @@ fn cmd_init(output: cli::OutputFormat) -> Result<i32, noscope::Error> {
                 .join(".config")
         });
 
-    let result = noscope::doctor::run_init(&xdg_config_home).map_err(|e| {
+    let result = noscope::app::doctor::run_init(&xdg_config_home).map_err(|e| {
         noscope::Error::config(&format!("failed to initialize config directories: {}", e))
     })?;
 
@@ -785,16 +786,16 @@ mod revoke_wiring_tests {
             "printf %s \"$NOSCOPE_TOKEN_ID\" > {}; exit 0",
             output_file.path().display()
         );
-        let resolved = noscope::provider::ResolvedProvider {
+        let resolved = noscope::ports::provider::ResolvedProvider {
             name: "aws".to_string(),
             contract_version: None,
             mint_cmd: "true".to_string(),
             refresh_cmd: None,
             revoke_cmd: Some(format!("/bin/sh -c '{}'", script)),
             env: std::collections::HashMap::new(),
-            source: noscope::provider::ConfigSource::Flags,
+            source: noscope::ports::provider::ConfigSource::Flags,
         };
-        let input = noscope::mint::RevokeInput::from_token_id_and_provider("tok-777", "aws");
+        let input = noscope::core::mint::RevokeInput::from_token_id_and_provider("tok-777", "aws");
 
         execute_revoke(&resolved, &input).await.unwrap();
 
@@ -812,7 +813,7 @@ mod revoke_wiring_tests {
 #[cfg(test)]
 mod run_wiring_tests {
     use super::*;
-    use noscope::signal_policy::ParentSignal;
+    use noscope::core::signal_policy::ParentSignal;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
@@ -1306,8 +1307,8 @@ mod rollback_budget_wiring_tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    fn make_token(provider: &str, token_id: &str) -> noscope::token::ScopedToken {
-        noscope::token::ScopedToken::new(
+    fn make_token(provider: &str, token_id: &str) -> noscope::core::token::ScopedToken {
+        noscope::core::token::ScopedToken::new(
             SecretString::from("rollback-secret".to_string()),
             "admin",
             Utc::now() + chrono::Duration::minutes(5),
@@ -1319,7 +1320,7 @@ mod rollback_budget_wiring_tests {
     #[tokio::test]
     async fn atomic_rollback_follows_revocation_budget_retries_failed_revocations() {
         let token = make_token("aws", "tok-aws");
-        let budget = noscope::credential_set::RollbackBudget::default();
+        let budget = noscope::core::credential_set::RollbackBudget::default();
         let attempts = Arc::new(AtomicUsize::new(0));
 
         let attempts_for_revoke = Arc::clone(&attempts);
@@ -1353,7 +1354,7 @@ mod rollback_budget_wiring_tests {
     #[tokio::test]
     async fn atomic_rollback_follows_revocation_budget_enforces_wall_clock_budget() {
         let token = make_token("aws", "tok-aws");
-        let budget = noscope::credential_set::RollbackBudget {
+        let budget = noscope::core::credential_set::RollbackBudget {
             revoke_timeout: Duration::from_millis(15),
             max_retries: 8,
         };
@@ -1388,7 +1389,7 @@ mod rollback_budget_wiring_tests {
     #[verifies("rule_cross_rollback_budget", examples)]
     async fn atomic_rollback_follows_revocation_budget_applies_exponential_backoff() {
         let token = make_token("aws", "tok-aws");
-        let budget = noscope::credential_set::RollbackBudget {
+        let budget = noscope::core::credential_set::RollbackBudget {
             revoke_timeout: Duration::from_secs(2),
             max_retries: 3,
         };
@@ -1426,7 +1427,7 @@ mod rollback_budget_wiring_tests {
     #[tokio::test]
     async fn atomic_rollback_follows_revocation_budget_logs_each_attempt() {
         let token = make_token("aws", "tok-aws");
-        let budget = noscope::credential_set::RollbackBudget::default();
+        let budget = noscope::core::credential_set::RollbackBudget::default();
 
         let logs = Arc::new(Mutex::new(Vec::new()));
         let logs_for_log = Arc::clone(&logs);
@@ -1473,7 +1474,7 @@ mod rollback_budget_wiring_tests {
     #[tokio::test]
     async fn atomic_rollback_follows_revocation_budget_zero_disables_retries() {
         let token = make_token("aws", "tok-aws");
-        let budget = noscope::credential_set::RollbackBudget {
+        let budget = noscope::core::credential_set::RollbackBudget {
             revoke_timeout: Duration::ZERO,
             max_retries: 3,
         };
@@ -1506,7 +1507,7 @@ mod rollback_budget_wiring_tests {
     #[tokio::test]
     async fn atomic_rollback_follows_revocation_budget_attempt_timeout_logs_failure() {
         let token = make_token("aws", "tok-aws");
-        let budget = noscope::credential_set::RollbackBudget {
+        let budget = noscope::core::credential_set::RollbackBudget {
             revoke_timeout: Duration::from_millis(10),
             max_retries: 3,
         };

@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use crate::exit_code::NoscopeExitCode;
+use crate::core::exit_code::NoscopeExitCode;
 use provenance_macros::rule;
 
 /// Machine-readable error category for programmatic consumers.
@@ -231,46 +231,46 @@ impl std::error::Error for Error {
     }
 }
 
-impl From<crate::mint::MintError> for Error {
-    fn from(e: crate::mint::MintError) -> Self {
+impl From<crate::core::mint::MintError> for Error {
+    fn from(e: crate::core::mint::MintError) -> Self {
         Self::usage(&format!("{}", e))
     }
 }
 
-impl From<crate::provider::ProviderConfigError> for Error {
-    fn from(e: crate::provider::ProviderConfigError) -> Self {
+impl From<crate::ports::provider::ProviderConfigError> for Error {
+    fn from(e: crate::ports::provider::ProviderConfigError) -> Self {
         Self::config(&format!("{}", e))
     }
 }
 
-impl From<crate::security::SecurityError> for Error {
-    fn from(e: crate::security::SecurityError) -> Self {
+impl From<crate::ports::security::SecurityError> for Error {
+    fn from(e: crate::ports::security::SecurityError) -> Self {
         Self::security(&format!("{}", e))
     }
 }
 
-impl From<crate::profile::ProfileError> for Error {
-    fn from(e: crate::profile::ProfileError) -> Self {
+impl From<crate::ports::profile::ProfileError> for Error {
+    fn from(e: crate::ports::profile::ProfileError) -> Self {
         Self::profile(&format!("{}", e))
     }
 }
 
-impl From<crate::credential_set::CredentialSetError> for Error {
-    fn from(e: crate::credential_set::CredentialSetError) -> Self {
+impl From<crate::core::credential_set::CredentialSetError> for Error {
+    fn from(e: crate::core::credential_set::CredentialSetError) -> Self {
         // Credential set errors are configuration/usage errors depending
         // on variant, but map to provider-level failures for consistency.
         Self::config(&format!("{}", e))
     }
 }
 
-impl From<crate::provider_exec::ProviderExecError> for Error {
-    fn from(e: crate::provider_exec::ProviderExecError) -> Self {
+impl From<crate::ports::provider_exec::ProviderExecError> for Error {
+    fn from(e: crate::ports::provider_exec::ProviderExecError) -> Self {
         Self::new(ErrorKind::Provider, &format!("{}", e))
     }
 }
 
-impl From<crate::config_path::ConfigPathError> for Error {
-    fn from(e: crate::config_path::ConfigPathError) -> Self {
+impl From<crate::ports::config_path::ConfigPathError> for Error {
+    fn from(e: crate::ports::config_path::ConfigPathError) -> Self {
         Self::security(&format!("{}", e))
     }
 }
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn typed_error_taxonomy_from_mint_error() {
-        let mint_err = crate::mint::MintError::InvalidInput {
+        let mint_err = crate::core::mint::MintError::InvalidInput {
             message: "bad input".to_string(),
         };
         let err: super::Error = mint_err.into();
@@ -566,14 +566,14 @@ mod tests {
 
     #[test]
     fn typed_error_taxonomy_from_mint_error_terminal() {
-        let mint_err = crate::mint::MintError::TerminalDetected;
+        let mint_err = crate::core::mint::MintError::TerminalDetected;
         let err: super::Error = mint_err.into();
         assert!(matches!(err.kind(), super::ErrorKind::Usage));
     }
 
     #[test]
     fn typed_error_taxonomy_from_provider_config_error_malformed() {
-        let prov_err = crate::provider::ProviderConfigError::MalformedConfig {
+        let prov_err = crate::ports::provider::ProviderConfigError::MalformedConfig {
             message: "syntax error".to_string(),
         };
         let err: super::Error = prov_err.into();
@@ -583,7 +583,7 @@ mod tests {
 
     #[test]
     fn typed_error_taxonomy_from_provider_config_error_not_found() {
-        let prov_err = crate::provider::ProviderConfigError::ProviderNotFound {
+        let prov_err = crate::ports::provider::ProviderConfigError::ProviderNotFound {
             provider: "mycloud".to_string(),
             checked_locations: vec!["loc1".to_string()],
         };
@@ -594,14 +594,14 @@ mod tests {
 
     #[test]
     fn typed_error_taxonomy_from_security_error() {
-        let sec_err = crate::security::SecurityError::TokenInArgs { arg_index: 2 };
+        let sec_err = crate::ports::security::SecurityError::TokenInArgs { arg_index: 2 };
         let err: super::Error = sec_err.into();
         assert!(matches!(err.kind(), super::ErrorKind::Security));
     }
 
     #[test]
     fn typed_error_taxonomy_from_profile_error() {
-        let prof_err = crate::profile::ProfileError::NotFound {
+        let prof_err = crate::ports::profile::ProfileError::NotFound {
             path: std::path::PathBuf::from("/missing/profile.toml"),
         };
         let err: super::Error = prof_err.into();
@@ -610,7 +610,7 @@ mod tests {
 
     #[test]
     fn typed_error_taxonomy_from_credential_set_error() {
-        let cred_err = crate::credential_set::CredentialSetError::InvalidConfig {
+        let cred_err = crate::core::credential_set::CredentialSetError::InvalidConfig {
             message: "max_concurrent must be > 0".to_string(),
         };
         let err: super::Error = cred_err.into();
@@ -619,7 +619,7 @@ mod tests {
 
     #[test]
     fn typed_error_taxonomy_from_provider_exec_error() {
-        let exec_err = crate::provider_exec::ProviderExecError::Timeout {
+        let exec_err = crate::ports::provider_exec::ProviderExecError::Timeout {
             timeout: std::time::Duration::from_secs(30),
         };
         let err: super::Error = exec_err.into();

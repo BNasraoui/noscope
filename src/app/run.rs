@@ -13,19 +13,19 @@ use std::time::Duration;
 use chrono::Utc;
 use secrecy::SecretString;
 
-use crate::agent_process::{AgentMode, AgentProcess, AgentProcessConfig};
 use crate::app::revoke::revoke_on_shutdown_signal;
-use crate::command_parse::parse_command;
-use crate::credential_set::{CredentialSet, ExpiryAction, ExpiryPolicy};
-use crate::error::Error;
-use crate::provider::ResolvedProvider;
-use crate::provider_exec::{self, ExecConfig};
-use crate::refresh::{LeaseRefreshKind, RefreshRuntimeLoop, RuntimeCredential};
-use crate::run_signal_wiring::{
+use crate::core::credential_set::{CredentialSet, ExpiryAction, ExpiryPolicy};
+use crate::core::error::Error;
+use crate::core::refresh::{LeaseRefreshKind, RefreshRuntimeLoop, RuntimeCredential};
+use crate::core::token::ScopedToken;
+use crate::core::token_convert::provider_output_to_scoped_token;
+use crate::ports::agent_process::{AgentMode, AgentProcess, AgentProcessConfig};
+use crate::ports::command_parse::parse_command;
+use crate::ports::provider::ResolvedProvider;
+use crate::ports::provider_exec::{self, ExecConfig};
+use crate::ports::run_signal_wiring::{
     dispatch_pending_parent_signals, RunSignalWiring, SignalProcess, SignalRevoker,
 };
-use crate::token::ScopedToken;
-use crate::token_convert::provider_output_to_scoped_token;
 
 /// Adapts AgentProcess to the SignalProcess trait for signal forwarding.
 pub struct AgentProcessSignalAdapter<'a> {

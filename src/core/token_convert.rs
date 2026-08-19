@@ -16,9 +16,9 @@
 
 use secrecy::SecretString;
 
-use crate::mint::MintEnvelope;
-use crate::provider_exec::ProviderOutput;
-use crate::token::ScopedToken;
+use crate::core::mint::MintEnvelope;
+use crate::core::token::ScopedToken;
+use crate::ports::provider_exec::ProviderOutput;
 use provenance_macros::rule;
 
 /// Result of converting a ProviderOutput to a ScopedToken, with metadata
@@ -96,13 +96,13 @@ mod tests {
     use secrecy::SecretString;
     use serde_json::Value;
 
-    use crate::mint::MintEnvelope;
-    use crate::provider_exec::ProviderOutput;
-    use crate::token::ScopedToken;
+    use crate::core::mint::MintEnvelope;
+    use crate::core::token::ScopedToken;
+    use crate::ports::provider_exec::ProviderOutput;
 
     /// Helper: create a ProviderOutput for tests.
     fn make_provider_output(token: &str, expires_at: DateTime<Utc>) -> ProviderOutput {
-        crate::provider_exec::parse_provider_output(
+        crate::ports::provider_exec::parse_provider_output(
             &format!(
                 r#"{{"token": "{}", "expires_at": "{}"}}"#,
                 token,
@@ -162,7 +162,8 @@ mod tests {
         // When provider doesn't supply expires_at,
         // the computed expiry from ProviderOutput must be preserved.
         let output =
-            crate::provider_exec::parse_provider_output(r#"{"token": "secret"}"#, 3600).unwrap();
+            crate::ports::provider_exec::parse_provider_output(r#"{"token": "secret"}"#, 3600)
+                .unwrap();
         assert!(!output.expires_at_provided, "should be computed expiry");
 
         let token = super::provider_output_to_scoped_token(output, "role", None, "prov");
@@ -264,7 +265,7 @@ mod tests {
     fn unified_serialization_multi_envelope_uses_same_shape() {
         // Multi-envelope output (format_mint_output) must produce
         // the same field set as single-envelope to_json().
-        use crate::mint::format_mint_output;
+        use crate::core::mint::format_mint_output;
 
         let token1 = ScopedToken::new(
             SecretString::from("secret1".to_string()),
@@ -401,7 +402,7 @@ mod tests {
         let expiry = Utc::now() + chrono::Duration::hours(1);
         // Token with quotes and backslashes — these need JSON escaping.
         let raw_token = r#"tok-with-"quotes"-and-\backslash"#;
-        let output = crate::provider_exec::parse_provider_output(
+        let output = crate::ports::provider_exec::parse_provider_output(
             &serde_json::json!({
                 "token": raw_token,
                 "expires_at": expiry.to_rfc3339()
@@ -434,7 +435,8 @@ mod tests {
         // The conversion result should allow the caller to check
         // whether expires_at was provided by the provider or computed.
         let output =
-            crate::provider_exec::parse_provider_output(r#"{"token": "secret"}"#, 3600).unwrap();
+            crate::ports::provider_exec::parse_provider_output(r#"{"token": "secret"}"#, 3600)
+                .unwrap();
 
         let result =
             super::provider_output_to_scoped_token_with_metadata(output, "role", None, "prov");

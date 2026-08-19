@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
-use crate::token::ScopedToken;
+use crate::core::token::ScopedToken;
 use provenance_macros::rule;
 
 /// A specification for a single credential to mint.

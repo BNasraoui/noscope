@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn provider_config_path_rejects_traversal() {
-        let result = crate::provider::provider_config_path("../etc/shadow", None);
+        let result = crate::ports::provider::provider_config_path("../etc/shadow", None);
         assert!(
             result.is_err(),
             "provider_config_path must reject traversal"
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn provider_config_path_accepts_valid_name() {
         let xdg = Path::new("/home/user/.config");
-        let path = crate::provider::provider_config_path("aws", Some(xdg)).unwrap();
+        let path = crate::ports::provider::provider_config_path("aws", Some(xdg)).unwrap();
         assert_eq!(
             path,
             PathBuf::from("/home/user/.config/noscope/providers/aws.toml")
@@ -318,14 +318,14 @@ mod tests {
 
     #[test]
     fn profile_config_path_rejects_traversal() {
-        let result = crate::profile::profile_config_path("../etc/shadow", None);
+        let result = crate::ports::profile::profile_config_path("../etc/shadow", None);
         assert!(result.is_err(), "profile_config_path must reject traversal");
     }
 
     #[test]
     fn profile_config_path_accepts_valid_name() {
         let xdg = Path::new("/home/user/.config");
-        let path = crate::profile::profile_config_path("dev", Some(xdg)).unwrap();
+        let path = crate::ports::profile::profile_config_path("dev", Some(xdg)).unwrap();
         assert_eq!(
             path,
             PathBuf::from("/home/user/.config/noscope/profiles/dev.toml")
@@ -390,7 +390,7 @@ mod tests {
         // ConfigPathError converts to Error with Security kind — path traversal
         // is a security violation, not just a config error.
         let err = validate_config_name("../evil").unwrap_err();
-        let top_err: crate::error::Error = err.into();
-        assert_eq!(top_err.kind(), crate::error::ErrorKind::Security);
+        let top_err: crate::core::error::Error = err.into();
+        assert_eq!(top_err.kind(), crate::core::error::ErrorKind::Security);
     }
 }

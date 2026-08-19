@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use std::future::Future;
 use std::time::Instant;
 
-use crate::event::{emit_runtime_event, Event, EventType};
+use crate::ports::event::{emit_runtime_event, Event, EventType};
 use provenance_macros::rule;
 
 /// What to do after a refresh failure.
@@ -207,7 +207,7 @@ pub struct RuntimeCredential {
     credential_id: String,
     provider: String,
     env_key: String,
-    token: crate::token::ScopedToken,
+    token: crate::core::token::ScopedToken,
     tracker: RefreshTracker,
     next_refresh_at: DateTime<Utc>,
 }
@@ -217,9 +217,9 @@ impl RuntimeCredential {
         credential_id: &str,
         provider: &str,
         env_key: &str,
-        token: crate::token::ScopedToken,
+        token: crate::core::token::ScopedToken,
     ) -> Self {
-        let next_refresh_at = crate::credential_set::compute_refresh_at(&token);
+        let next_refresh_at = crate::core::credential_set::compute_refresh_at(&token);
         Self {
             credential_id: credential_id.to_string(),
             provider: provider.to_string(),
@@ -320,7 +320,7 @@ impl RefreshRuntimeLoop {
     ) -> Vec<RuntimeRefreshEvent>
     where
         F: FnMut(RefreshExecutionRequest) -> Fut,
-        Fut: Future<Output = Result<crate::token::ScopedToken, String>>,
+        Fut: Future<Output = Result<crate::core::token::ScopedToken, String>>,
     {
         if !child_alive {
             return Vec::new();
@@ -431,7 +431,7 @@ impl RefreshRuntimeLoop {
     pub fn record_refresh_success(
         &mut self,
         credential_id: &str,
-        token: crate::token::ScopedToken,
+        token: crate::core::token::ScopedToken,
     ) -> LeaseRefreshKind {
         let credential = self.credential_mut(credential_id);
 
@@ -469,8 +469,8 @@ impl RefreshRuntimeLoop {
     }
 }
 
-fn normal_refresh_at(token: &crate::token::ScopedToken, now: DateTime<Utc>) -> DateTime<Utc> {
-    let computed = crate::credential_set::compute_refresh_at(token);
+fn normal_refresh_at(token: &crate::core::token::ScopedToken, now: DateTime<Utc>) -> DateTime<Utc> {
+    let computed = crate::core::credential_set::compute_refresh_at(token);
     if computed <= now {
         now + chrono::Duration::seconds(1)
     } else {
@@ -934,8 +934,8 @@ mod tests {
         value: &str,
         provider: &str,
         expires_at: chrono::DateTime<chrono::Utc>,
-    ) -> crate::token::ScopedToken {
-        crate::token::ScopedToken::new(
+    ) -> crate::core::token::ScopedToken {
+        crate::core::token::ScopedToken::new(
             secrecy::SecretString::from(value.to_string()),
             "runtime-role",
             expires_at,
@@ -951,7 +951,7 @@ mod tests {
             "aws",
             chrono::Utc::now() + chrono::Duration::minutes(20),
         );
-        let expected = crate::credential_set::compute_refresh_at(&token);
+        let expected = crate::core::credential_set::compute_refresh_at(&token);
 
         let runtime = RefreshRuntimeLoop::new(vec![RuntimeCredential::new(
             "cred-aws",

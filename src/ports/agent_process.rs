@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-use crate::event::{emit_runtime_event, Event, EventType};
+use crate::ports::event::{emit_runtime_event, Event, EventType};
 use provenance_macros::rule;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,8 +121,8 @@ impl AgentProcess {
                 {
                     unsafe {
                         command.pre_exec(|| {
-                            crate::process_group::configure_child_for_mode(
-                                crate::process_group::ProcessGroupMode::Run,
+                            crate::ports::process_group::configure_child_for_mode(
+                                crate::ports::process_group::ProcessGroupMode::Run,
                             )
                         });
                     }

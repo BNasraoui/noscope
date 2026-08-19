@@ -8,9 +8,9 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::config_path::named_config_toml_path;
-use crate::exit_code::NoscopeExitCode;
-use crate::provider::check_config_permissions;
+use crate::core::exit_code::NoscopeExitCode;
+use crate::ports::config_path::named_config_toml_path;
+use crate::ports::provider::check_config_permissions;
 use provenance_macros::rule;
 
 /// Known fields in a [[credentials]] entry.
@@ -109,7 +109,7 @@ impl std::error::Error for ProfileError {}
 pub fn profile_config_path(
     name: &str,
     xdg_config_home: Option<&Path>,
-) -> Result<PathBuf, crate::config_path::ConfigPathError> {
+) -> Result<PathBuf, crate::ports::config_path::ConfigPathError> {
     named_config_toml_path(xdg_config_home, None, "profiles", name)
 }
 
@@ -119,7 +119,7 @@ pub fn profile_config_path_with_home(
     name: &str,
     xdg_config_home: Option<&Path>,
     home: &Path,
-) -> Result<PathBuf, crate::config_path::ConfigPathError> {
+) -> Result<PathBuf, crate::ports::config_path::ConfigPathError> {
     named_config_toml_path(xdg_config_home, Some(home), "profiles", name)
 }
 
@@ -353,7 +353,7 @@ pub fn load_profile(path: &Path) -> Result<Profile, ProfileError> {
 
     // Reuse the provider permission check.
     check_config_permissions(path).map_err(|e| match e {
-        crate::provider::ProviderConfigError::InsecurePermissions { path, mode } => {
+        crate::ports::provider::ProviderConfigError::InsecurePermissions { path, mode } => {
             ProfileError::InsecurePermissions { path, mode }
         }
         other => ProfileError::MalformedProfile {

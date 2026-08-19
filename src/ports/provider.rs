@@ -13,7 +13,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use crate::config_path::named_config_toml_path;
+use crate::ports::config_path::named_config_toml_path;
 use provenance_macros::rule;
 
 /// The current provider contract version.
@@ -216,7 +216,7 @@ pub struct ResolvedProvider {
 pub fn provider_config_path(
     name: &str,
     xdg_config_home: Option<&Path>,
-) -> Result<PathBuf, crate::config_path::ConfigPathError> {
+) -> Result<PathBuf, crate::ports::config_path::ConfigPathError> {
     named_config_toml_path(xdg_config_home, None, "providers", name)
 }
 
@@ -227,7 +227,7 @@ pub fn provider_config_path_with_home(
     name: &str,
     xdg_config_home: Option<&Path>,
     home: &Path,
-) -> Result<PathBuf, crate::config_path::ConfigPathError> {
+) -> Result<PathBuf, crate::ports::config_path::ConfigPathError> {
     named_config_toml_path(xdg_config_home, Some(home), "providers", name)
 }
 

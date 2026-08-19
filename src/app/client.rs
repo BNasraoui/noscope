@@ -1,20 +1,15 @@
-// Noscope high-level API facade
-// Provides a cohesive top-level API for core workflows (run, mint, revoke)
-// so consumers do not compose many low-level module helpers manually.
-// Security invariants enforced:
-// This module uses crate::error::Error as the single
-// canonical error type. The old NoscopeError enum has been replaced by a
-// type alias (pub type NoscopeError = crate::error::Error) in lib.rs for
-// backward compatibility.
+// High-level facade: provider resolution, mint validation, terminal
+// detection, and dry-run behind one entry point. Disables core dumps
+// at construction.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::error::Error;
-use crate::mint;
-use crate::provider;
-use crate::provider_exec;
-use crate::security;
+use crate::core::error::Error;
+use crate::core::mint;
+use crate::ports::provider;
+use crate::ports::provider_exec;
+use crate::ports::security;
 
 /// Configuration for the noscope [`Client`].
 /// All fields have sensible defaults. Use `ClientOptions::default()` to start
@@ -180,40 +175,6 @@ pub struct MintRequest {
     pub ttl_secs: u64,
 }
 
-/// Input for a revoke operation.
-/// Never stores the raw token value. Only carries the opaque
-/// token_id and provider name needed for revocation.
-pub struct RevokeRequest {
-    inner: mint::RevokeInput,
-}
-
-impl RevokeRequest {
-    /// Create a revoke request from explicit token_id and provider.
-    pub fn from_token_id(token_id: &str, provider: &str) -> Self {
-        Self {
-            inner: mint::RevokeInput::from_token_id_and_provider(token_id, provider),
-        }
-    }
-
-    /// Create a revoke request by parsing a mint JSON envelope.
-    /// Extracts only token_id and provider. The raw token field is read
-    /// but never stored.
-    pub fn from_mint_json(json_str: &str) -> Result<Self, Error> {
-        let inner = mint::RevokeInput::from_mint_json(json_str)?;
-        Ok(Self { inner })
-    }
-
-    /// Get the token ID for revocation.
-    pub fn token_id(&self) -> &str {
-        self.inner.token_id()
-    }
-
-    /// Get the provider name for revocation.
-    pub fn provider(&self) -> &str {
-        self.inner.provider()
-    }
-}
-
 /// CLI flag / env var overrides for provider configuration.
 /// Maps to the highest-precedence layers in config resolution.
 /// Use `ProviderOverrides::default()` for no overrides.
@@ -230,17 +191,6 @@ impl ProviderOverrides {
         self.mint_cmd.is_some() || self.refresh_cmd.is_some() || self.revoke_cmd.is_some()
     }
 }
-
-// The old NoscopeError enum has been replaced by a type alias pointing to
-// the canonical error::Error type. This preserves backward compatibility
-// for existing consumers while converging on a single public error surface.
-// Migration for existing code:
-// - Old: match err { NoscopeError::Usage { message } => ... }
-//   New: match err.kind() { ErrorKind::Usage => ...; use err.message() }
-// - Old: NoscopeError::Usage { message: "bad".to_string() }
-//   New: Error::usage("bad")
-// - exit_code() and Display still work unchanged.
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -400,29 +350,6 @@ mod tests {
         assert!(result.is_ok(), "Valid request must pass validation");
     }
 
-    #[test]
-    fn facade_revoke_request_from_token_id_and_provider() {
-        let req = super::RevokeRequest::from_token_id("tok-123", "aws");
-        assert_eq!(req.token_id(), "tok-123");
-        assert_eq!(req.provider(), "aws");
-    }
-
-    #[test]
-    fn facade_revoke_request_from_mint_json() {
-        let json = r#"{"token":"secret","expires_at":"2025-01-01T00:00:00Z","token_id":"tok-99","provider":"gcp","role":"viewer"}"#;
-        let req = super::RevokeRequest::from_mint_json(json);
-        assert!(req.is_ok(), "Valid mint JSON must parse");
-        let req = req.unwrap();
-        assert_eq!(req.token_id(), "tok-99");
-        assert_eq!(req.provider(), "gcp");
-    }
-
-    #[test]
-    fn facade_revoke_request_rejects_invalid_json() {
-        let result = super::RevokeRequest::from_mint_json("not json {{{");
-        assert!(result.is_err(), "Invalid JSON must be rejected");
-    }
-
     // Core dump prevention at client construction.
     #[test]
     fn facade_client_disables_core_dumps() {
@@ -508,12 +435,6 @@ mod tests {
     }
 
     #[test]
-    fn facade_revoke_request_is_not_clone() {
-        // RevokeRequest wraps RevokeInput which should not be cloned.
-        static_assertions::assert_not_impl_any!(super::RevokeRequest: Clone);
-    }
-
-    #[test]
     fn facade_resolve_provider_delegates_to_provider_module() {
         // Client exposes provider resolution without requiring the consumer
         // to manually import provider module types.
@@ -571,25 +492,25 @@ mod tests {
     #[test]
     fn facade_reexports_scoped_token_type() {
         // ScopedToken should be re-exported so consumers don't need
-        // `use noscope::token::ScopedToken`.
-        fn _accepts_scoped_token(_t: &crate::token::ScopedToken) {}
+        // `use noscope::core::token::ScopedToken`.
+        fn _accepts_scoped_token(_t: &crate::core::token::ScopedToken) {}
         // This test existing verifies the type is accessible.
     }
 
     #[test]
     fn facade_reexports_mint_envelope() {
-        fn _accepts_envelope(_e: &crate::mint::MintEnvelope) {}
+        fn _accepts_envelope(_e: &crate::core::mint::MintEnvelope) {}
     }
 
     #[test]
     fn facade_reexports_event_types() {
-        fn _accepts_event(_e: &crate::event::Event) {}
-        fn _accepts_event_type(_t: &crate::event::EventType) {}
+        fn _accepts_event(_e: &crate::ports::event::Event) {}
+        fn _accepts_event_type(_t: &crate::ports::event::EventType) {}
     }
 
     #[test]
     fn facade_error_from_mint_error() {
-        let mint_err = crate::mint::MintError::InvalidInput {
+        let mint_err = crate::core::mint::MintError::InvalidInput {
             message: "bad input".to_string(),
         };
         let err: crate::Error = mint_err.into();
@@ -599,7 +520,7 @@ mod tests {
 
     #[test]
     fn facade_error_from_provider_config_error() {
-        let prov_err = crate::provider::ProviderConfigError::MalformedConfig {
+        let prov_err = crate::ports::provider::ProviderConfigError::MalformedConfig {
             message: "syntax error".to_string(),
         };
         let err: crate::Error = prov_err.into();
@@ -613,14 +534,14 @@ mod tests {
 
     #[test]
     fn facade_error_from_security_error() {
-        let sec_err = crate::security::SecurityError::TokenInArgs { arg_index: 2 };
+        let sec_err = crate::ports::security::SecurityError::TokenInArgs { arg_index: 2 };
         let err: crate::Error = sec_err.into();
         assert_ne!(err.exit_code(), 0, "Security error must not be success");
     }
 
     #[test]
     fn facade_error_from_profile_error() {
-        let prof_err = crate::profile::ProfileError::NotFound {
+        let prof_err = crate::ports::profile::ProfileError::NotFound {
             path: std::path::PathBuf::from("/missing/profile.toml"),
         };
         let err: crate::Error = prof_err.into();
@@ -633,7 +554,7 @@ mod tests {
     fn env_override_mint_cmd_observed_from_client() {
         let client = super::Client::new(super::ClientOptions {
             xdg_config_home: Some(std::path::PathBuf::from("/nonexistent/xdg/for/env/test")),
-            provider_env: Some(crate::provider::ProviderEnv {
+            provider_env: Some(crate::ports::provider::ProviderEnv {
                 mint_cmd: Some("/from/env/mint".to_string()),
                 refresh_cmd: None,
                 revoke_cmd: None,
@@ -650,7 +571,7 @@ mod tests {
         );
         assert_eq!(
             resolved.source,
-            crate::provider::ConfigSource::EnvVars,
+            crate::ports::provider::ConfigSource::EnvVars,
             "source must be EnvVars"
         );
     }
@@ -660,7 +581,7 @@ mod tests {
     fn env_override_refresh_cmd_observed_from_client() {
         let client = super::Client::new(super::ClientOptions {
             xdg_config_home: Some(std::path::PathBuf::from("/nonexistent/xdg/for/env/test")),
-            provider_env: Some(crate::provider::ProviderEnv {
+            provider_env: Some(crate::ports::provider::ProviderEnv {
                 mint_cmd: Some("/env/mint".to_string()),
                 refresh_cmd: Some("/env/refresh".to_string()),
                 revoke_cmd: None,
@@ -683,7 +604,7 @@ mod tests {
     fn env_override_revoke_cmd_observed_from_client() {
         let client = super::Client::new(super::ClientOptions {
             xdg_config_home: Some(std::path::PathBuf::from("/nonexistent/xdg/for/env/test")),
-            provider_env: Some(crate::provider::ProviderEnv {
+            provider_env: Some(crate::ports::provider::ProviderEnv {
                 mint_cmd: Some("/env/mint".to_string()),
                 refresh_cmd: None,
                 revoke_cmd: Some("/env/revoke".to_string()),
@@ -706,7 +627,7 @@ mod tests {
     fn env_override_precedence_flags_beat_env() {
         let client = super::Client::new(super::ClientOptions {
             xdg_config_home: Some(std::path::PathBuf::from("/nonexistent/xdg/for/env/test")),
-            provider_env: Some(crate::provider::ProviderEnv {
+            provider_env: Some(crate::ports::provider::ProviderEnv {
                 mint_cmd: Some("/from/env/mint".to_string()),
                 refresh_cmd: Some("/from/env/refresh".to_string()),
                 revoke_cmd: None,
@@ -725,7 +646,7 @@ mod tests {
         assert_eq!(resolved.mint_cmd, "/from/flags/mint", "flags must beat env");
         assert_eq!(
             resolved.source,
-            crate::provider::ConfigSource::Flags,
+            crate::ports::provider::ConfigSource::Flags,
             "source must be Flags when flags are set"
         );
         // no merging — env's refresh_cmd must NOT leak through
@@ -758,7 +679,7 @@ refresh = "/from/file/refresh"
 
         let client = super::Client::new(super::ClientOptions {
             xdg_config_home: Some(tmp.path().to_path_buf()),
-            provider_env: Some(crate::provider::ProviderEnv {
+            provider_env: Some(crate::ports::provider::ProviderEnv {
                 mint_cmd: Some("/from/env/mint".to_string()),
                 refresh_cmd: None,
                 revoke_cmd: None,
@@ -775,7 +696,7 @@ refresh = "/from/file/refresh"
         );
         assert_eq!(
             resolved.source,
-            crate::provider::ConfigSource::EnvVars,
+            crate::ports::provider::ConfigSource::EnvVars,
             "source must be EnvVars"
         );
         // no merging — file's refresh_cmd must NOT leak through
@@ -821,7 +742,7 @@ mint = "/from/file/mint"
         );
         assert_eq!(
             resolved.source,
-            crate::provider::ConfigSource::File,
+            crate::ports::provider::ConfigSource::File,
             "source must be File when no env/flags set"
         );
     }
@@ -831,7 +752,7 @@ mint = "/from/file/mint"
     fn env_override_single_var_activates_env_layer() {
         let client = super::Client::new(super::ClientOptions {
             xdg_config_home: Some(std::path::PathBuf::from("/nonexistent/xdg/for/env/test")),
-            provider_env: Some(crate::provider::ProviderEnv {
+            provider_env: Some(crate::ports::provider::ProviderEnv {
                 mint_cmd: None,
                 refresh_cmd: None,
                 revoke_cmd: Some("/env/revoke".to_string()),
@@ -844,7 +765,7 @@ mint = "/from/file/mint"
             .unwrap();
         assert_eq!(
             resolved.source,
-            crate::provider::ConfigSource::EnvVars,
+            crate::ports::provider::ConfigSource::EnvVars,
             "setting any env var must activate the env layer"
         );
         assert_eq!(resolved.revoke_cmd.as_deref(), Some("/env/revoke"));
@@ -895,10 +816,9 @@ mint = "/from/file/mint"
         // A hardening failure must surface as Error with ErrorKind::Security.
         // We can't easily force setrlimit to fail, so we verify the error
         // type conversion: SecurityError::CoreDumpDisableFailed → Error::Security.
-        let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "mock failure",
-        ));
+        let sec_err = crate::ports::security::SecurityError::CoreDumpDisableFailed(
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "mock failure"),
+        );
         let err: crate::Error = sec_err.into();
         assert_eq!(
             err.kind(),
@@ -915,10 +835,9 @@ mint = "/from/file/mint"
     // Rule 1: Hardening error has a non-zero exit code.
     #[test]
     fn hardening_failure_has_nonzero_exit_code() {
-        let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "mock",
-        ));
+        let sec_err = crate::ports::security::SecurityError::CoreDumpDisableFailed(
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "mock"),
+        );
         let err: crate::Error = sec_err.into();
         assert_ne!(
             err.exit_code(),
@@ -984,9 +903,9 @@ mint = "/from/file/mint"
     fn hardening_failure_is_detectable_via_pattern_match() {
         // Prove that callers can match on ErrorKind::Security to detect
         // hardening failures specifically.
-        let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(std::io::Error::other(
-            "simulated",
-        ));
+        let sec_err = crate::ports::security::SecurityError::CoreDumpDisableFailed(
+            std::io::Error::other("simulated"),
+        );
         let err: crate::Error = sec_err.into();
         let detected =
             err.kind() == crate::ErrorKind::Security && err.message().contains("core dump");
@@ -999,10 +918,9 @@ mint = "/from/file/mint"
     // Rule 4: Hardening failure Display message is human-readable.
     #[test]
     fn hardening_failure_display_is_informative() {
-        let sec_err = crate::security::SecurityError::CoreDumpDisableFailed(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "permission denied",
-        ));
+        let sec_err = crate::ports::security::SecurityError::CoreDumpDisableFailed(
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied"),
+        );
         let err: crate::Error = sec_err.into();
         let msg = format!("{}", err);
         assert!(
@@ -1060,7 +978,7 @@ mint = "/from/file/mint"
         let client = super::Client::new(super::ClientOptions {
             xdg_config_home: Some(tmp.path().to_path_buf()),
             // Explicit empty env — should fall through to file layer.
-            provider_env: Some(crate::provider::ProviderEnv::empty()),
+            provider_env: Some(crate::ports::provider::ProviderEnv::empty()),
             ..super::ClientOptions::default()
         })
         .unwrap();
@@ -1069,7 +987,7 @@ mint = "/from/file/mint"
             .unwrap();
         assert_eq!(
             resolved.source,
-            crate::provider::ConfigSource::File,
+            crate::ports::provider::ConfigSource::File,
             "explicit empty ProviderEnv must not activate env layer"
         );
         assert_eq!(resolved.mint_cmd, "/from/file/mint");

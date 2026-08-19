@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use noscope::redaction::RedactedToken;
-use noscope::token::ScopedToken;
+use noscope::core::redaction::RedactedToken;
+use noscope::core::token::ScopedToken;
 use secrecy::SecretString;
 
 /// Realistic JWT for benchmarking. Defined once to avoid duplication.

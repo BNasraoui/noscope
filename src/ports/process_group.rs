@@ -71,8 +71,8 @@ fn terminate_process_group(_pgid: libc::pid_t) -> io::Result<()> {
 mod tests {
     #[test]
     fn run_mode_termination_rejects_invalid_process_group_id() {
-        let err = crate::process_group::terminate_group_for_mode(
-            crate::process_group::ProcessGroupMode::Run,
+        let err = crate::ports::process_group::terminate_group_for_mode(
+            crate::ports::process_group::ProcessGroupMode::Run,
             0,
         )
         .expect_err("run mode termination should reject invalid pgid");
@@ -81,8 +81,8 @@ mod tests {
 
     #[test]
     fn mint_mode_ignores_invalid_process_group_id() {
-        crate::process_group::terminate_group_for_mode(
-            crate::process_group::ProcessGroupMode::Mint,
+        crate::ports::process_group::terminate_group_for_mode(
+            crate::ports::process_group::ProcessGroupMode::Mint,
             0,
         )
         .expect("mint mode should not apply process group termination behavior");

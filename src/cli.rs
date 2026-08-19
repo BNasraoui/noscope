@@ -7,7 +7,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 
-use crate::error::Error;
+use crate::core::error::Error;
 
 /// Successful exit code.
 pub const SUCCESS_EXIT_CODE: i32 = 0;

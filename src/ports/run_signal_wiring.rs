@@ -1,5 +1,5 @@
-use crate::signal_policy::{ParentSignal, SignalHandlingPolicy};
-use crate::{event::emit_runtime_event, Event, EventType};
+use crate::core::signal_policy::{ParentSignal, SignalHandlingPolicy};
+use crate::ports::event::{emit_runtime_event, Event, EventType};
 use provenance_macros::rule;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,7 +108,7 @@ fn libc_signal(signal: ParentSignal) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::signal_policy::ParentSignal;
+    use crate::core::signal_policy::ParentSignal;
     use provenance_macros::verifies;
 
     #[derive(Default)]
@@ -187,8 +187,8 @@ mod tests {
 
     #[test]
     fn ns_070_double_signal_sigkill_path_emits_signal_forwarded() {
-        let _guard = crate::event::test_event_collector_guard();
-        let captured = crate::event::install_test_event_collector(crate::LogFormat::Json);
+        let _guard = crate::ports::event::test_event_collector_guard();
+        let captured = crate::ports::event::install_test_event_collector(crate::LogFormat::Json);
 
         let mut process = FakeProcess::default();
         let mut revoker = FakeRevoker::default();
@@ -211,7 +211,7 @@ mod tests {
             "SIGKILL escalation path must emit signal_forwarded"
         );
 
-        crate::event::clear_test_event_collector();
+        crate::ports::event::clear_test_event_collector();
     }
 
     #[test]
@@ -225,8 +225,8 @@ mod tests {
             }
         }
 
-        let _guard = crate::event::test_event_collector_guard();
-        let captured = crate::event::install_test_event_collector(crate::LogFormat::Json);
+        let _guard = crate::ports::event::test_event_collector_guard();
+        let captured = crate::ports::event::install_test_event_collector(crate::LogFormat::Json);
 
         let mut process = FailingProcess;
         let mut revoker = FakeRevoker::default();
@@ -242,7 +242,7 @@ mod tests {
             "failed signal forwarding must not emit signal_forwarded"
         );
 
-        crate::event::clear_test_event_collector();
+        crate::ports::event::clear_test_event_collector();
     }
 
     #[test]

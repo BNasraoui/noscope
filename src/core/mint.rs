@@ -10,10 +10,10 @@ use serde::Serialize;
 use std::fmt;
 use zeroize::Zeroize;
 
-use crate::exit_code::NoscopeExitCode;
-use crate::redaction::RedactedToken;
-use crate::signal_policy::{SignalHandlingPolicy, TtlBounds};
-use crate::token::ScopedToken;
+use crate::core::exit_code::NoscopeExitCode;
+use crate::core::redaction::RedactedToken;
+use crate::core::signal_policy::{SignalHandlingPolicy, TtlBounds};
+use crate::core::token::ScopedToken;
 use provenance_macros::rule;
 
 /// Mint output envelope for stdout.
@@ -213,7 +213,7 @@ pub fn validate_mint_args(
     let ttl = SignalHandlingPolicy::validate_ttl(ttl_secs, &TtlBounds::default()).map_err(|e| {
         MintError::InvalidInput {
             message: match e {
-                crate::signal_policy::TtlError::Missing => {
+                crate::core::signal_policy::TtlError::Missing => {
                     "--ttl is required for mint mode".to_string()
                 }
                 other => other.to_string(),
@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn mint_output_envelope_from_scoped_token() {
-        use crate::token::ScopedToken;
+        use crate::core::token::ScopedToken;
         use secrecy::SecretString;
 
         let expiry = Utc::now() + chrono::Duration::hours(1);
@@ -898,7 +898,7 @@ mod tests {
     #[test]
     fn mint_envelope_from_scoped_token_without_token_id() {
         // When ScopedToken has no token_id, envelope should use empty string.
-        use crate::token::ScopedToken;
+        use crate::core::token::ScopedToken;
         use secrecy::SecretString;
 
         let token = ScopedToken::new(

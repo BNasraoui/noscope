@@ -8,14 +8,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::command_parse::parse_command;
-use crate::credential_set::{
+use crate::app::orchestrator;
+use crate::core::credential_set::{
     CredentialSet, CredentialSetError, CredentialSpec, MintConfig, MintFailure, MintResult,
 };
-use crate::orchestrator;
-use crate::provider::ResolvedProvider;
-use crate::provider_exec::{self, ExecConfig};
-use crate::token_convert::provider_output_to_scoped_token;
+use crate::core::token_convert::provider_output_to_scoped_token;
+use crate::ports::command_parse::parse_command;
+use crate::ports::provider::ResolvedProvider;
+use crate::ports::provider_exec::{self, ExecConfig};
 
 /// Execution knobs for a mint run.
 pub struct MintOptions {
