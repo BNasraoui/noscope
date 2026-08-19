@@ -1,4 +1,5 @@
 pub mod agent_process;
+pub mod app;
 pub mod cli;
 pub mod client;
 pub mod command_parse;
