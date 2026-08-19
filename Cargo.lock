@@ -667,6 +667,7 @@ dependencies = [
 [[package]]
 name = "provenance-macros"
 version = "0.1.0"
+source = "git+https://github.com/BNasraoui/Provenance.git?rev=0dd66a41b756c44f79758ecee252782af5c7d152#0dd66a41b756c44f79758ecee252782af5c7d152"
 
 [[package]]
 name = "quote"

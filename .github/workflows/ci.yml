@@ -53,3 +53,35 @@ jobs:
 
       - name: cargo audit
         run: cargo audit
+
+  provenance:
+    name: Provenance gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
+
+      - name: Install provenance CLI (pinned)
+        run: >
+          cargo install provenance-cli
+          --git https://github.com/BNasraoui/Provenance.git
+          --rev 0dd66a41b756c44f79758ecee252782af5c7d152
+          --locked
+
+      - name: Graph integrity
+        run: provenance check
+
+      - name: Rule coverage (strict)
+        run: provenance coverage scan --path . --validate-rules --strict
+
+      - name: Evidence staleness (strict, PRs only)
+        if: github.event_name == 'pull_request'
+        run: provenance stale --since ${{ github.event.pull_request.base.sha }} --strict
