@@ -500,6 +500,17 @@ pub async fn execute_provider_command(
     // per-provider timeout fires), the provider must not keep running and
     // mint a credential nobody ever sees.
     cmd.kill_on_drop(true);
+    // NS-035: the provider leads its own process group so that timeout
+    // escalation reaches every process the provider spawned, not only the
+    // direct child. Without this a `sh -c '... ; sleep'` provider leaves
+    // an orphan holding the output pipes after SIGKILL.
+    // SAFETY: setpgid in pre_exec affects only the forked child.
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setpgid(0, 0);
+            Ok(())
+        });
+    }
     cmd.env_clear();
     for (k, v) in &env {
         cmd.env(k, v);
@@ -617,13 +628,17 @@ pub async fn execute_provider_command(
     })
 }
 
-/// Send a Unix signal to a child process.
+/// Send a Unix signal to a provider's whole process group.
+///
+/// The provider was made a process-group leader at spawn, so a negative
+/// pid targets the group per POSIX and the signal reaches every process
+/// the provider started (NS-035).
 ///
 /// Best-effort: if the process has already exited, the signal is silently ignored.
 fn send_signal(child: &tokio::process::Child, signal: libc::c_int) {
     if let Some(pid) = child.id() {
         unsafe {
-            libc::kill(pid as libc::pid_t, signal);
+            libc::kill(-(pid as libc::pid_t), signal);
         }
     }
 }

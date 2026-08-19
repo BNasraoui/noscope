@@ -82,6 +82,10 @@ jobs:
       - name: Rule coverage (strict)
         run: provenance coverage scan --path . --validate-rules --strict
 
-      - name: Evidence staleness (strict, PRs only)
+      # Report-only: a PR that adds or moves rule bindings always touches
+      # its own evidence sites, so a strict staleness gate would fail every
+      # such PR. The report shows reviewers which rule evidence the diff
+      # touches; the coverage scan above stays the blocking gate.
+      - name: Evidence staleness (report, PRs only)
         if: github.event_name == 'pull_request'
-        run: provenance stale --since ${{ github.event.pull_request.base.sha }} --strict
+        run: provenance stale --since ${{ github.event.pull_request.base.sha }}

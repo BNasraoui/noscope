@@ -314,6 +314,17 @@ pub fn emit_runtime_event(event: Event) {
     (runtime.sink)(line);
 }
 
+/// The collector below swaps the process-global runtime emitter, so
+/// tests that use it must not run concurrently with each other. Hold
+/// this guard for the whole test.
+#[cfg(test)]
+pub fn test_event_collector_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 pub fn install_test_event_collector(format: LogFormat) -> Arc<Mutex<Vec<String>>> {
     let captured = Arc::new(Mutex::new(Vec::new()));

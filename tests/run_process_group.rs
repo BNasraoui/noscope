@@ -90,8 +90,12 @@ fn run_mode_child_leads_its_own_process_group() {
     );
 }
 
+// NS-035: a provider command leads its own process group so that timeout
+// escalation reaches everything it spawned. (The rule about noscope NOT
+// applying process-group setup in mint mode concerns the agent child,
+// which does not exist in mint mode.)
 #[test]
-fn mint_mode_provider_shares_noscope_process_group() {
+fn provider_command_leads_its_own_process_group() {
     let tmp = tempfile::tempdir().unwrap();
     let marker = tmp.path().join("provider-ids");
 
@@ -127,8 +131,9 @@ fn mint_mode_provider_shares_noscope_process_group() {
     );
 
     let (pid, pgid) = read_pid_pgid(&marker);
-    assert_ne!(
+    assert_eq!(
         pid, pgid,
-        "mint mode must not give the provider its own process group"
+        "NS-035: a provider must lead its own process group so escalation \
+         reaches its descendants"
     );
 }

@@ -187,6 +187,7 @@ mod tests {
 
     #[test]
     fn ns_070_double_signal_sigkill_path_emits_signal_forwarded() {
+        let _guard = crate::event::test_event_collector_guard();
         let captured = crate::event::install_test_event_collector(crate::LogFormat::Json);
 
         let mut process = FakeProcess::default();
@@ -224,6 +225,7 @@ mod tests {
             }
         }
 
+        let _guard = crate::event::test_event_collector_guard();
         let captured = crate::event::install_test_event_collector(crate::LogFormat::Json);
 
         let mut process = FailingProcess;
