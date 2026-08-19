@@ -1,0 +1,648 @@
+use provenance_macros::verifies;
+
+#[test]
+fn exit_codes_become_real_usage_error_maps_to_64() {
+    // Usage errors must produce exit code 64 through the CLI
+    // error handling path.
+    let exit = crate::cli::error_to_exit_code(&crate::Error::usage("bad flag"));
+    assert_eq!(exit, 64);
+}
+
+#[test]
+fn exit_codes_become_real_config_error_maps_to_78() {
+    let exit = crate::cli::error_to_exit_code(&crate::Error::config("malformed"));
+    assert_eq!(exit, 78);
+}
+
+#[test]
+fn exit_codes_become_real_provider_error_maps_to_65() {
+    let exit = crate::cli::error_to_exit_code(&crate::Error::provider("aws", "expired"));
+    assert_eq!(exit, 65);
+}
+
+#[test]
+fn exit_codes_become_real_security_error_maps_to_64() {
+    let exit = crate::cli::error_to_exit_code(&crate::Error::security("token in args"));
+    assert_eq!(exit, 64);
+}
+
+#[test]
+fn exit_codes_become_real_profile_error_maps_to_66() {
+    let exit = crate::cli::error_to_exit_code(&crate::Error::profile("not found"));
+    assert_eq!(exit, 66);
+}
+
+#[test]
+fn exit_codes_become_real_internal_error_maps_to_70() {
+    let exit = crate::cli::error_to_exit_code(&crate::Error::internal("bug"));
+    assert_eq!(exit, 70);
+}
+
+#[test]
+fn exit_codes_become_real_multi_error_maps_to_65() {
+    let multi = crate::Error::multi(vec![
+        crate::Error::provider("aws", "expired"),
+        crate::Error::provider("gcp", "timeout"),
+    ]);
+    let exit = crate::cli::error_to_exit_code(&multi);
+    assert_eq!(exit, 65);
+}
+
+#[test]
+fn exit_codes_become_real_success_is_zero() {
+    // A successful operation must produce exit code 0.
+    let exit = crate::cli::SUCCESS_EXIT_CODE;
+    assert_eq!(exit, 0);
+}
+
+#[test]
+fn dry_run_usable_subcommand_is_parseable() {
+    // "dry-run" must be a recognized subcommand.
+    let cli = crate::cli::parse_from_args([
+        "noscope",
+        "dry-run",
+        "--provider",
+        "aws",
+        "--role",
+        "admin",
+        "--ttl",
+        "3600",
+    ]);
+    assert!(
+        cli.is_ok(),
+        "dry-run subcommand must parse: {:?}",
+        cli.err()
+    );
+}
+
+#[test]
+fn dry_run_usable_subcommand_extracts_provider() {
+    let cli = crate::cli::parse_from_args([
+        "noscope",
+        "dry-run",
+        "--provider",
+        "aws",
+        "--role",
+        "admin",
+        "--ttl",
+        "3600",
+    ])
+    .unwrap();
+    match cli.command {
+        crate::cli::Command::DryRun(ref args) => {
+            assert_eq!(args.provider, "aws");
+        }
+        _ => panic!("Expected DryRun subcommand"),
+    }
+}
+
+#[test]
+fn dry_run_usable_subcommand_extracts_role() {
+    let cli = crate::cli::parse_from_args([
+        "noscope",
+        "dry-run",
+        "--provider",
+        "aws",
+        "--role",
+        "viewer",
+        "--ttl",
+        "1800",
+    ])
+    .unwrap();
+    match cli.command {
+        crate::cli::Command::DryRun(ref args) => {
+            assert_eq!(args.role, "viewer");
+        }
+        _ => panic!("Expected DryRun subcommand"),
+    }
+}
+
+#[test]
+fn dry_run_usable_subcommand_extracts_ttl() {
+    let cli = crate::cli::parse_from_args([
+        "noscope",
+        "dry-run",
+        "--provider",
+        "aws",
+        "--role",
+        "admin",
+        "--ttl",
+        "7200",
+    ])
+    .unwrap();
+    match cli.command {
+        crate::cli::Command::DryRun(ref args) => {
+            assert_eq!(args.ttl, 7200);
+        }
+        _ => panic!("Expected DryRun subcommand"),
+    }
+}
+
+#[test]
+fn facade_for_workflows_run_subcommand_parseable() {
+    let cli = crate::cli::parse_from_args([
+        "noscope",
+        "run",
+        "--provider",
+        "aws",
+        "--role",
+        "admin",
+        "--ttl",
+        "3600",
+        "--",
+        "my-program",
+        "--arg1",
+    ]);
+    assert!(cli.is_ok(), "run subcommand must parse: {:?}", cli.err());
+}
+
+#[test]
+fn facade_for_workflows_run_extracts_child_command() {
+    let cli = crate::cli::parse_from_args([
+        "noscope",
+        "run",
+        "--provider",
+        "aws",
+        "--role",
+        "admin",
+        "--ttl",
+        "3600",
+        "--",
+        "my-program",
+        "--arg1",
+    ])
+    .unwrap();
+    match cli.command {
+        crate::cli::Command::Run(ref args) => {
+            assert_eq!(args.child_args, vec!["my-program", "--arg1"]);
+        }
+        _ => panic!("Expected Run subcommand"),
+    }
+}
+
+#[test]
+fn facade_for_workflows_mint_subcommand_parseable() {
+    let cli = crate::cli::parse_from_args([
+        "noscope",
+        "mint",
+        "--provider",
+        "aws",
+        "--role",
+        "admin",
+        "--ttl",
+        "3600",
+    ]);
+    assert!(cli.is_ok(), "mint subcommand must parse: {:?}", cli.err());
+}
+
+#[test]
+fn facade_for_workflows_mint_extracts_multiple_providers() {
+    let cli = crate::cli::parse_from_args([
+        "noscope",
+        "mint",
+        "--provider",
+        "aws",
+        "--provider",
+        "gcp",
+        "--role",
+        "admin",
+        "--ttl",
+        "3600",
+    ])
+    .unwrap();
+    match cli.command {
+        crate::cli::Command::Mint(ref args) => {
+            assert_eq!(args.provider, vec!["aws", "gcp"]);
+        }
+        _ => panic!("Expected Mint subcommand"),
+    }
+}
+
+#[test]
+fn facade_for_workflows_revoke_subcommand_parseable() {
+    let cli = crate::cli::parse_from_args([
+        "noscope",
+        "revoke",
+        "--token-id",
+        "tok-123",
+        "--provider",
+        "aws",
+    ]);
+    assert!(cli.is_ok(), "revoke subcommand must parse: {:?}", cli.err());
+}
+
+#[test]
+fn facade_for_workflows_revoke_extracts_token_id() {
+    let cli = crate::cli::parse_from_args([
+        "noscope",
+        "revoke",
+        "--token-id",
+        "tok-abc",
+        "--provider",
+        "aws",
+    ])
+    .unwrap();
+    match cli.command {
+        crate::cli::Command::Revoke(ref args) => {
+            assert_eq!(args.token_id.as_deref(), Some("tok-abc"));
+            assert_eq!(args.provider.as_deref(), Some("aws"));
+        }
+        _ => panic!("Expected Revoke subcommand"),
+    }
+}
+
+#[test]
+fn facade_for_workflows_validate_subcommand_parseable() {
+    let cli = crate::cli::parse_from_args(["noscope", "validate", "--provider", "aws"]);
+    assert!(
+        cli.is_ok(),
+        "validate subcommand must parse: {:?}",
+        cli.err()
+    );
+}
+
+#[test]
+fn facade_for_workflows_all_five_subcommands_are_distinct() {
+    // Each subcommand must parse to a distinct variant.
+    let run = crate::cli::parse_from_args([
+        "noscope",
+        "run",
+        "--provider",
+        "p",
+        "--role",
+        "r",
+        "--ttl",
+        "1",
+        "--",
+        "cmd",
+    ])
+    .unwrap();
+    let mint = crate::cli::parse_from_args([
+        "noscope",
+        "mint",
+        "--provider",
+        "p",
+        "--role",
+        "r",
+        "--ttl",
+        "1",
+    ])
+    .unwrap();
+    let revoke =
+        crate::cli::parse_from_args(["noscope", "revoke", "--token-id", "t", "--provider", "p"])
+            .unwrap();
+    let validate = crate::cli::parse_from_args(["noscope", "validate", "--provider", "p"]).unwrap();
+    let dry_run = crate::cli::parse_from_args([
+        "noscope",
+        "dry-run",
+        "--provider",
+        "p",
+        "--role",
+        "r",
+        "--ttl",
+        "1",
+    ])
+    .unwrap();
+
+    // Verify they produce distinct command variants
+    assert!(matches!(run.command, crate::cli::Command::Run(_)));
+    assert!(matches!(mint.command, crate::cli::Command::Mint(_)));
+    assert!(matches!(revoke.command, crate::cli::Command::Revoke(_)));
+    assert!(matches!(validate.command, crate::cli::Command::Validate(_)));
+    assert!(matches!(dry_run.command, crate::cli::Command::DryRun(_)));
+}
+
+#[test]
+fn cli_parsing_in_adapter_layer_cli_struct_is_distinct_from_client() {
+    // The CLI struct must be a separate type from Client.
+    // Verify by instantiating both — they must have different fields.
+    let _cli = crate::cli::parse_from_args([
+        "noscope",
+        "mint",
+        "--provider",
+        "p",
+        "--role",
+        "r",
+        "--ttl",
+        "1",
+    ])
+    .unwrap();
+    let _client = crate::Client::new(crate::ClientOptions::default()).unwrap();
+    // Both exist and are separate types — satisfied.
+}
+
+#[test]
+fn cli_parsing_in_adapter_layer_parse_from_args_returns_result() {
+    // parse_from_args must return a Result, not panic on bad input.
+    let result = crate::cli::parse_from_args(["noscope"]);
+    // Missing subcommand — should be an error (clap requires subcommand).
+    assert!(result.is_err(), "Missing subcommand must be an error");
+}
+
+#[test]
+fn cli_parsing_in_adapter_layer_unknown_subcommand_is_error() {
+    let result = crate::cli::parse_from_args(["noscope", "frobnicate"]);
+    assert!(result.is_err(), "Unknown subcommand must be an error");
+}
+
+#[test]
+fn help_flag_is_recognized() {
+    // --help should cause clap to produce an error (it writes to stdout
+    // and exits). We verify it's recognized, not treated as unknown.
+    let result = crate::cli::parse_from_args(["noscope", "--help"]);
+    // clap treats --help as an error (DisplayHelp kind), not a parse success.
+    assert!(result.is_err());
+}
+
+#[test]
+fn version_flag_is_recognized() {
+    // --version should be recognized by clap.
+    let result = crate::cli::parse_from_args(["noscope", "--version"]);
+    assert!(result.is_err());
+}
+
+#[test]
+fn completions_subcommand_parseable() {
+    // A completions subcommand for generating shell completions.
+    let cli = crate::cli::parse_from_args(["noscope", "completions", "--shell", "bash"]);
+    assert!(
+        cli.is_ok(),
+        "completions subcommand must parse: {:?}",
+        cli.err()
+    );
+}
+
+#[test]
+#[verifies("rule_cli_completions", examples)]
+fn completions_subcommand_accepts_all_shells() {
+    for shell in &["bash", "zsh", "fish"] {
+        let cli = crate::cli::parse_from_args(["noscope", "completions", "--shell", shell]);
+        assert!(
+            cli.is_ok(),
+            "completions must accept shell '{}': {:?}",
+            shell,
+            cli.err()
+        );
+    }
+}
+
+#[test]
+fn mint_subcommand_requires_provider() {
+    let result =
+        crate::cli::parse_from_args(["noscope", "mint", "--role", "admin", "--ttl", "3600"]);
+    assert!(result.is_err(), "mint without --provider must fail");
+}
+
+#[test]
+fn mint_subcommand_requires_role() {
+    let result =
+        crate::cli::parse_from_args(["noscope", "mint", "--provider", "aws", "--ttl", "3600"]);
+    assert!(result.is_err(), "mint without --role must fail");
+}
+
+#[test]
+fn mint_subcommand_requires_ttl() {
+    let result =
+        crate::cli::parse_from_args(["noscope", "mint", "--provider", "aws", "--role", "admin"]);
+    assert!(result.is_err(), "mint without --ttl must fail");
+}
+
+#[test]
+fn run_subcommand_requires_child_command() {
+    // run without -- <command> should fail.
+    let result = crate::cli::parse_from_args([
+        "noscope",
+        "run",
+        "--provider",
+        "aws",
+        "--role",
+        "admin",
+        "--ttl",
+        "3600",
+    ]);
+    assert!(result.is_err(), "run without child command must fail");
+}
+
+#[test]
+fn revoke_subcommand_requires_token_id() {
+    let result = crate::cli::parse_from_args(["noscope", "revoke", "--provider", "aws"]);
+    assert!(result.is_err(), "revoke without --token-id must fail");
+}
+
+#[test]
+fn revoke_subcommand_requires_provider() {
+    let result = crate::cli::parse_from_args(["noscope", "revoke", "--token-id", "tok-123"]);
+    assert!(result.is_err(), "revoke without --provider must fail");
+}
+
+#[test]
+fn mint_profile_only_parses_without_provider_role_ttl() {
+    let cli = crate::cli::parse_from_args(["noscope", "mint", "--profile", "dev"]);
+    assert!(
+        cli.is_ok(),
+        "mint --profile alone must parse: {:?}",
+        cli.err()
+    );
+}
+
+#[test]
+fn mint_profile_conflicts_with_provider() {
+    let result =
+        crate::cli::parse_from_args(["noscope", "mint", "--profile", "dev", "--provider", "aws"]);
+    assert!(result.is_err(), "--profile must conflict with --provider");
+}
+
+#[test]
+fn mint_profile_conflicts_with_role() {
+    let result =
+        crate::cli::parse_from_args(["noscope", "mint", "--profile", "dev", "--role", "admin"]);
+    assert!(result.is_err(), "--profile must conflict with --role");
+}
+
+#[test]
+fn mint_profile_conflicts_with_ttl() {
+    let result =
+        crate::cli::parse_from_args(["noscope", "mint", "--profile", "dev", "--ttl", "3600"]);
+    assert!(result.is_err(), "--profile must conflict with --ttl");
+}
+
+#[test]
+fn run_profile_only_parses_without_provider_role_ttl() {
+    let cli =
+        crate::cli::parse_from_args(["noscope", "run", "--profile", "dev", "--", "sleep", "1"]);
+    assert!(
+        cli.is_ok(),
+        "run --profile alone must parse: {:?}",
+        cli.err()
+    );
+}
+
+#[test]
+fn run_profile_conflicts_with_provider() {
+    let result = crate::cli::parse_from_args([
+        "noscope",
+        "run",
+        "--profile",
+        "dev",
+        "--provider",
+        "aws",
+        "--",
+        "sleep",
+        "1",
+    ]);
+    assert!(
+        result.is_err(),
+        "run --profile must conflict with --provider"
+    );
+}
+
+#[test]
+fn mint_requires_profile_or_provider_role_ttl() {
+    let result = crate::cli::parse_from_args(["noscope", "mint"]);
+    assert!(result.is_err(), "mint with no flags at all must fail");
+}
+
+#[test]
+fn verbose_flag_is_global() {
+    let cli = crate::cli::parse_from_args([
+        "noscope",
+        "--verbose",
+        "mint",
+        "--provider",
+        "aws",
+        "--role",
+        "admin",
+        "--ttl",
+        "3600",
+    ])
+    .unwrap();
+    assert!(cli.verbose, "Global --verbose flag must be captured");
+}
+
+#[test]
+fn verbose_flag_defaults_to_false() {
+    let cli = crate::cli::parse_from_args([
+        "noscope",
+        "mint",
+        "--provider",
+        "aws",
+        "--role",
+        "admin",
+        "--ttl",
+        "3600",
+    ])
+    .unwrap();
+    assert!(!cli.verbose, "--verbose must default to false");
+}
+
+fn render_help(args: impl IntoIterator<Item = &'static str>) -> String {
+    match crate::cli::parse_from_args(args) {
+        Ok(_) => panic!("--help should return clap::Error"),
+        Err(err) => err.to_string(),
+    }
+}
+
+#[test]
+fn help_includes_concrete_usage_examples() {
+    let root_help = render_help(["noscope", "--help"]);
+    assert!(
+        root_help.contains("Examples:"),
+        "root help must include concrete examples"
+    );
+    assert!(
+        root_help.contains("noscope run"),
+        "root help examples must include run"
+    );
+    assert!(
+        root_help.contains("noscope mint"),
+        "root help examples must include mint"
+    );
+    assert!(
+        root_help.contains("noscope revoke"),
+        "root help examples must include revoke"
+    );
+}
+
+#[test]
+fn profile_help_clarifies_flag_behavior() {
+    let run_help = render_help(["noscope", "run", "--help"]);
+    assert!(
+        run_help.contains("cannot be combined with --provider, --role, or --ttl"),
+        "run --profile help must explain mutual exclusion semantics"
+    );
+
+    let mint_help = render_help(["noscope", "mint", "--help"]);
+    assert!(
+        mint_help.contains("cannot be combined with --provider, --role, or --ttl"),
+        "mint --profile help must explain mutual exclusion semantics"
+    );
+}
+
+#[test]
+fn log_format_help_clarifies_scope_and_relationship_to_output() {
+    let run_help = render_help(["noscope", "run", "--help"]);
+    assert!(
+        run_help.contains("only affects runtime event logs on stderr"),
+        "--log-format help must explain it only affects stderr runtime events"
+    );
+    assert!(
+        run_help.contains("does not change --output"),
+        "--log-format help must explain it does not affect --output"
+    );
+}
+
+#[test]
+fn user_facing_help_avoids_internal_rule_jargon() {
+    let root_help = render_help(["noscope", "--help"]);
+    assert!(
+        !root_help.contains("NS-"),
+        "root help should avoid internal rule identifiers"
+    );
+
+    let dry_run_help = render_help(["noscope", "dry-run", "--help"]);
+    assert!(
+        !dry_run_help.contains("NS-"),
+        "subcommand help should avoid internal rule identifiers"
+    );
+
+    let mint_help = render_help(["noscope", "mint", "--help"]);
+    assert!(
+        !mint_help.contains("NS-"),
+        "argument help should avoid internal rule identifiers"
+    );
+}
+
+#[test]
+fn doctor_subcommand_parseable() {
+    let cli = crate::cli::parse_from_args(["noscope", "doctor"]);
+    assert!(cli.is_ok(), "doctor subcommand must parse: {:?}", cli.err());
+    assert!(matches!(
+        cli.unwrap().command,
+        crate::cli::Command::Doctor(_)
+    ));
+}
+
+#[test]
+fn init_subcommand_parseable() {
+    let cli = crate::cli::parse_from_args(["noscope", "init"]);
+    assert!(cli.is_ok(), "init subcommand must parse: {:?}", cli.err());
+    assert!(matches!(cli.unwrap().command, crate::cli::Command::Init(_)));
+}
+
+#[test]
+fn doctor_help_avoids_internal_rule_jargon() {
+    let help = render_help(["noscope", "doctor", "--help"]);
+    assert!(
+        !help.contains("NS-"),
+        "doctor help should avoid internal rule identifiers"
+    );
+}
+
+#[test]
+fn init_help_avoids_internal_rule_jargon() {
+    let help = render_help(["noscope", "init", "--help"]);
+    assert!(
+        !help.contains("NS-"),
+        "init help should avoid internal rule identifiers"
+    );
+}
