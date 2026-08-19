@@ -44,6 +44,10 @@ fn read_pid_pgid(path: &Path) -> (String, String) {
     )
 }
 
+// The run-mode group setup (setpgid + PR_SET_PDEATHSIG) is Linux-only
+// by construction: configure_child_for_run_mode is a documented no-op
+// on other platforms, so the conformance test is Linux-only too.
+#[cfg(target_os = "linux")]
 #[test]
 #[verifies("rule_signals_process_group_setup", conformance)]
 fn run_mode_child_leads_its_own_process_group() {
