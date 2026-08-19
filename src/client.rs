@@ -179,11 +179,12 @@ impl Client {
             None => provider::provider_env_from_process(),
         };
 
-        Ok(provider::resolve_provider_config(
+        Ok(provider::resolve_provider_config_at(
             name,
             &flags,
             &env,
             file_config,
+            &config_path,
         )?)
     }
 

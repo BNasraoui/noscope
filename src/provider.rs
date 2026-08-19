@@ -423,6 +423,23 @@ pub fn resolve_provider_config(
     env: &ProviderEnv,
     file_config: Option<FileProviderConfig>,
 ) -> Result<ResolvedProvider, ProviderConfigError> {
+    let config_path =
+        provider_config_path(name, None).map_err(|e| ProviderConfigError::MalformedConfig {
+            message: format!("{}", e),
+        })?;
+    resolve_provider_config_at(name, flags, env, file_config, &config_path)
+}
+
+/// Same as [`resolve_provider_config`], but names the config file location
+/// that was actually checked (NS-044) instead of recomputing it from the
+/// process environment.
+pub fn resolve_provider_config_at(
+    name: &str,
+    flags: &ProviderFlags,
+    env: &ProviderEnv,
+    file_config: Option<FileProviderConfig>,
+    config_path: &Path,
+) -> Result<ResolvedProvider, ProviderConfigError> {
     if let Some(selected) = select_provider_config_layer(flags, env, file_config) {
         return Ok(match selected {
             SelectedProviderConfigLayer::Flags(input) => ResolvedProvider {
@@ -456,10 +473,6 @@ pub fn resolve_provider_config(
     }
 
     // NS-044: No layer provided config — enumerate checked locations.
-    let config_path =
-        provider_config_path(name, None).map_err(|e| ProviderConfigError::MalformedConfig {
-            message: format!("{}", e),
-        })?;
     Err(ProviderConfigError::ProviderNotFound {
         provider: name.to_string(),
         checked_locations: vec![

@@ -22,15 +22,19 @@ use crate::signal_policy::{
 };
 use crate::token::ScopedToken;
 
-/// Build a RevokeInput from CLI arguments.
-pub fn revoke_input_from_cli(
+/// Build the RevokeInputs from CLI arguments.
+///
+/// With --from-stdin the payload is `noscope mint` output: a JSON array
+/// of envelopes (NS-063), each of which becomes one revocation. A single
+/// bare envelope object is also accepted.
+pub fn revoke_inputs_from_cli(
     from_stdin: bool,
     stdin_payload: &str,
     token_id: Option<&str>,
     provider: Option<&str>,
-) -> Result<RevokeInput, Error> {
+) -> Result<Vec<RevokeInput>, Error> {
     if from_stdin {
-        return RevokeInput::from_mint_json(stdin_payload).map_err(Error::from);
+        return revoke_inputs_from_mint_output(stdin_payload);
     }
 
     let token_id = token_id
@@ -38,7 +42,31 @@ pub fn revoke_input_from_cli(
     let provider = provider
         .ok_or_else(|| Error::usage("--provider is required unless --from-stdin is set"))?;
 
-    Ok(RevokeInput::from_token_id_and_provider(token_id, provider))
+    Ok(vec![RevokeInput::from_token_id_and_provider(
+        token_id, provider,
+    )])
+}
+
+/// Parse mint output into revocations: a JSON array of envelopes or one
+/// bare envelope object.
+pub fn revoke_inputs_from_mint_output(payload: &str) -> Result<Vec<RevokeInput>, Error> {
+    let value: serde_json::Value =
+        serde_json::from_str(payload).map_err(|e| Error::usage(&format!("invalid JSON: {}", e)))?;
+
+    match value {
+        serde_json::Value::Array(items) => {
+            if items.is_empty() {
+                return Err(Error::usage("mint envelope array is empty"));
+            }
+            items
+                .iter()
+                .map(|item| RevokeInput::from_mint_json(&item.to_string()).map_err(Error::from))
+                .collect()
+        }
+        _ => Ok(vec![
+            RevokeInput::from_mint_json(payload).map_err(Error::from)?
+        ]),
+    }
 }
 
 /// Execute a provider's revoke command for one lease.

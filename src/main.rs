@@ -10,7 +10,7 @@ use std::process::ExitCode;
 use noscope::app::mint::format_mint_failed_providers;
 use noscope::app::resolve::CredentialSource;
 use noscope::app::revoke::{
-    execute_revoke, format_revoke_result, revoke_input_from_cli, revoke_minted_tokens,
+    execute_revoke, format_revoke_result, revoke_inputs_from_cli, revoke_minted_tokens,
 };
 use noscope::cli::{self, Command};
 use noscope::{Client, ClientOptions, ProviderOverrides};
@@ -242,7 +242,10 @@ fn cmd_revoke(
     _verbose: bool,
     output: cli::OutputFormat,
 ) -> Result<i32, noscope::Error> {
-    let client = Client::new(ClientOptions::default())?;
+    let client = Client::new(ClientOptions {
+        xdg_config_home: std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+        ..ClientOptions::default()
+    })?;
 
     let stdin_payload = if args.from_stdin {
         let mut raw = String::new();
@@ -253,45 +256,64 @@ fn cmd_revoke(
         String::new()
     };
 
-    let input = revoke_input_from_cli(
+    let inputs = revoke_inputs_from_cli(
         args.from_stdin,
         &stdin_payload,
         args.token_id.as_deref(),
         args.provider.as_deref(),
     )?;
-    let resolved = client.resolve_provider(input.provider(), &ProviderOverrides::default())?;
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| noscope::Error::internal(&format!("failed creating async runtime: {}", e)))?;
-    runtime.block_on(execute_revoke(&resolved, &input))?;
 
-    match output {
-        cli::OutputFormat::Text => {
-            println!(
-                "{}",
-                format_revoke_result(input.provider(), input.token_id())
-            );
+    let mut failures = Vec::new();
+    for input in &inputs {
+        let result = client
+            .resolve_provider(input.provider(), &ProviderOverrides::default())
+            .and_then(|resolved| runtime.block_on(execute_revoke(&resolved, input)));
+        match result {
+            Ok(()) => match output {
+                cli::OutputFormat::Text => {
+                    println!(
+                        "{}",
+                        format_revoke_result(input.provider(), input.token_id())
+                    );
+                }
+                cli::OutputFormat::Json => {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "status": "ok",
+                            "command": "revoke",
+                            "provider": input.provider(),
+                            "token_id": input.token_id(),
+                            "message": format_revoke_result(input.provider(), input.token_id()),
+                        })
+                    );
+                }
+            },
+            Err(err) => failures.push(err),
         }
-        cli::OutputFormat::Json => {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "status": "ok",
-                    "command": "revoke",
-                    "provider": input.provider(),
-                    "token_id": input.token_id(),
-                    "message": format_revoke_result(input.provider(), input.token_id()),
-                })
-            );
-        }
+    }
+
+    if let Some(first) = failures.pop() {
+        return Err(if failures.is_empty() {
+            first
+        } else {
+            failures.push(first);
+            noscope::Error::multi(failures)
+        });
     }
     Ok(cli::SUCCESS_EXIT_CODE)
 }
 
 fn cmd_validate(args: cli::ValidateArgs, output: cli::OutputFormat) -> Result<i32, noscope::Error> {
-    let client = Client::new(ClientOptions::default())?;
+    let client = Client::new(ClientOptions {
+        xdg_config_home: std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+        ..ClientOptions::default()
+    })?;
     let resolved = client.resolve_provider(&args.provider, &ProviderOverrides::default())?;
     noscope::provider::validate_provider(&resolved)?;
 
@@ -502,7 +524,10 @@ mod validate_wiring_tests {
 }
 
 fn cmd_dry_run(args: cli::DryRunArgs, output: cli::OutputFormat) -> Result<i32, noscope::Error> {
-    let client = Client::new(ClientOptions::default())?;
+    let client = Client::new(ClientOptions {
+        xdg_config_home: std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+        ..ClientOptions::default()
+    })?;
     let resolved = client.resolve_provider(&args.provider, &ProviderOverrides::default())?;
     match output {
         cli::OutputFormat::Text => {
@@ -700,18 +725,38 @@ mod revoke_wiring_tests {
 
     #[test]
     fn revoke_builds_revoke_input_from_flags() {
-        let input = revoke_input_from_cli(false, "", Some("tok-123"), Some("aws")).unwrap();
-        assert_eq!(input.token_id(), "tok-123");
-        assert_eq!(input.provider(), "aws");
+        let inputs = revoke_inputs_from_cli(false, "", Some("tok-123"), Some("aws")).unwrap();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].token_id(), "tok-123");
+        assert_eq!(inputs[0].provider(), "aws");
     }
 
     #[test]
     fn revoke_builds_revoke_input_from_stdin_json() {
         let stdin = r#"{"token":"secret","token_id":"tok-9","provider":"vault","role":"ops"}"#;
 
-        let input = revoke_input_from_cli(true, stdin, None, None).unwrap();
-        assert_eq!(input.token_id(), "tok-9");
-        assert_eq!(input.provider(), "vault");
+        let inputs = revoke_inputs_from_cli(true, stdin, None, None).unwrap();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].token_id(), "tok-9");
+        assert_eq!(inputs[0].provider(), "vault");
+    }
+
+    #[test]
+    fn revoke_accepts_mint_envelope_array_from_stdin() {
+        // `noscope mint` emits a JSON array (NS-063); the pipeline
+        // `noscope mint ... | noscope revoke --from-stdin` must revoke
+        // every envelope in it.
+        let stdin = r#"[
+            {"token":"s1","token_id":"tok-a","provider":"aws","role":"ops"},
+            {"token":"s2","token_id":"tok-g","provider":"gcp","role":"ops"}
+        ]"#;
+
+        let inputs = revoke_inputs_from_cli(true, stdin, None, None).unwrap();
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0].token_id(), "tok-a");
+        assert_eq!(inputs[0].provider(), "aws");
+        assert_eq!(inputs[1].token_id(), "tok-g");
+        assert_eq!(inputs[1].provider(), "gcp");
     }
 
     #[test]

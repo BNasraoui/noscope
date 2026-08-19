@@ -485,6 +485,10 @@ pub async fn execute_provider_command(
     if argv.len() > 1 {
         cmd.args(&argv[1..]);
     }
+    // If the caller's future is dropped (e.g. the orchestrator's NS-046
+    // per-provider timeout fires), the provider must not keep running and
+    // mint a credential nobody ever sees.
+    cmd.kill_on_drop(true);
     cmd.env_clear();
     for (k, v) in &env {
         cmd.env(k, v);
