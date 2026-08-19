@@ -6,18 +6,13 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use noscope::app::mint::format_mint_failed_providers;
 use noscope::app::resolve::CredentialSource;
 use noscope::app::revoke::{
     execute_revoke, format_revoke_result, revoke_input_from_cli, revoke_minted_tokens,
-    revoke_on_shutdown_signal,
 };
 use noscope::cli::{self, Command};
-use noscope::run_signal_wiring::{
-    dispatch_pending_parent_signals, RunSignalWiring, SignalProcess, SignalRevoker,
-};
 use noscope::{Client, ClientOptions, ProviderOverrides};
 
 fn main() -> ExitCode {
@@ -145,83 +140,21 @@ fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, noscope::Error> {
         Err(other) => return Err(other.into()),
     };
 
-    let env = cred_set
-        .env_map()
-        .into_iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
     let child_command = args.child_args[0].clone();
     let child_argv = args.child_args[1..].to_vec();
-    let child_exit = run_child_with_os_signals(&child_command, &child_argv, env, || {
-        revoke_on_shutdown_signal(&runtime, resolved_by_name.as_ref(), &cred_set);
-        Ok(())
-    })?;
+    let child_exit = noscope::app::run::run_supervised(
+        &child_command,
+        &child_argv,
+        &runtime,
+        &resolved_by_name,
+        &cred_set,
+    )?;
 
     Ok(child_exit)
 }
 
-fn run_child_with_os_signals<F>(
-    command: &str,
-    args: &[String],
-    env: std::collections::HashMap<String, String>,
-    mut revoke_all: F,
-) -> Result<i32, noscope::Error>
-where
-    F: FnMut() -> Result<(), noscope::Error>,
-{
-    let mut process = match noscope::agent_process::AgentProcess::spawn(
-        noscope::agent_process::AgentProcessConfig {
-            command: command.to_string(),
-            args: args.to_vec(),
-            mode: noscope::agent_process::AgentMode::Run,
-            injected_env: env,
-            force_env: true,
-            timeout: None,
-        },
-    ) {
-        Ok(process) => process,
-        Err(e) => {
-            let _ = revoke_all();
-            return Err(noscope::Error::internal(&format!("{}", e)));
-        }
-    };
-
-    let mut signals =
-        signal_hook::iterator::Signals::new([libc::SIGTERM, libc::SIGINT, libc::SIGHUP]).map_err(
-            |e| noscope::Error::internal(&format!("failed to register signal handlers: {}", e)),
-        )?;
-
-    let mut wiring = RunSignalWiring::default();
-    let mut process_adapter = AgentProcessSignalAdapter {
-        inner: &mut process,
-    };
-
-    loop {
-        let mut revoker = ClosureRevoker {
-            revoke_all: &mut revoke_all,
-        };
-        dispatch_pending_parent_signals(
-            signals.pending(),
-            &mut wiring,
-            &mut process_adapter,
-            &mut revoker,
-        )
-        .map_err(|e| noscope::Error::internal(&format!("failed during signal handling: {}", e)))?;
-
-        if let Some(exit_code) = process_adapter
-            .inner
-            .try_wait_exit_code()
-            .map_err(|e| noscope::Error::internal(&format!("{}", e)))?
-        {
-            if !wiring.revoke_attempted() {
-                revoke_all()?;
-            }
-            return Ok(exit_code);
-        }
-
-        std::thread::sleep(Duration::from_millis(20));
-    }
-}
+#[cfg(test)]
+use noscope::run_signal_wiring::{RunSignalWiring, SignalProcess};
 
 #[cfg(test)]
 struct RunModeSignalPollOutcome {
@@ -254,7 +187,7 @@ where
     P: SignalProcess,
     F: FnMut() -> Result<(), noscope::Error>,
 {
-    let mut revoker = ClosureRevoker { revoke_all };
+    let mut revoker = noscope::app::run::ClosureRevoker { revoke_all };
     wiring
         .on_parent_signal(signal, process, &mut revoker)
         .map_err(|e| noscope::Error::internal(&format!("failed during signal handling: {}", e)))?;
@@ -262,34 +195,6 @@ where
     Ok(RunModeSignalPollOutcome {
         signal_processed: true,
     })
-}
-
-struct AgentProcessSignalAdapter<'a> {
-    inner: &'a mut noscope::agent_process::AgentProcess,
-}
-
-impl SignalProcess for AgentProcessSignalAdapter<'_> {
-    fn forward_signal(&mut self, sig: i32) -> Result<(), std::io::Error> {
-        self.inner
-            .forward_signal(sig)
-            .map_err(|e| std::io::Error::other(format!("{}", e)))
-    }
-}
-
-struct ClosureRevoker<'a, F>
-where
-    F: FnMut() -> Result<(), noscope::Error>,
-{
-    revoke_all: &'a mut F,
-}
-
-impl<F> SignalRevoker for ClosureRevoker<'_, F>
-where
-    F: FnMut() -> Result<(), noscope::Error>,
-{
-    fn revoke_all(&mut self) -> Result<(), std::io::Error> {
-        (self.revoke_all)().map_err(|e| std::io::Error::other(e.to_string()))
-    }
 }
 
 fn cmd_mint(args: cli::MintArgs, verbose: bool) -> Result<i32, noscope::Error> {

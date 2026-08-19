@@ -7,3 +7,4 @@
 pub mod mint;
 pub mod resolve;
 pub mod revoke;
+pub mod run;

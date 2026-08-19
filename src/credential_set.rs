@@ -313,6 +313,11 @@ impl CredentialSet {
         self.entries.iter().map(|(_, token)| token)
     }
 
+    /// Iterate over (spec, token) pairs.
+    pub fn entries(&self) -> impl Iterator<Item = (&CredentialSpec, &ScopedToken)> {
+        self.entries.iter().map(|(spec, token)| (spec, token))
+    }
+
     /// NS-048: Compute independent refresh schedules for all credentials.
     ///
     /// Each credential gets its own schedule based on its own expires_at.
