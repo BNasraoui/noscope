@@ -1,7 +1,8 @@
-// The workflowd integration contract, driven through the real binary
-// (source_workflowd_integration_brief): caller-chosen env key,
-// provider-supplied lease identity, no group survivors after child
-// exit, and a scheduled restart before credential expiry.
+// The contract a supervised consumer relies on, driven through the
+// real binary: caller-chosen env key, provider-supplied lease
+// identity, no group survivors after child exit, and a scheduled
+// restart before credential expiry. Landed from
+// source_workflowd_integration_brief; the behaviors are generic.
 
 use provenance_macros::verifies;
 use std::fs;
@@ -42,7 +43,7 @@ fn iso_in(seconds: i64) -> String {
         .to_string()
 }
 
-/// The workflowd unit shape: the credential arrives under the
+/// The systemd-unit shape: the credential arrives under the
 /// caller-chosen name, as content.
 #[test]
 #[verifies("rule_env_key_flag", conformance)]
@@ -58,21 +59,18 @@ fn env_key_flag_delivers_credential_under_chosen_name() {
     );
     write_provider_config(tmp.path(), "nats", mint.to_string_lossy().as_ref());
 
-    let child = format!(
-        "printf '%s' \"$WORKFLOWD_NATS_CREDS\" > {}",
-        marker.display()
-    );
+    let child = format!("printf '%s' \"$SERVICE_NATS_CREDS\" > {}", marker.display());
     let output = noscope(tmp.path())
         .args([
             "run",
             "--provider",
             "nats",
             "--role",
-            "workflowd-coordinator",
+            "coordinator",
             "--ttl",
             "3600",
             "--env-key",
-            "WORKFLOWD_NATS_CREDS",
+            "SERVICE_NATS_CREDS",
             "--",
             "sh",
             "-c",
@@ -89,7 +87,7 @@ fn env_key_flag_delivers_credential_under_chosen_name() {
     let recorded = fs::read_to_string(&marker).expect("child must have seen the env var");
     assert!(
         recorded.contains("BEGIN NATS USER JWT"),
-        "WORKFLOWD_NATS_CREDS must carry the creds content: {}",
+        "SERVICE_NATS_CREDS must carry the creds content: {}",
         recorded
     );
 }
@@ -105,7 +103,7 @@ fn provider_supplied_token_id_reaches_the_envelope() {
     write_executable(
         &mint,
         "#!/bin/sh\n\
-         printf '{\"token\":\"creds\",\"token_id\":\"UAWORKFLOWDRUNNERKEY\",\"expires_at\":\"2099-01-01T00:00:00Z\"}'\n",
+         printf '{\"token\":\"creds\",\"token_id\":\"UARUNNERUSERPUBKEY\",\"expires_at\":\"2099-01-01T00:00:00Z\"}'\n",
     );
     write_provider_config(tmp.path(), "nats", mint.to_string_lossy().as_ref());
 
@@ -115,7 +113,7 @@ fn provider_supplied_token_id_reaches_the_envelope() {
             "--provider",
             "nats",
             "--role",
-            "workflowd-runner-ben-arch",
+            "runner-host-01",
             "--ttl",
             "3600",
             "--force-terminal",
@@ -131,7 +129,7 @@ fn provider_supplied_token_id_reaches_the_envelope() {
     let envelopes: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("mint stdout must be JSON");
     assert_eq!(
-        envelopes[0]["token_id"], "UAWORKFLOWDRUNNERKEY",
+        envelopes[0]["token_id"], "UARUNNERUSERPUBKEY",
         "the provider-supplied lease identifier must reach the envelope"
     );
 }

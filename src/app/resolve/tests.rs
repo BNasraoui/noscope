@@ -214,11 +214,11 @@ fn direct_env_key_names_the_credential_variable() {
         providers: vec!["aws".to_string()],
         role: "admin".to_string(),
         ttl_secs: 3600,
-        env_key: Some("WORKFLOWD_NATS_CREDS".to_string()),
+        env_key: Some("SERVICE_NATS_CREDS".to_string()),
     };
 
     let (specs, _) = resolve_specs_and_providers(&client, &source, Some(tmp.path())).unwrap();
-    assert_eq!(specs[0].env_key, "WORKFLOWD_NATS_CREDS");
+    assert_eq!(specs[0].env_key, "SERVICE_NATS_CREDS");
 }
 
 #[test]
