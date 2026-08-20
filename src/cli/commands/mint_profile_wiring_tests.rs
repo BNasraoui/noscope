@@ -21,6 +21,7 @@ fn write_provider_config(xdg: &Path, provider: &str, mint_cmd: &str) {
 }
 
 fn scoped_env<T>(key: &str, value: &Path, f: impl FnOnce() -> T) -> T {
+    let _env_guard = super::env_guard();
     let old = std::env::var_os(key);
     // SAFETY: test-local env mutation, restored before return.
     unsafe {

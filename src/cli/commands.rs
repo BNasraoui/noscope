@@ -530,5 +530,56 @@ fn global_signal_test_lock() -> &'static std::sync::Mutex<()> {
     LOCK.get_or_init(|| std::sync::Mutex::new(()))
 }
 
+/// Serializes tests that register process-wide signal handlers or raise
+/// real signals. Poison-tolerant so one failing test does not cascade.
+/// Lock order: this guard first, then [`env_guard`], never the reverse.
+#[cfg(test)]
+pub(crate) fn signal_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    global_signal_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+thread_local! {
+    static ENV_GUARD_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Held by tests that mutate process-global environment variables.
+/// std::env::set_var races concurrent readers (provider resolution reads
+/// NOSCOPE_MINT_CMD and XDG_CONFIG_HOME), so env-mutating scopes are
+/// serialized. Reentrant per thread: nested scoped_env helpers share one
+/// lock acquisition.
+#[cfg(test)]
+pub(crate) struct EnvGuard {
+    _lock: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+#[cfg(test)]
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        ENV_GUARD_DEPTH.with(|depth| depth.set(depth.get() - 1));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn env_guard() -> EnvGuard {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let lock = ENV_GUARD_DEPTH.with(|depth| {
+        let current = depth.get();
+        depth.set(current + 1);
+        if current == 0 {
+            Some(
+                LOCK.get_or_init(|| std::sync::Mutex::new(()))
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            )
+        } else {
+            None
+        }
+    });
+    EnvGuard { _lock: lock }
+}
+
 #[cfg(test)]
 mod run_mode_os_signal_e2e_tests;
