@@ -9,6 +9,7 @@ fn write_non_executable_file(path: &Path) {
 }
 
 fn scoped_env_var<T>(key: &str, value: impl AsRef<std::ffi::OsStr>, f: impl FnOnce() -> T) -> T {
+    let _env_guard = super::env_guard();
     let old = std::env::var_os(key);
     unsafe {
         std::env::set_var(key, value);

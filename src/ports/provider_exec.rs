@@ -34,6 +34,9 @@ pub const MAX_STDERR_CAPTURE_BYTES: usize = 4096;
 pub struct ProviderOutput {
     /// The raw token string from the provider.
     pub token: String,
+    /// Provider-supplied lease identifier (e.g. a NATS user public key).
+    /// `None` when the provider does not name its leases.
+    pub token_id: Option<String>,
     /// The expiry time — either from the provider or computed from TTL.
     pub expires_at: DateTime<Utc>,
     /// Whether the provider explicitly supplied `expires_at`.
@@ -193,6 +196,14 @@ pub fn parse_provider_output(
         });
     }
 
+    // 'token_id' is optional. The provider names its lease when the
+    // identifier matters for revocation (rule_provider_supplied_token_id).
+    let token_id = parsed
+        .get("token_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
     // 'expires_at' is optional.
     let (expires_at, provided) = match parsed.get("expires_at").and_then(|v| v.as_str()) {
         Some(s) => {
@@ -210,6 +221,7 @@ pub fn parse_provider_output(
 
     Ok(ProviderOutput {
         token: token.to_string(),
+        token_id,
         expires_at,
         expires_at_provided: provided,
     })

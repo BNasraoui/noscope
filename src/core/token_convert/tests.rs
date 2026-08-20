@@ -376,3 +376,36 @@ fn conversion_result_token_accessible() {
     assert_eq!(result.token.provider(), "aws");
     assert_eq!(result.token.token_id(), Some("tid-x"));
 }
+
+#[test]
+#[verifies("rule_provider_supplied_token_id", examples)]
+fn provider_supplied_token_id_wins_over_fallback() {
+    let output = crate::ports::provider_exec::parse_provider_output(
+        r#"{"token": "creds", "token_id": "UANATSUSERKEY", "expires_at": "2099-01-01T00:00:00Z"}"#,
+        3600,
+    )
+    .unwrap();
+    let token = super::provider_output_to_scoped_token(
+        output,
+        "role",
+        Some("tok-nats".to_string()),
+        "nats",
+    );
+    assert_eq!(token.token_id(), Some("UANATSUSERKEY"));
+}
+
+#[test]
+fn synthetic_token_id_is_the_fallback() {
+    let output = crate::ports::provider_exec::parse_provider_output(
+        r#"{"token": "creds", "expires_at": "2099-01-01T00:00:00Z"}"#,
+        3600,
+    )
+    .unwrap();
+    let token = super::provider_output_to_scoped_token(
+        output,
+        "role",
+        Some("tok-nats".to_string()),
+        "nats",
+    );
+    assert_eq!(token.token_id(), Some("tok-nats"));
+}

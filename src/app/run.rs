@@ -10,7 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use provenance_macros::rule;
 use secrecy::SecretString;
 
 use crate::app::revoke::revoke_on_shutdown_signal;
@@ -21,6 +22,7 @@ use crate::core::token::ScopedToken;
 use crate::core::token_convert::provider_output_to_scoped_token;
 use crate::ports::agent_process::{AgentMode, AgentProcess, AgentProcessConfig};
 use crate::ports::command_parse::parse_command;
+use crate::ports::process_group::{terminate_group_for_mode, ProcessGroupMode};
 use crate::ports::provider::ResolvedProvider;
 use crate::ports::provider_exec::{self, ExecConfig};
 use crate::ports::run_signal_wiring::{
@@ -64,6 +66,7 @@ pub fn run_supervised(
     runtime: &tokio::runtime::Runtime,
     resolved_by_name: &Arc<HashMap<String, ResolvedProvider>>,
     cred_set: &CredentialSet,
+    restart_before_expiry: Option<Duration>,
 ) -> Result<i32, Error> {
     let env = cred_set
         .env_map()
@@ -120,12 +123,15 @@ pub fn run_supervised(
         signal_hook::iterator::Signals::new([libc::SIGTERM, libc::SIGINT, libc::SIGHUP])
             .map_err(|e| Error::internal(&format!("failed to register signal handlers: {}", e)))?;
 
+    let child_pid = process.pid();
     let mut wiring = RunSignalWiring::default();
     let mut process_adapter = AgentProcessSignalAdapter {
         inner: &mut process,
     };
     let expiry_policy = ExpiryPolicy;
     let mut expiry_warned: HashSet<String> = HashSet::new();
+    let earliest_expiry = cred_set.entries().map(|(_, t)| t.expires_at()).min();
+    let mut restart_signaled = false;
 
     loop {
         let mut revoker = ClosureRevoker {
@@ -147,10 +153,24 @@ pub fn run_supervised(
             if !wiring.revoke_attempted() {
                 revoke_all()?;
             }
+            terminate_child_group(child_pid);
             return Ok(exit_code);
         }
 
         let now = Utc::now();
+        if let (Some(margin), Some(earliest), false) =
+            (restart_before_expiry, earliest_expiry, restart_signaled)
+        {
+            if restart_due(now, earliest, margin) {
+                eprintln!(
+                    "noscope: stopping child {}s before credential expiry for a \
+                     scheduled re-mint on restart",
+                    margin.as_secs()
+                );
+                let _ = process_adapter.forward_signal(libc::SIGTERM);
+                restart_signaled = true;
+            }
+        }
         if let Some(refresh) = refresh_loop.as_mut() {
             if matches!(refresh.next_wake_delay(now), Some(delay) if delay.is_zero()) {
                 run_refresh_tick(refresh, runtime, resolved_by_name, cred_set, now);
@@ -165,6 +185,22 @@ pub fn run_supervised(
         );
 
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// A scheduled restart is due when the earliest credential expiry is
+/// nearer than the caller's margin.
+#[rule("rule_restart_before_expiry")]
+fn restart_due(now: DateTime<Utc>, earliest_expiry: DateTime<Utc>, margin: Duration) -> bool {
+    earliest_expiry - chrono::Duration::from_std(margin).unwrap_or_default() <= now
+}
+
+/// After the child exits, nothing from its process group may survive.
+/// SIGTERM to a group that is already empty is a no-op.
+#[rule("rule_group_termination_on_exit")]
+fn terminate_child_group(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        let _ = terminate_group_for_mode(ProcessGroupMode::Run, pid as libc::pid_t);
     }
 }
 
@@ -305,3 +341,6 @@ fn warn_expired_credentials(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

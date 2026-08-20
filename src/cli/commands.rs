@@ -41,6 +41,7 @@ pub fn run_cli() -> ExitCode {
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use crate::app::mint::format_mint_failed_providers;
 use crate::app::resolve::CredentialSource;
@@ -102,6 +103,7 @@ fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, crate::Error> {
         args.provider.clone(),
         args.role.clone(),
         args.ttl,
+        args.env_key.clone(),
     )?;
     let (specs, resolved_by_name) = crate::app::resolve::resolve_specs_and_providers(
         &client,
@@ -150,6 +152,7 @@ fn cmd_run(args: cli::RunArgs, verbose: bool) -> Result<i32, crate::Error> {
         &runtime,
         &resolved_by_name,
         &cred_set,
+        args.restart_before_expiry.map(Duration::from_secs),
     )?;
 
     Ok(child_exit)
@@ -212,8 +215,13 @@ fn cmd_mint(args: cli::MintArgs, verbose: bool) -> Result<i32, crate::Error> {
 
     client.check_stdout_not_terminal(std::io::stdout().is_terminal())?;
 
-    let source =
-        CredentialSource::from_cli(args.profile.clone(), args.provider, args.role, args.ttl)?;
+    let source = CredentialSource::from_cli(
+        args.profile.clone(),
+        args.provider,
+        args.role,
+        args.ttl,
+        args.env_key,
+    )?;
     let (specs, resolved_by_name) = crate::app::resolve::resolve_specs_and_providers(
         &client,
         &source,
@@ -520,6 +528,57 @@ mod rollback_budget_wiring_tests;
 fn global_signal_test_lock() -> &'static std::sync::Mutex<()> {
     static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
     LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+/// Serializes tests that register process-wide signal handlers or raise
+/// real signals. Poison-tolerant so one failing test does not cascade.
+/// Lock order: this guard first, then [`env_guard`], never the reverse.
+#[cfg(test)]
+pub(crate) fn signal_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    global_signal_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+thread_local! {
+    static ENV_GUARD_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Held by tests that mutate process-global environment variables.
+/// std::env::set_var races concurrent readers (provider resolution reads
+/// NOSCOPE_MINT_CMD and XDG_CONFIG_HOME), so env-mutating scopes are
+/// serialized. Reentrant per thread: nested scoped_env helpers share one
+/// lock acquisition.
+#[cfg(test)]
+pub(crate) struct EnvGuard {
+    _lock: Option<std::sync::MutexGuard<'static, ()>>,
+}
+
+#[cfg(test)]
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        ENV_GUARD_DEPTH.with(|depth| depth.set(depth.get() - 1));
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn env_guard() -> EnvGuard {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let lock = ENV_GUARD_DEPTH.with(|depth| {
+        let current = depth.get();
+        depth.set(current + 1);
+        if current == 0 {
+            Some(
+                LOCK.get_or_init(|| std::sync::Mutex::new(()))
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            )
+        } else {
+            None
+        }
+    });
+    EnvGuard { _lock: lock }
 }
 
 #[cfg(test)]

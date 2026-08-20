@@ -153,6 +153,11 @@ impl AgentProcess {
     }
 
     #[rule("rule_signals_forward_to_group")]
+    /// The child's process id, until the child has been waited.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.as_ref().map(|c| c.id())
+    }
+
     pub fn forward_signal(&mut self, signal: libc::c_int) -> Result<(), AgentProcessError> {
         let child = self.child.as_ref().ok_or_else(|| AgentProcessError::Io {
             context: "child already waited",

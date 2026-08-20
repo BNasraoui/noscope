@@ -48,12 +48,15 @@ fn make_run_args(child_script: &Path) -> cli::RunArgs {
         role: Some("admin".to_string()),
         ttl: Some(3600),
         profile: None,
+        env_key: None,
+        restart_before_expiry: None,
         log_format: "text".to_string(),
         child_args: vec![child_script.to_string_lossy().to_string()],
     }
 }
 
 fn scoped_xdg_config_home<T>(value: &Path, f: impl FnOnce() -> T) -> T {
+    let _env_guard = super::env_guard();
     let old = std::env::var_os("XDG_CONFIG_HOME");
     unsafe {
         std::env::set_var("XDG_CONFIG_HOME", value);
@@ -91,7 +94,7 @@ fn spawn_parent_signals_after_child_ready(
 
 #[test]
 fn ns_026_run_mode_forwards_real_sigterm_sigint_sighup_via_cmd_run_path() {
-    let _guard = global_signal_test_lock().lock().unwrap();
+    let _guard = super::signal_test_guard();
     clear_pending_parent_signals();
 
     let cases = [
@@ -157,7 +160,7 @@ fn ns_026_run_mode_forwards_real_sigterm_sigint_sighup_via_cmd_run_path() {
 
 #[test]
 fn ns_003_run_mode_attempts_revoke_on_real_shutdown_signal_via_cmd_run_path() {
-    let _guard = global_signal_test_lock().lock().unwrap();
+    let _guard = super::signal_test_guard();
     clear_pending_parent_signals();
 
     let tmp = tempfile::tempdir().unwrap();
@@ -213,7 +216,7 @@ fn ns_003_run_mode_attempts_revoke_on_real_shutdown_signal_via_cmd_run_path() {
 
 #[test]
 fn ns_028_run_mode_double_real_signal_escalates_to_sigkill_via_cmd_run_path() {
-    let _guard = global_signal_test_lock().lock().unwrap();
+    let _guard = super::signal_test_guard();
     clear_pending_parent_signals();
 
     let tmp = tempfile::tempdir().unwrap();

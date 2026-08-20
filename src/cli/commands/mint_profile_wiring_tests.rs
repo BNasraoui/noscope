@@ -21,6 +21,7 @@ fn write_provider_config(xdg: &Path, provider: &str, mint_cmd: &str) {
 }
 
 fn scoped_env<T>(key: &str, value: &Path, f: impl FnOnce() -> T) -> T {
+    let _env_guard = super::env_guard();
     let old = std::env::var_os(key);
     // SAFETY: test-local env mutation, restored before return.
     unsafe {
@@ -61,6 +62,7 @@ fn cmd_mint_with_profile_mints_from_profile_credentials() {
         role: None,
         ttl: None,
         profile: Some("dev".to_string()),
+        env_key: None,
         force_terminal: true,
     };
 
@@ -79,6 +81,7 @@ fn cmd_mint_without_profile_still_requires_provider_role_ttl() {
         role: Some("admin".to_string()),
         ttl: Some(3600),
         profile: None,
+        env_key: None,
         force_terminal: true,
     };
 

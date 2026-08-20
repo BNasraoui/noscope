@@ -203,3 +203,54 @@ fn profile_rejects_duplicate_env_keys() {
         "duplicate env keys must be rejected"
     );
 }
+
+#[test]
+#[verifies("rule_env_key_flag", examples)]
+fn direct_env_key_names_the_credential_variable() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_aws_provider(tmp.path());
+    let client = client_for(tmp.path());
+    let source = CredentialSource::Direct {
+        providers: vec!["aws".to_string()],
+        role: "admin".to_string(),
+        ttl_secs: 3600,
+        env_key: Some("SERVICE_NATS_CREDS".to_string()),
+    };
+
+    let (specs, _) = resolve_specs_and_providers(&client, &source, Some(tmp.path())).unwrap();
+    assert_eq!(specs[0].env_key, "SERVICE_NATS_CREDS");
+}
+
+#[test]
+fn direct_env_key_defaults_to_provider_token() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_aws_provider(tmp.path());
+    let client = client_for(tmp.path());
+    let source = CredentialSource::Direct {
+        providers: vec!["aws".to_string()],
+        role: "admin".to_string(),
+        ttl_secs: 3600,
+        env_key: None,
+    };
+
+    let (specs, _) = resolve_specs_and_providers(&client, &source, Some(tmp.path())).unwrap();
+    assert_eq!(specs[0].env_key, "AWS_TOKEN");
+}
+
+#[test]
+fn direct_env_key_rejects_multiple_providers() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_aws_provider(tmp.path());
+    let client = client_for(tmp.path());
+    let source = CredentialSource::Direct {
+        providers: vec!["aws".to_string(), "gcp".to_string()],
+        role: "admin".to_string(),
+        ttl_secs: 3600,
+        env_key: Some("ONE_KEY".to_string()),
+    };
+
+    assert!(
+        resolve_specs_and_providers(&client, &source, Some(tmp.path())).is_err(),
+        "one env key cannot name two credentials"
+    );
+}

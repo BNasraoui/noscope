@@ -116,6 +116,16 @@ pub struct RunArgs {
     #[arg(long)]
     pub profile: Option<String>,
 
+    /// Environment variable name for the minted credential.
+    /// Requires exactly one --provider; defaults to `<PROVIDER>_TOKEN`.
+    #[arg(long, conflicts_with = "profile")]
+    pub env_key: Option<String>,
+
+    /// Stop the child this many seconds before the earliest credential
+    /// expiry, so the supervisor's restart re-mints on schedule.
+    #[arg(long, value_name = "SECONDS")]
+    pub restart_before_expiry: Option<u64>,
+
     /// Runtime event log format written to stderr (`text` or `json`).
     /// This only affects runtime event logs on stderr and does not change --output.
     #[arg(long, default_value = "text")]
@@ -145,6 +155,11 @@ pub struct MintArgs {
     /// When set, this cannot be combined with --provider, --role, or --ttl.
     #[arg(long)]
     pub profile: Option<String>,
+
+    /// Environment variable name for the minted credential.
+    /// Requires exactly one --provider; defaults to `<PROVIDER>_TOKEN`.
+    #[arg(long, conflicts_with = "profile")]
+    pub env_key: Option<String>,
 
     /// Allow output to a terminal.
     #[arg(long)]

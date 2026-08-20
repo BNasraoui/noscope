@@ -39,12 +39,15 @@ fn make_run_args(
         role: Some(role.to_string()),
         ttl: Some(ttl),
         profile,
+        env_key: None,
+        restart_before_expiry: None,
         log_format: log_format.to_string(),
         child_args,
     }
 }
 
 fn scoped_env<T>(key: &str, value: &Path, f: impl FnOnce() -> T) -> T {
+    let _env_guard = super::env_guard();
     let old = std::env::var_os(key);
     // SAFETY: test-local env mutation, restored before return.
     unsafe {
@@ -70,6 +73,7 @@ fn scoped_env<T>(key: &str, value: &Path, f: impl FnOnce() -> T) -> T {
 
 #[test]
 fn run_resolves_providers_from_cli_args() {
+    let _signal_guard = super::signal_test_guard();
     let args = make_run_args(
         vec!["missing-provider".to_string()],
         "admin",
@@ -88,6 +92,7 @@ fn run_resolves_providers_from_cli_args() {
 
 #[test]
 fn run_resolves_providers_from_profile() {
+    let _signal_guard = super::signal_test_guard();
     let tmp = tempfile::tempdir().unwrap();
     let profile_dir = tmp.path().join("noscope").join("profiles");
     fs::create_dir_all(&profile_dir).unwrap();
@@ -140,6 +145,7 @@ fn run_resolves_providers_from_profile() {
 
 #[test]
 fn run_mints_credentials_before_spawn() {
+    let _signal_guard = super::signal_test_guard();
     let tmp = tempfile::tempdir().unwrap();
     let mint_marker = tmp.path().join("mint-called.txt");
     let child = tmp.path().join("child.sh");
@@ -181,6 +187,7 @@ fn run_mints_credentials_before_spawn() {
 
 #[test]
 fn run_spawns_child_with_injected_env_vars() {
+    let _signal_guard = super::signal_test_guard();
     let tmp = tempfile::tempdir().unwrap();
     let child_out = tmp.path().join("child-env.txt");
     let child = tmp.path().join("child.sh");
@@ -226,6 +233,7 @@ fn run_spawns_child_with_injected_env_vars() {
 
 #[test]
 fn run_waits_for_exit_and_returns_child_code() {
+    let _signal_guard = super::signal_test_guard();
     let tmp = tempfile::tempdir().unwrap();
     let child = tmp.path().join("child.sh");
     let mint = tmp.path().join("mint.sh");
@@ -263,6 +271,7 @@ fn run_waits_for_exit_and_returns_child_code() {
 
 #[test]
 fn run_revokes_all_credentials_before_exit() {
+    let _signal_guard = super::signal_test_guard();
     let tmp = tempfile::tempdir().unwrap();
     let revoke_log = tmp.path().join("revoke.log");
     let child = tmp.path().join("child.sh");
@@ -332,6 +341,7 @@ fn run_revokes_all_credentials_before_exit() {
 
 #[test]
 fn run_revokes_credentials_if_child_fails_to_spawn() {
+    let _signal_guard = super::signal_test_guard();
     let tmp = tempfile::tempdir().unwrap();
     let revoke_log = tmp.path().join("revoke.log");
 
