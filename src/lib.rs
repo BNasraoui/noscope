@@ -12,6 +12,11 @@ pub mod cli;
 pub mod core;
 pub mod ports;
 
+// The requirements-as-code declaration. It is feature-gated because the
+// Provenance SDK is authoring tooling, not part of the shipped binary.
+#[cfg(feature = "provenance-spec")]
+pub mod provenance_spec;
+
 pub use app::client::{Client, ClientOptions, MintRequest, ProviderOverrides};
 pub use core::error::{Error, ErrorKind};
 pub use core::exit_code::{NoscopeExitCode, ProviderExitCode};
