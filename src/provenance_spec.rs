@@ -1,0 +1,539 @@
+//! Requirements-as-code: the NoScope Provenance requirement declarations.
+//!
+//! This module is the maintainable source for every active NoScope
+//! Requirement. The `noscope-provenance-spec` bin materializes it as a typed
+//! desired-state document, which `provenance sdk plan` and `provenance sdk
+//! apply` reconcile against `.provenance/state`.
+//!
+//! Every declaration carries `adopt_unowned` with the identifier the record
+//! already holds, so reconciliation binds to the existing node instead of
+//! minting a new one. Statements, names, and descriptions are the ones the
+//! graph already stores, so an apply reports no statement changes.
+//!
+//! The Source and the four Rules below are declared because adoption refuses
+//! to take ownership of a Requirement whose relationships the document would
+//! drop. Every other Rule, Resolution, and Source stays undeclared and
+//! therefore unowned: retirement is gated on spec ownership, so those records
+//! and their edges are untouched.
+
+use provenance_sdk::{
+    requirement, rule, source, spec, AuthoringError, SourceBuilder, SpecDocument, TypedSpecInput,
+};
+
+/// The spec key that owns the NoScope declarations.
+pub const SPEC_KEY: &str = "noscope";
+
+/// The declaration owner recorded on every record this document adopts.
+pub const DECLARED_BY: &str = "spec://rust/noscope";
+
+/// The number of active Requirements this module declares.
+pub const DECLARED_REQUIREMENTS: usize = 70;
+
+/// The number of Rules this module declares to keep Requirement edges.
+pub const DECLARED_RULES: usize = 4;
+
+/// The identifier of the brief the workflowd Requirements cite.
+pub const WORKFLOWD_BRIEF_ID: &str = "source_workflowd_integration_brief";
+
+/// The source type the brief holds in the graph.
+///
+/// [`SourceBuilder`] emits `document` for every source it declares, so a
+/// document built only from the fluent API would move the brief off
+/// `external_integration`. Reconciliation reports that as a conflict rather
+/// than applying it, so [`desired_state`] restores the kind the brief already
+/// carries. See `docs/provenance-source-kind-reproducer.md`.
+const WORKFLOWD_BRIEF_KIND: &str = "external_integration";
+
+/// The brief the workflowd integration Requirements cite.
+fn workflowd_brief() -> SourceBuilder {
+    source("workflowd-integration-brief")
+        .adopt_unowned("source_workflowd_integration_brief")
+        .name("workflowd integration brief (agent-authored, relayed by Ben Nasraoui 2026-08-19)")
+        .document("session:824f8174 workflowd-agent brief")
+}
+
+/// Builds the frozen NoScope declaration document.
+///
+/// # Errors
+///
+/// Returns [`AuthoringError`] when a declaration fails kernel validation.
+pub fn document() -> Result<SpecDocument, AuthoringError> {
+    spec(SPEC_KEY)
+        .requirements([
+            requirement("cli-help-content")
+                .adopt_unowned("req_cli_help_content")
+                .statement(
+                    "Help text speaks to operators. It carries concrete run, mint, and revoke examples. It explains that the profile flag excludes the credential flags. It never shows internal rule identifiers.",
+                )
+                .description("cli help content"),
+            requirement("cli-help-version-exit")
+                .adopt_unowned("req_cli_help_version_exit")
+                .statement(
+                    "The binary hands help output, version output, and argument parse errors to the argument parser, which prints them and exits. The parser writes help and version text to standard output and exits 0. It writes a usage error and exits 2.",
+                )
+                .description("cli help version exit"),
+            requirement("cli-json-success-object")
+                .adopt_unowned("req_cli_json_success_object")
+                .statement(
+                    "In JSON output mode the dry-run, validate, and revoke commands each write one JSON object to standard output. Each object carries an ok status, the command name, and the provider.",
+                )
+                .description("cli json success object"),
+            requirement("cli-no-token-flag")
+                .adopt_unowned("req_cli_no_token_flag")
+                .statement(
+                    "The revoke command must reject any command line that carries a raw credential flag. The command line must still accept the opaque identifier flag.",
+                )
+                .description("cli no token flag"),
+            requirement("cli-provider-stderr-in-message")
+                .adopt_unowned("req_cli_provider_stderr_in_message")
+                .statement(
+                    "When a revoke command fails, the failure message that reaches the operator includes the text that the provider wrote to standard error. The mint path discards provider standard error and reports the exit code alone.",
+                )
+                .description("cli provider stderr in message"),
+            requirement("cli-success-stdout-only")
+                .adopt_unowned("req_cli_success_stdout_only")
+                .statement(
+                    "The validate, dry-run, mint, revoke, and init commands write their success message to standard output. These five commands write nothing to standard error when they succeed.",
+                )
+                .description("cli success stdout only"),
+            requirement("config-missing-file-not-error")
+                .adopt_unowned("req_config_missing_file_not_error")
+                .statement(
+                    "A missing provider configuration file is not an error by itself. The system treats that layer as absent. The system then resolves the provider from the remaining sources.",
+                )
+                .description("config missing file not error"),
+            requirement("config-traversal-security-error")
+                .adopt_unowned("req_config_traversal_security_error")
+                .statement(
+                    "The system reports any rejected provider or profile name as a security error. The system does not report a rejected name as a configuration error.",
+                )
+                .description("config traversal security error"),
+            requirement("cross-argv-exec-no-shell")
+                .adopt_unowned("req_cross_argv_exec_no_shell")
+                .statement(
+                    "The system runs a provider command as a direct argv execution and never hands the command string to a shell. An operator may still name a shell as the provider command, and then substituted values reach that shell as program text. The system validates role characters only when the operator passes --role, not when the role comes from a profile.",
+                )
+                .description("cross argv exec no shell"),
+            requirement("cross-atomic-mint-rollback")
+                .adopt_unowned("req_cross_atomic_mint_rollback")
+                .statement(
+                    "A mint over several providers succeeds only when every provider returns a credential. On any provider failure the system produces no credential set. In run mode noscope revokes every credential it already minted. In mint mode noscope does not revoke; the TTL bounds the exposure.",
+                )
+                .description("cross atomic mint rollback"),
+            requirement("cross-core-dumps-disabled")
+                .adopt_unowned("req_cross_core_dumps_disabled")
+                .statement(
+                    "Noscope must disable core dumps before it loads any credential. It must set the soft limit and the hard limit to zero. A command must abort with a security error when the platform refuses.",
+                )
+                .description("cross core dumps disabled"),
+            requirement("cross-creds-env-only")
+                .adopt_unowned("req_cross_creds_env_only")
+                .statement(
+                    "A credential reaches a child process or a provider command only through an environment variable. No code path places a credential in a command argument. The mint command may still write a credential to stdout.",
+                )
+                .description("cross creds env only"),
+            requirement("cross-duplicate-env-key-rejected")
+                .adopt_unowned("req_cross_duplicate_env_key_rejected")
+                .statement(
+                    "The helper validate_env_key_uniqueness rejects a credential list that repeats an environment variable name and it names every conflicting provider. The mint and run commands never call this helper.",
+                )
+                .description("cross duplicate env key rejected"),
+            requirement("cross-empty-command-guard")
+                .adopt_unowned("req_cross_empty_command_guard")
+                .statement(
+                    "The system never runs a provider command that parses to no arguments. The single execution entry point rejects an empty argument list. The mint and revoke call sites reject it earlier and name the provider and the command type. The refresh call site produces a generic error instead.",
+                )
+                .description("cross empty command guard"),
+            requirement("cross-exit-namespaces-disjoint")
+                .adopt_unowned("req_cross_exit_namespaces_disjoint")
+                .statement(
+                    "The failure codes in the NoscopeExitCode set start at 64 and never collide with the provider protocol codes 1 to 4. The doctor command and the argument parser return values outside that set.",
+                )
+                .description("cross exit namespaces disjoint"),
+            requirement("cross-malformed-config-hard-error")
+                .adopt_unowned("req_cross_malformed_config_hard_error")
+                .statement(
+                    "The system stops with an error when a provider or profile file is malformed. The system never mints credentials from a file it could only partly understand. The reported error kind differs between the two file kinds.",
+                )
+                .description("cross malformed config hard error"),
+            requirement("cross-mint-output-all-or-nothing")
+                .adopt_unowned("req_cross_mint_output_all_or_nothing")
+                .statement(
+                    "The mint command writes one JSON array on a single line with one envelope per minted credential. When any provider fails the command writes nothing to standard output.",
+                )
+                .description("cross mint output all or nothing"),
+            requirement("cross-mint-request-validation")
+                .adopt_unowned("req_cross_mint_request_validation")
+                .statement(
+                    "A mint request must carry at least one provider, a non-empty role, and a valid TTL. Noscope must check the request before it resolves or runs any provider.",
+                )
+                .description("cross mint request validation"),
+            requirement("cross-mint-stdout-only-raw-channel")
+                .adopt_unowned("req_cross_mint_stdout_only_raw_channel")
+                .statement(
+                    "The system releases a raw credential on exactly two channels. Mint writes the credential to standard output. Run injects the credential into the environment of the child process. Every other channel shows the redacted form.",
+                )
+                .description("cross mint stdout only raw channel"),
+            requirement("cross-no-persist-to-disk")
+                .adopt_unowned("req_cross_no_persist_to_disk")
+                .statement(
+                    "The noscope process never opens a file to write a credential value. The process keeps a credential in memory, prints it to standard output during mint, and passes it to a child process environment during run.",
+                )
+                .description("cross no persist to disk"),
+            requirement("cross-noscope-env-to-mint-cmd")
+                .adopt_unowned("req_cross_noscope_env_to_mint_cmd")
+                .statement(
+                    "The provider mint command receives the provider name in NOSCOPE_PROVIDER and the role in NOSCOPE_ROLE.",
+                )
+                .description("cross noscope env to mint cmd"),
+            requirement("cross-profile-flag-exclusion")
+                .adopt_unowned("req_cross_profile_flag_exclusion")
+                .statement(
+                    "The profile option is a complete alternative to the provider, role, and TTL options. The system rejects a command that mixes the two forms. The system rejects a run or a mint that supplies neither form.",
+                )
+                .description("cross profile flag exclusion"),
+            requirement("cross-redaction-everywhere")
+                .adopt_unowned("req_cross_redaction_everywhere")
+                .statement(
+                    "Every type that holds a credential and defines Display or Debug prints the redacted form instead of the value. No flag and no environment variable turns redaction off.",
+                )
+                .description("cross redaction everywhere"),
+            requirement("cross-revoke-input-forms")
+                .adopt_unowned("req_cross_revoke_input_forms")
+                .statement(
+                    "The revoke command takes the credential from --token-id together with --provider, or from a mint envelope on stdin. The two forms exclude each other.",
+                )
+                .description("cross revoke input forms"),
+            requirement("cross-revoke-on-exit-all-paths")
+                .adopt_unowned("req_cross_revoke_on_exit_all_paths")
+                .statement(
+                    "In run mode the system tries to revoke every minted credential before the noscope process exits. This holds when the child exits normally, when the child cannot start, and when a shutdown signal arrives.",
+                )
+                .description("cross revoke on exit all paths"),
+            requirement("cross-rollback-logging")
+                .adopt_unowned("req_cross_rollback_logging")
+                .statement(
+                    "Every rollback revocation attempt writes one log line to standard error. The line names the provider, the credential identifier, the expiry, the attempt number, and the reason when the attempt failed.",
+                )
+                .description("cross rollback logging"),
+            requirement("cross-secret-type-constraints")
+                .adopt_unowned("req_cross_secret_type_constraints")
+                .statement(
+                    "The core credential types refuse Clone and refuse Serialize, and they redact their debug output. These types are ScopedToken, CredentialSet, MintEnvelope and ProviderOutput.",
+                )
+                .description("cross secret type constraints"),
+            requirement("cross-ttl-integer-seconds")
+                .adopt_unowned("req_cross_ttl_integer_seconds")
+                .statement(
+                    "The system gives the TTL to a provider command as a plain integer count of seconds with no unit suffix.",
+                )
+                .description("cross ttl integer seconds"),
+            requirement("cross-xdg-layout")
+                .adopt_unowned("req_cross_xdg_layout")
+                .statement(
+                    "The system reads a named provider from noscope/providers/<name>.toml under the config home. The system reads a named profile from noscope/profiles/<name>.toml under the config home. The run, mint, doctor, and init commands take the config home from XDG_CONFIG_HOME, or from the .config directory inside HOME when that variable is unset. The revoke, validate, and dry-run commands ignore XDG_CONFIG_HOME.",
+                )
+                .description("cross xdg layout"),
+            requirement("cross-zeroize-on-drop")
+                .adopt_unowned("req_cross_zeroize_on_drop")
+                .statement(
+                    "The credential-holding types wipe their secret material when they drop. ScopedToken, MintEnvelope and ProviderOutput each implement Drop and zeroize the credential value.",
+                )
+                .description("cross zeroize on drop"),
+            requirement("docs-implemented-vs-planned")
+                .adopt_unowned("req_docs_implemented_vs_planned")
+                .statement(
+                    "The product must not present a safety behaviour as working when it does not yet hold. The operator documentation separates the behaviour that works today from the behaviour that remains planned.",
+                )
+                .description("docs implemented vs planned"),
+            requirement("docs-placeholder-syntax")
+                .adopt_unowned("req_docs_placeholder_syntax")
+                .statement(
+                    "The user documentation must show the placeholder form that the system really substitutes. The documentation currently shows {{role}} and {{ttl}} while the system substitutes {role} and {ttl}. A configuration copied from the documentation therefore passes the role and the TTL wrapped in braces to the provider. Either the documentation or the substitution set must change.",
+                )
+                .description("docs placeholder syntax"),
+            requirement("docs-three-safety-layers")
+                .adopt_unowned("req_docs_three_safety_layers")
+                .statement(
+                    "The system rests on three safety layers. These are process group termination, revocation at exit, and expiry by TTL.",
+                )
+                .description("docs three safety layers"),
+            requirement("doctor-read-only")
+                .adopt_unowned("req_doctor_read_only")
+                .statement(
+                    "The doctor command only reads the filesystem. It creates, changes, and deletes no file and no directory under the config home.",
+                )
+                .description("doctor read only"),
+            requirement("doctor-warn-vs-fail")
+                .adopt_unowned("req_doctor_warn_vs_fail")
+                .statement(
+                    "Doctor reports a missing or non-executable provider command as a warning, because the configuration is correct while the machine setup is not. Doctor reports an unreadable provider file, a malformed provider file, or insecure permissions on that file as a failure.",
+                )
+                .description("doctor warn vs fail"),
+            requirement("dryrun-no-execution")
+                .adopt_unowned("req_dryrun_no_execution")
+                .statement(
+                    "The dry-run command prints the provider name, the configuration source, the mint, refresh and revoke commands, the role, the TTL, and the provider environment map. It runs no provider command.",
+                )
+                .description("dryrun no execution"),
+            requirement("env-key-at-invocation")
+                .adopt_unowned("req_env_key_at_invocation")
+                .statement(
+                    "The caller names the environment variable for a minted credential at invocation time. A profile file is not required.",
+                )
+                .description("workflowd units run 'noscope run --provider nats --role workflowd-runner-<host>' with the credential delivered as WORKFLOWD_NATS_CREDS (creds file content, not a path). Roles are dynamic per host, so a static profile file per role does not fit. The default <PROVIDER>_TOKEN naming stays for callers that do not choose.")
+                .from(workflowd_brief())
+                .rules([
+                    rule("env-key-flag")
+                        .adopt_unowned("rule_env_key_flag")
+                        .name("Caller-chosen env key")
+                        .statement(
+                            "The run and mint commands accept an --env-key flag that names the environment variable for the minted credential. The flag requires exactly one --provider and conflicts with --profile.",
+                        ),
+                ]),
+            requirement("errors-kind-exit-map")
+                .adopt_unowned("req_errors_kind_exit_map")
+                .statement(
+                    "Each error category maps to one fixed process exit code. Usage and security give 64. Provider gives 65. Profile gives 66. Internal gives 70. Config gives 78. Success gives 0.",
+                )
+                .description("errors kind exit map"),
+            requirement("events-field-schema")
+                .adopt_unowned("req_events_field_schema")
+                .statement(
+                    "Every event carries a timestamp in RFC 3339 form, a snake case type name, and a scope name. An event may also carry a token identifier, a duration in milliseconds, an exit code, a signal number, and an error message. Absent optional fields appear as null in the JSON form.",
+                )
+                .description("events field schema"),
+            requirement("events-lifecycle-coverage")
+                .adopt_unowned("req_events_lifecycle_coverage")
+                .statement(
+                    "The run command emits an event for the start, the success, and the failure of each mint and refresh action. It also emits events for child spawn, child exit, signal receipt, and signal forwarding. The other commands build the same events but discard them because they install no emitter.",
+                )
+                .description("events lifecycle coverage"),
+            requirement("events-no-raw-token")
+                .adopt_unowned("req_events_no_raw_token")
+                .statement(
+                    "No call site writes a credential value into an event. The token field carries a plain token identifier. No type or function prevents a caller from writing a secret into the token field or the error field.",
+                )
+                .description("events no raw token"),
+            requirement("events-stderr-only")
+                .adopt_unowned("req_events_stderr_only")
+                .statement(
+                    "The system writes all events to standard error and never to standard output. In run mode standard output belongs to the child alone.",
+                )
+                .description("events stderr only"),
+            requirement("exec-pipe-drain")
+                .adopt_unowned("req_exec_pipe_drain")
+                .statement(
+                    "The system reads provider standard output and standard error concurrently while it waits for the process to exit. A provider that writes more than the pipe buffer therefore still finishes. The system waits for both reads without a time limit after the process exits.",
+                )
+                .description("exec pipe drain"),
+            requirement("exec-provider-exit-protocol")
+                .adopt_unowned("req_exec_provider_exit_protocol")
+                .statement(
+                    "A provider process reports its result through its exit code. Code 0 means success and code 1 means a general error. Code 2 means an authentication failure and code 3 means a role that does not exist. Code 4 means an unavailable provider. The system reports codes 2, 3 and 4 inside the failure message and takes no different action on them. The revoke path treats only code 0 as success.",
+                )
+                .description("exec provider exit protocol"),
+            requirement("exec-sandboxed-env")
+                .adopt_unowned("req_exec_sandboxed_env")
+                .statement(
+                    "A provider command starts with an empty environment. The system then sets PATH, HOME and LANG from its own environment. The system also sets the variables it injects and the variables from the provider configuration env table. No other parent variable reaches the provider. When PATH, HOME or LANG are unset, the system uses /usr/bin:/bin, /root and C.UTF-8.",
+                )
+                .description("exec sandboxed env"),
+            requirement("exec-signal-killed-failure")
+                .adopt_unowned("req_exec_signal_killed_failure")
+                .statement(
+                    "A provider process that a signal killed counts as a failure. The system mints no credential from that process, even when the process already printed valid JSON.",
+                )
+                .description("exec signal killed failure"),
+            requirement("exec-spawn-failure-reported")
+                .adopt_unowned("req_exec_spawn_failure_reported")
+                .statement(
+                    "The system reports a failure when it cannot start a provider executable. It mints no credential in that case.",
+                )
+                .description("exec spawn failure reported"),
+            requirement("exec-timeout-escalation")
+                .adopt_unowned("req_exec_timeout_escalation")
+                .statement(
+                    "The system stops a provider command that runs past its time limit. It sends SIGTERM to the command and then sends SIGKILL after a grace period. Every live call site sets the limit to 30 seconds and the grace period to 5 seconds. The system signals only the direct child process, so a process that the provider started can survive.",
+                )
+                .description("exec timeout escalation"),
+            requirement("exec-timeout-exit-4")
+                .adopt_unowned("req_exec_timeout_exit_4")
+                .statement(
+                    "The system labels a timed-out provider command with provider exit code 4, which means unavailable. Only the revoke path reads that label. The mint path reports a timeout message instead and ignores the label. The label does not change the exit status that noscope itself returns.",
+                )
+                .description("exec timeout exit 4"),
+            requirement("no-group-survivors")
+                .adopt_unowned("req_no_group_survivors")
+                .statement(
+                    "When the supervised child exits, no process from the child's process group survives noscope's own exit.",
+                )
+                .description("The README lists this hardening as planned and workflowd will not gate unattended operation on an unfinished safety layer. The primitive (ports::process_group::terminate_group_for_mode) exists with no production caller. Run mode places the child in its own group, so terminating that group on exit reaps grandchildren without touching noscope or the operator's session.")
+                .from(workflowd_brief())
+                .rules([
+                    rule("group-termination-on-exit")
+                        .adopt_unowned("rule_group_termination_on_exit")
+                        .name("No group survivors after child exit")
+                        .statement(
+                            "After the supervised child exits, noscope sends SIGTERM to the child's process group before it returns the child's exit code.",
+                        ),
+                ]),
+            requirement("orchestration-mint-lifecycle-events")
+                .adopt_unowned("req_orchestration_mint_lifecycle_events")
+                .statement(
+                    "In run mode every provider mint attempt emits a start event and then one success or failure event. The closing event carries the provider, the duration, and the token identifier or the error text. The mint command installs no event emitter, so it emits nothing.",
+                )
+                .description("orchestration mint lifecycle events"),
+            requirement("orchestration-wait-all-results")
+                .adopt_unowned("req_orchestration_wait_all_results")
+                .statement(
+                    "The orchestration waits for a result from every requested provider before it decides success or failure. It does not cancel other providers after the first failure, so the rollback list is complete.",
+                )
+                .description("orchestration wait all results"),
+            requirement("profile-all-problems-one-error")
+                .adopt_unowned("req_profile_all_problems_one_error")
+                .statement(
+                    "The system reports every schema problem it finds inside the credential entries of a profile in one error message. The system does not stop at the first bad credential. The system still fails early on a syntax error or a missing credentials section.",
+                )
+                .description("profile all problems one error"),
+            requirement("profile-env-key-per-credential")
+                .adopt_unowned("req_profile_env_key_per_credential")
+                .statement(
+                    "Each credential in a profile reaches the child process under an environment variable name. The profile may set that name with env_key. When the profile does not set it, the system builds a name from the upper-case provider name and the position in the list. The system does not reject two credentials that declare the same env_key.",
+                )
+                .description("profile env key per credential"),
+            requirement("profile-flat-four-fields")
+                .adopt_unowned("req_profile_flat_four_fields")
+                .statement(
+                    "A profile credential accepts only the fields provider, role, ttl, and env_key. The system rejects any other field inside a credential. The system ignores unknown fields at the top level of a profile. No part of the system implements profile inheritance, override, or nesting.",
+                )
+                .description("profile flat four fields"),
+            requirement("provider-owns-lease-identity")
+                .adopt_unowned("req_provider_owns_lease_identity")
+                .statement(
+                    "The lease identifier in a mint envelope comes from the provider's mint output when the provider supplies one.",
+                )
+                .description("nsc revocation addresses a NATS user by its public key, which only the provider knows at mint time. Today parse_provider_output discards any token_id field and the envelope always carries the synthetic tok-<provider>, which makes identifier-only revocation (res_revoke_contract_identifier_only) meaningless for NATS. The synthetic value stays as the fallback when the provider supplies nothing.")
+                .from(workflowd_brief())
+                .rules([
+                    rule("provider-supplied-token-id")
+                        .adopt_unowned("rule_provider_supplied_token_id")
+                        .name("Provider-supplied lease identifier")
+                        .statement(
+                            "When the provider mint output contains a token_id field, noscope uses that value as the lease identifier in the envelope and for revocation. Without one, noscope falls back to tok-<provider>.",
+                        ),
+                ]),
+            requirement("refresh-failure-warning-always")
+                .adopt_unowned("req_refresh_failure_warning_always")
+                .statement(
+                    "Every failed refresh produces a warning for the operator. Noscope emits that warning even when it still plans a retry.",
+                )
+                .description("refresh failure warning always"),
+            requirement("refresh-request-carries-lease")
+                .adopt_unowned("req_refresh_request_carries_lease")
+                .statement(
+                    "A provider refresh command receives the current credential value and the credential identifier. The command also receives the credential lifetime in whole seconds. The provider uses these values to renew that exact lease.",
+                )
+                .description("refresh request carries lease"),
+            requirement("run-child-env-injection")
+                .adopt_unowned("req_run_child_env_injection")
+                .statement(
+                    "The run command passes minted credentials to the child only as environment variables. An injected variable silently replaces an inherited variable of the same name.",
+                )
+                .description("run child env injection"),
+            requirement("run-flag-env-naming")
+                .adopt_unowned("req_run_flag_env_naming")
+                .statement(
+                    "When the operator names providers with --provider, the run and mint commands place each credential in the environment variable <PROVIDER>_TOKEN. The provider name is upper-cased and is otherwise unchanged. A profile may set a different key for a credential.",
+                )
+                .description("run flag env naming"),
+            requirement("run-mint-before-spawn")
+                .adopt_unowned("req_run_mint_before_spawn")
+                .statement(
+                    "The run command mints every credential before it spawns the child process. When any mint fails, the run command returns an error and never spawns the child.",
+                )
+                .description("run mint before spawn"),
+            requirement("run-supervisor")
+                .adopt_unowned("req_run_supervisor")
+                .statement(
+                    "The run supervisor keeps the parent process alive until the child exits. It polls for pending shutdown signals every 20 milliseconds and hands each one to the signal wiring. It returns the child exit code when the child exits.",
+                )
+                .description("run supervisor"),
+            requirement("scheduled-restart-before-expiry")
+                .adopt_unowned("req_scheduled_restart_before_expiry")
+                .statement(
+                    "With a configured margin, noscope stops the child before the earliest credential expiry, so the re-mint is a scheduled restart instead of an authentication failure.",
+                )
+                .description("The workflowd expiry flow is: credential expires, NATS drops the connection, the daemon exits, systemd restarts the unit, noscope re-mints. A restart margin turns that from a failure-driven loop into a scheduled one. Opt-in flag; without it the expiry-driven flow stays the default. The systemd transparency this relies on is already bound: rule_signals_forward_set / rule_signals_forward_to_group (SIGTERM reaches the child group) and rule_exit_passthrough (unit sees the child's exit code).")
+                .from(workflowd_brief())
+                .rules([
+                    rule("restart-before-expiry")
+                        .adopt_unowned("rule_restart_before_expiry")
+                        .name("Scheduled restart before expiry")
+                        .statement(
+                            "With --restart-before-expiry <seconds>, noscope sends SIGTERM to the child's process group when the earliest credential expiry is nearer than the given margin.",
+                        ),
+                ]),
+            requirement("signals-double-signal-escalation")
+                .adopt_unowned("req_signals_double_signal_escalation")
+                .statement(
+                    "The first shutdown signal starts a graceful shutdown. A second SIGTERM or SIGINT makes the system send SIGKILL to the child at once. A second SIGHUP does not escalate.",
+                )
+                .description("signals double signal escalation"),
+            requirement("signals-first-signal-starts-revocation")
+                .adopt_unowned("req_signals_first_signal_starts_revocation")
+                .statement(
+                    "The first shutdown signal starts revocation of every credential in the run credential set. While the child runs, the system starts revocation only on a shutdown signal or on child exit.",
+                )
+                .description("signals first signal starts revocation"),
+            requirement("signals-group-termination-on-exit")
+                .adopt_unowned("req_signals_group_termination_on_exit")
+                .statement(
+                    "When a run ends the system terminates the whole child process group with SIGTERM so no descendant outlives the run. Mint mode never terminates process groups.",
+                )
+                .description("signals group termination on exit"),
+            requirement("signals-no-synthesized")
+                .adopt_unowned("req_signals_no_synthesized")
+                .statement(
+                    "The system starts a shutdown only after the operating system delivers SIGTERM, SIGINT, or SIGHUP. The system never creates a shutdown signal by itself. The system ignores every other delivered signal.",
+                )
+                .description("signals no synthesized"),
+            requirement("signals-revoke-once-latch")
+                .adopt_unowned("req_signals_revoke_once_latch")
+                .statement(
+                    "The system attempts revocation at most once during a run. The first shutdown signal makes that attempt. The exit path attempts revocation only when no signal already attempted it.",
+                )
+                .description("signals revoke once latch"),
+            requirement("token-credential-id-for-revocation")
+                .adopt_unowned("req_token_credential_id_for_revocation")
+                .statement(
+                    "The revoke path needs only a credential identifier and a provider name. The system passes an empty value for the credential itself when it runs a revoke command.",
+                )
+                .description("token credential id for revocation"),
+            requirement("token-errors-name-ids-not-secrets")
+                .adopt_unowned("req_token_errors_name_ids_not_secrets")
+                .statement(
+                    "An error message that noscope composes itself names only a location, a provider name or an opaque identifier. It never contains the credential value.",
+                )
+                .description("token errors name ids not secrets"),
+        ])
+        .build()
+}
+
+/// Materializes the declaration as a typed desired-state document.
+///
+/// Restores the brief's `external_integration` kind, which the fluent
+/// [`SourceBuilder`] cannot express.
+///
+/// # Errors
+///
+/// Returns [`AuthoringError`] when a declaration fails kernel validation.
+pub fn desired_state() -> Result<TypedSpecInput, AuthoringError> {
+    let mut input = document()?.materialize(DECLARED_BY);
+    for source in &mut input.sources {
+        if source.id.as_deref() == Some(WORKFLOWD_BRIEF_ID) {
+            source.kind = WORKFLOWD_BRIEF_KIND.to_owned();
+        }
+    }
+    Ok(input)
+}

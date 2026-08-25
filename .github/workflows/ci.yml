@@ -72,9 +72,31 @@ jobs:
       - name: Install provenance CLI (pinned)
         run: >
           cargo install provenance-cli
-          --git https://github.com/BNasraoui/Provenance.git
-          --rev 0dd66a41b756c44f79758ecee252782af5c7d152
+          --git https://github.com/quality-sh/provenance.git
+          --rev 49ed0162e9e3fea46332d5f769bac17f863ff348
           --locked
+
+      # The Rust declaration is the maintainable source for the Requirements.
+      # A plan that reports anything but "unchanged" means the declaration and
+      # the committed graph have drifted apart.
+      - name: Requirements-as-code is in sync
+        run: |
+          cargo run --quiet --features provenance-spec --bin noscope-provenance-spec > document.json
+          provenance sdk plan --repo . --quiet < document.json > plan.json
+          python3 - plan.json <<'PY'
+          import json, sys
+
+          plan = json.load(open(sys.argv[1]))
+          busy = {
+              field: plan[field]
+              for field in ("created", "updated", "moved", "retired", "conflicts")
+              if plan.get(field)
+          }
+          if busy:
+              raise SystemExit(f"declaration has drifted from the graph: {busy}")
+          print(f"declaration is in sync: {plan['unchanged']} unchanged")
+          PY
+          rm -f document.json plan.json
 
       - name: Graph integrity
         run: provenance check
